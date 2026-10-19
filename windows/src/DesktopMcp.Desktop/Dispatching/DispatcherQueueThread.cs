@@ -1,10 +1,18 @@
+using DesktopMcp.Desktop.Errors;
 using Microsoft.UI.Dispatching;
 
 namespace DesktopMcp.Desktop.Dispatching;
 
-/// <summary><see cref="IDesktopDispatcher"/> on a dedicated Windows App SDK (Microsoft.UI.Dispatching) DispatcherQueue thread.</summary>
+/// <summary>
+/// <see cref="IDesktopDispatcher"/> on a dedicated Windows App SDK (Microsoft.UI.Dispatching) DispatcherQueue thread.
+/// The thread is the process's main STA (APTTYPE_MAINSTA) because nothing else in the process is STA first; P2 does not
+/// start it (Decisions 21), so no later phase has to share the main STA with it.
+/// </summary>
 public sealed class DispatcherQueueThread : IDesktopDispatcher
 {
+    /// <summary>How long <see cref="Start"/> waits for the new thread to run its first work item.</summary>
+    internal static readonly TimeSpan StartTimeout = TimeSpan.FromSeconds(5);
+
     private readonly DispatcherQueueController _controller;
     private readonly DispatcherQueue _queue;
     private int _disposed;
@@ -18,17 +26,46 @@ public sealed class DispatcherQueueThread : IDesktopDispatcher
 
     /// <summary>
     /// Starts a dedicated Windows App SDK DispatcherQueue thread. Initialises the Windows App SDK runtime first
-    /// (throws <see cref="InvalidOperationException"/> with an install hint when it is missing).
+    /// (throws <see cref="InvalidOperationException"/> with an install hint when it is missing); a thread that cannot be
+    /// created or does not run work within <see cref="StartTimeout"/> gives a <see cref="DesktopException"/>.
     /// </summary>
     public static DispatcherQueueThread Start()
     {
         AppRuntime.EnsureInitialized();
-        var controller = DispatcherQueueController.CreateOnDedicatedThread();
+        DispatcherQueueController controller;
+        try
+        {
+            controller = DispatcherQueueController.CreateOnDedicatedThread();
+        }
+        catch (Exception e) when (ComErrors.ShouldTranslate(e))
+        {
+            throw ComErrors.Translate("Starting the dispatcher thread", e);
+        }
+        var threadId = WaitForThreadId(
+            work => controller.DispatcherQueue.TryEnqueue(() => work()),
+            () => controller.ShutdownQueueAsync().AsTask(),
+            StartTimeout);
+        return new DispatcherQueueThread(controller, threadId);
+    }
 
+    /// <summary>
+    /// Runs one work item on the new thread to learn its id. When the queue rejects it or it does not run in time, the
+    /// queue is shut down (so the controller and its thread are not leaked) and a <see cref="DesktopException"/> is thrown.
+    /// </summary>
+    internal static int WaitForThreadId(Func<Action, bool> tryEnqueue, Func<Task> shutdown, TimeSpan timeout)
+    {
         var threadId = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
-        if (!controller.DispatcherQueue.TryEnqueue(() => threadId.SetResult(Environment.CurrentManagedThreadId)))
-            throw new InvalidOperationException("The new DispatcherQueue rejected work.");
-        return new DispatcherQueueThread(controller, threadId.Task.GetAwaiter().GetResult());
+        string? failure = null;
+        if (!tryEnqueue(() => threadId.TrySetResult(Environment.CurrentManagedThreadId)))
+            failure = "The new DispatcherQueue rejected work.";
+        else if (!threadId.Task.Wait(timeout))
+            failure = $"The dispatcher thread did not start within {timeout.TotalSeconds:0.#} s.";
+        if (failure is null) return threadId.Task.Result;
+        // Best effort: the queue may already be unusable, and the shutdown (which can fail synchronously or as a faulted
+        // task) must not hide the original failure.
+        try { shutdown().Wait(timeout); }
+        catch (Exception) { }
+        throw new DesktopException(failure);
     }
 
     public int ManagedThreadId { get; }
@@ -63,7 +100,12 @@ public sealed class DispatcherQueueThread : IDesktopDispatcher
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
-        await _controller.ShutdownQueueAsync();
+        // The IAsyncAction completes on the dying dispatcher thread, and an await (with ConfigureAwait(false) or ForceYielding,
+        // which only yields for an already-completed task) would resume inline there and run the caller's continuation on it.
+        // A continuation on the default scheduler always runs on the thread pool; it rethrows the shutdown's exception.
+        await _controller.ShutdownQueueAsync().AsTask().ContinueWith(
+            static shutdown => shutdown.GetAwaiter().GetResult(), CancellationToken.None,
+            TaskContinuationOptions.DenyChildAttach, TaskScheduler.Default).ConfigureAwait(false);
     }
 
     private sealed class TimerHandle(DispatcherQueueThread owner, DispatcherQueueTimer timer) : IDisposable

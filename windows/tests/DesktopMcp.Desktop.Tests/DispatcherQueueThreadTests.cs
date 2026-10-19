@@ -45,6 +45,35 @@ public class DispatcherQueueThreadTests
     }
 
     [Fact]
+    public async Task DisposeResumesOffTheDispatcherThread()
+    {
+        // Task.Run: no synchronization context (xUnit's would move the continuation off the dispatcher thread whatever
+        // DisposeAsync does), so the caller resumes wherever DisposeAsync's own await resumed.
+        var (dispatcherThread, resumedOn) = await Task.Run(async () =>
+        {
+            var dispatcher = DispatcherQueueThread.Start();
+            // The dispatcher stays busy until the caller's continuation is registered, so the shutdown completes on the
+            // dispatcher thread and the caller resumes from there (not synchronously on its own thread).
+            using var running = new ManualResetEventSlim();
+            using var release = new ManualResetEventSlim();
+            var busy = dispatcher.InvokeAsync(() => { running.Set(); release.Wait(TimeSpan.FromSeconds(5)); });
+            Assert.True(running.Wait(TimeSpan.FromSeconds(5)), "the dispatcher did not run the blocking work item");
+            var disposing = DisposeAndReportThread(dispatcher);
+            release.Set();
+            var resumedOn = await disposing.WaitAsync(TimeSpan.FromSeconds(5));
+            await busy.WaitAsync(TimeSpan.FromSeconds(5));
+            return (dispatcher.ManagedThreadId, resumedOn);
+        }).WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.NotEqual(dispatcherThread, resumedOn);
+
+        static async Task<int> DisposeAndReportThread(DispatcherQueueThread dispatcher)
+        {
+            await dispatcher.DisposeAsync();
+            return Environment.CurrentManagedThreadId;
+        }
+    }
+
+    [Fact]
     public async Task InvokeAfterDisposeThrows()
     {
         var dispatcher = DispatcherQueueThread.Start();
