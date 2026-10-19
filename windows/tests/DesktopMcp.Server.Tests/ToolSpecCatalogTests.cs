@@ -43,4 +43,12 @@ public class ToolSpecCatalogTests
     {
         Assert.Equal(21, ToolSpecCatalog.LoadEmbedded().Names.Count);
     }
+
+    [Fact]
+    public void DuplicateToolNamesAreRejected()
+    {
+        const string duplicated = """{"tools":[{"name":"Wait","inputSchema":{"type":"object"}},{"name":"Wait","inputSchema":{"type":"object"}}]}""";
+        var error = Assert.Throws<InvalidDataException>(() => ToolSpecCatalog.Parse(new MemoryStream(Encoding.UTF8.GetBytes(duplicated))));
+        Assert.Equal("The tool contract lists 'Wait' more than once.", error.Message);
+    }
 }

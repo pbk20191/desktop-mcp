@@ -1,3 +1,4 @@
+using System.Reflection;
 using DesktopMcp.Core;
 
 namespace DesktopMcp.Core.Tests;
@@ -17,8 +18,11 @@ public class ServerTextTests
     }
 
     [Fact]
-    public void VersionHasNoBuildMetadata()
+    public void VersionIsTheBuildVersionWithoutMetadata()
     {
-        Assert.Equal("0.1.0", ServerText.Version);
+        var expected = typeof(ServerTextTests).Assembly.GetCustomAttributes<AssemblyMetadataAttribute>()
+            .Single(a => a.Key == "ExpectedVersion").Value;
+        Assert.False(string.IsNullOrEmpty(expected));
+        Assert.Equal(expected, ServerText.Version);
     }
 }

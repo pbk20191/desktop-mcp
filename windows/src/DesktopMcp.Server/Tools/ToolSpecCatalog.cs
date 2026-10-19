@@ -9,13 +9,21 @@ namespace DesktopMcp.Server.Tools;
 public sealed class ToolSpecCatalog
 {
     private const string ResourceName = "DesktopMcp.Server.tools.json";
-    private readonly Dictionary<string, Tool> _tools;
+    private readonly Dictionary<string, Tool> _tools = new(StringComparer.Ordinal);
 
     private ToolSpecCatalog(List<Tool> tools)
     {
+        foreach (var tool in tools)
+        {
+            if (!_tools.TryAdd(tool.Name, tool))
+                throw new InvalidDataException($"The tool contract lists '{tool.Name}' more than once.");
+        }
         Names = tools.Select(t => t.Name).ToArray();
-        _tools = tools.ToDictionary(t => t.Name, StringComparer.Ordinal);
     }
+
+    /// <summary>The SDK's serialisation contract for <see cref="Tool"/>; ContractTests serialises with the same instance.</summary>
+    internal static JsonTypeInfo<Tool> ToolTypeInfo { get; } =
+        (JsonTypeInfo<Tool>)McpJsonUtilities.DefaultOptions.GetTypeInfo(typeof(Tool));
 
     public IReadOnlyList<string> Names { get; }
 
@@ -32,11 +40,10 @@ public sealed class ToolSpecCatalog
     public static ToolSpecCatalog Parse(Stream utf8Json)
     {
         using var document = JsonDocument.Parse(utf8Json);
-        var typeInfo = (JsonTypeInfo<Tool>)McpJsonUtilities.DefaultOptions.GetTypeInfo(typeof(Tool));
         var tools = new List<Tool>();
         foreach (var element in document.RootElement.GetProperty("tools").EnumerateArray())
         {
-            tools.Add(element.Deserialize(typeInfo) ?? throw new JsonException("null tool entry"));
+            tools.Add(element.Deserialize(ToolTypeInfo) ?? throw new JsonException("null tool entry"));
         }
         return new ToolSpecCatalog(tools);
     }

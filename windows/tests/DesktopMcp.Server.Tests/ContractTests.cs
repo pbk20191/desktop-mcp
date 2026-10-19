@@ -1,7 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using DesktopMcp.Server.Tools;
-using ModelContextProtocol;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
@@ -21,8 +20,7 @@ public class ContractTests
         var expected = spec.ToDictionary(t => t!["name"]!.GetValue<string>(), t => t!);
 
         var tools = ToolRegistry.CreateAll(ToolSpecCatalog.LoadEmbedded());
-        var typeInfo = McpJsonUtilities.DefaultOptions.GetTypeInfo(typeof(Tool));
-        var actual = tools.ToDictionary(t => t.ProtocolTool.Name, t => JsonSerializer.SerializeToNode(t.ProtocolTool, typeInfo)!);
+        var actual = tools.ToDictionary(t => t.ProtocolTool.Name, t => JsonSerializer.SerializeToNode(t.ProtocolTool, ToolSpecCatalog.ToolTypeInfo)!);
 
         Assert.Equal(expected.Keys.Order(), actual.Keys.Order());
         foreach (var (name, tool) in expected)
