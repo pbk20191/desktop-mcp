@@ -86,7 +86,7 @@ public sealed class FileSystemService(string defaultDirectory, Func<bool> isElev
             if (Exists(dst) && OverlapReason(src, dst) is { } reason) return $"Error copying: {reason}";
             // The source is listed before the destination is touched, so a directory loop leaves both as they were.
             var tree = ListTree(src, cancellationToken);
-            if (Exists(dst)) Directory.Delete(dst, recursive: true);
+            if (Exists(dst)) DirectoryTree.Delete(dst);
             CopyTree(src, tree, dst, cancellationToken);
             return $"Copied directory: {src} -> {dst}";
         }
@@ -114,7 +114,7 @@ public sealed class FileSystemService(string defaultDirectory, Func<bool> isElev
             if (Exists(dst))
             {
                 if (OverlapReason(src, dst) is { } reason) return $"Error moving: {reason}";
-                if (Directory.Exists(dst)) Directory.Delete(dst, recursive: true);
+                if (Directory.Exists(dst)) DirectoryTree.Delete(dst);
                 else File.Delete(dst);
             }
             if (Directory.Exists(src)) MoveDirectory(src, dst);
@@ -150,7 +150,7 @@ public sealed class FileSystemService(string defaultDirectory, Func<bool> isElev
             }
             else
             {
-                Directory.Delete(target, recursive: true);
+                DirectoryTree.Delete(target);
             }
             return $"Deleted directory: {target}";
         }
@@ -446,7 +446,7 @@ public sealed class FileSystemService(string defaultDirectory, Func<bool> isElev
         {
             // shutil.move across volumes: copy, then delete.
             CopyDirectory(source, destination, CancellationToken.None);
-            Directory.Delete(source, recursive: true);
+            DirectoryTree.Delete(source);
         }
     }
 }

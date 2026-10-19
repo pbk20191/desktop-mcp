@@ -195,6 +195,60 @@ public sealed class FileSystemServiceTests : IDisposable
         Assert.Equal(stamp, Directory.GetLastWriteTimeUtc(P("b", "d")));
     }
 
+    // tree\sub\f.txt plus tree\sub\j, a junction to outside\keep.txt's directory.
+    private void TreeWithAJunction()
+    {
+        Write(@"outside\keep.txt", "k");
+        Write(@"tree\sub\f.txt", "f");
+        Junction(P("tree", "sub", "j"), P("outside"));
+    }
+
+    [Fact]
+    public void RecursiveDeleteRemovesAJunctionAsALinkOnly()
+    {
+        TreeWithAJunction();
+        Assert.Equal($"Deleted directory: {P("tree")}", new FileSystemService(_root, () => false).DeletePath(P("tree"), true));
+        Assert.False(Directory.Exists(P("tree")));
+        Assert.Equal("k", File.ReadAllText(P("outside", "keep.txt")));
+    }
+
+    [Fact]
+    public void CopyOverwriteOntoATreeWithAJunctionKeepsTheJunctionTarget()
+    {
+        TreeWithAJunction();
+        Write(@"src\a.txt", "a");
+        Assert.Equal($"Copied directory: {P("src")} -> {P("tree")}", new FileSystemService(_root, () => false).CopyPath(P("src"), P("tree"), true, CancellationToken.None));
+        Assert.Equal(["a.txt"], Directory.EnumerateFileSystemEntries(P("tree")).Select(Path.GetFileName));
+        Assert.Equal("k", File.ReadAllText(P("outside", "keep.txt")));
+    }
+
+    [Fact]
+    public void MoveOverwriteOntoATreeWithAJunctionKeepsTheJunctionTarget()
+    {
+        TreeWithAJunction();
+        Write(@"src\a.txt", "a");
+        Assert.Equal($"Moved: {P("src")} -> {P("tree")}", new FileSystemService(_root, () => false).MovePath(P("src"), P("tree"), true));
+        Assert.Equal(["a.txt"], Directory.EnumerateFileSystemEntries(P("tree")).Select(Path.GetFileName));
+        Assert.Equal("k", File.ReadAllText(P("outside", "keep.txt")));
+    }
+
+    [Fact]
+    public void RecursiveDeleteStopsAtAReadOnlyFileAsRmtreeDoes()
+    {
+        var file = Write(@"tree\r.txt", "r");
+        File.SetAttributes(file, FileAttributes.ReadOnly);
+        Assert.Equal($"Error: Permission denied: {P("tree")}{Hint}", new FileSystemService(_root, () => false).DeletePath(P("tree"), true));
+        Assert.True(File.Exists(file));
+    }
+
+    [Fact]
+    public void RecursiveDeleteOfADeepTree()
+    {
+        Write(Path.Combine("tree", Path.Combine(Enumerable.Repeat("d", 40).ToArray()), "z.txt"), "z");
+        Assert.Equal($"Deleted directory: {P("tree")}", _fs.DeletePath(P("tree"), true));
+        Assert.False(Directory.Exists(P("tree")));
+    }
+
     [Fact]
     public void CopyADirectoryOntoItselfWithOverwriteKeepsTheSource()
     {
