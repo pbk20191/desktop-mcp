@@ -5,25 +5,33 @@ left for later phases. Each later phase's plan must pick up its section.
 
 ## P1 (CLI, config, stdio server, headless tools)
 
-- `ServerTextTests` hardcodes `"0.1.0"`; derive the expected value from the `Version` property.
-- Add a test for `SpecTool`'s cancellation branch (Wait is the first cancellable tool).
-- Move the `PendingTool` test out of `ContractTests` when the first real tool tests land.
-- Use the same `JsonTypeInfo` form in `ToolSpecCatalog` and `ContractTests`.
-- Give a clear error for duplicate tool names in the contract, as part of the `--tools` / `--exclude-tools` filtering work.
-- `smoke-stdio.ps1`: require `isError` to be false for the Wait call once Wait is implemented, and compare the full `tools/list` JSON with `spec/windows/tools.json`. Today the contract test only proves that the embedded spec round-trips.
-- `DispatcherQueueThreadTests` timer test is timing-dependent; it is excluded with the Desktop category now, so keep it out of any CI default.
-- Record the stdio smoke result in the spec.
-- Run the smoke test once on a machine without the Windows App SDK runtime (for example Windows Sandbox) to back the lazy-initialisation claim in spec §10.
-- Clipboard: try the WinRT `Clipboard` first and keep the Win32 clipboard as the fallback (spec §2 "WinRT first").
-- Add an automated AOT activation check: run the probe's `imaging` step in `build-release.ps1`, or have the smoke test call Screenshot once it exists. Today nothing automated activates Win2D under AOT.
-- Restrict `AllowedReferenceRelatedFileExtensions` (`Directory.Build.targets`) to publishes, so that `dotnet run` of the exe projects keeps line numbers for Core, Desktop and Server.
+All other P1 items are done (see docs/superpowers/plans/2026-10-19-windows-p1-headless.md).
+
+- Run the smoke test once on a machine without the Windows App SDK runtime (for example Windows Sandbox) to back the lazy-initialisation claim in spec §10. Copy `windows/dist/win-x64/desktop-mcp.exe`, `windows/scripts/smoke-stdio.ps1` and `spec/windows/tools.json` in, install PowerShell 7, and run `pwsh smoke-stdio.ps1 -Exe .\desktop-mcp.exe -Spec .	ools.json`. Needs the user.
+
+## P1 leftovers (minor review findings deferred from the P1 tasks)
+
+- `build-release.ps1` silently skips the AOT activation check on a non-x64 host or without win-x64; print a skip line.
+- Fuzzy matching: `.5` ties use a different float formula from rapidfuzz (rare mismatch), and lengths count UTF-16 units rather than code points; `PyText.Repr` escapes fewer non-printables than Python.
+- `ConfigFile.Load` maps only `TomlException`: an I/O or access error, or a directory path, surfaces raw or as "not found"; invalid UTF-8 is replaced, not rejected.
+- An explicit empty list flag (`--tools ""`) falls back to the config file, unlike an explicit empty `--auth-key`; config lists are not trimmed.
+- CLI: `--config` does not reject a directory (click's `dir_okay=False`); parse-error wording differs from click's; `--control-idle-timeout` is parsed by System.CommandLine, not click's float rules.
+- `smoke-stdio.ps1`: if `Close()` throws, the server process is not killed, and a throw in `finally` masks the body's error.
+- PowerShell: the cancellation test does not check that the tree died; the post-Ctrl+Break grace waits on process exit, not on the end of the output streams (a grandchild holding a pipe).
+- FileSystem: `SameVolume` compares roots, not volumes, so a volume mounted on a folder deletes the destination and then errors; a cross-volume move follows links where upstream's `copytree(symlinks=True)` keeps them; an AppExecLink in the copy fallback fails; add a comment on the delete walk's TOCTOU (same as CPython); thin tests for links, 8.3 names, UNC and drive roots.
+- Registry: the `key.Name == hive` guard (`RegistryService.cs`) is dead; remove or reword it. A provider path with a doubled separator after the hive is not normalised; `PS*` names are shown where pwsh hides them; `Format-List` empty values and multi-line values differ in trailing space and indent.
+- Process: cap the `NtQuerySystemInformation` growth loop and check the walk against `returnLength`; add an offset test for the `SYSTEM_PROCESS_INFORMATION` overlay (Reserved1 at 8, ImageName at 56); CPU sampling is not cancellable; exit code 259 is ambiguous; a snapshot failure before argument validation hides the argument error.
+- Clipboard: `LastWinRtError` is stale after a later success; a zero-size `GlobalSize` gives a `Win32Exception` with code 0; the 200 ms happy-path timeouts in `SystemClipboardTests` could flake on a loaded machine; the probe's exit code ignores the WinRT result.
+- Notification: two thread-pool hops per call; the timeout text uses the current culture (use the invariant culture); a `COMException` with an empty message gives a blank error.
+- HTML to Markdown: dropped end-tag counts never expire (clear them when the element at `MaxDepth` pops); the `Children` property copies on each access; deep lists can make the Markdown about 10x the input, so consider bounding the returned text.
+- Scrape: delete the false comment that `WebProxy` bypasses loopback; write the literal U+FEFF in `ScrapeClient.cs` as an escape; the `ScrapeException` doc overclaims (a mid-body `IOException`/`InvalidDataException` escapes); 4xx bodies are read before the throw; add tests for gzip over the cap, the timeout, an http to https redirect, SNI and several resolved addresses.
+- Tests and probes still hand-declare a few imports (`AppRuntimeTests`' `GetModuleHandleW`, the probes); `ProcessJobTests` uses throwaway `SafeFileHandle` wrappers.
 
 ## P2 (desktop read: UIA, tree, Snapshot, capture, Screenshot)
 
 - Translate COMException/HRESULT failures into a Desktop-level exception with a user-facing message at the `IScreenCapture` / `IImageRenderer` / `IDesktopDispatcher` boundary (spec §3 rule).
 - DisplayInventory: evaluate `Microsoft.UI.Windowing.DisplayArea` for bounds and work area, plus `GetDpiForMonitor` for the DPI (spec §2 "WinRT first").
 - Win2D entry points (`Win2DRenderer`, `GraphicsCaptureService`) call `AppRuntime.EnsureInitialized()` themselves. A missing call works under the JIT but fails under AOT with `REGDB_E_CLASSNOTREG`.
-- Add the automated AOT activation check from P1 if it is not in place yet.
 - `DispatcherQueueThread`:
   - `Start()` leaks the controller when `TryEnqueue` fails, and it waits without a timeout.
   - `DisposeAsync` should hop off the dying thread (`AsTask().ConfigureAwait(false)`).
@@ -50,6 +58,8 @@ left for later phases. Each later phase's plan must pick up its section.
   - Call `GraphicsCaptureAccess.RequestAccessAsync(Borderless)` where available.
   - Re-check with the user watching whether a capture border appears.
 - UIA hang breaker (from desk-mcp, idea only): put a hard deadline on every UIA call, make the UIA worker replaceable when a call hangs, and block a timed-out process or HWND for about 90 s. Snapshot skips a blocked window and does not apply the 3x retry to a timeout.
+- Scrape use_dom: read DOM text nodes from the last snapshot once Snapshot exists (spec §8); P1 always returns "No DOM information found".
+- Clipboard: under NativeAOT a WinRT clipboard call on an MTA thread blocks instead of throwing (the P1 probe gets `TimeoutException 0x80131505` from its own bound), and afterwards WinRT can block on STA in the same process too; find the root cause and revisit the WinRT clipboard path. P1 bounds WinRT by 5 s on a dedicated STA thread and falls back to Win32.
 - OCR fallback in Snapshot: when UIA yields nothing for a window, run WinRT `Windows.Media.Ocr` on the captured frame in memory (tiled, with de-duplication) and report the text lines. This changes the Snapshot text, not the tool schema.
 
 ## P3 (desktop act)
@@ -59,6 +69,8 @@ Ideas from the desk-mcp analysis (`DigitalDog1/desk-mcp` at e6d42fc, Apache-2.0)
 - Before acting on a label, look the element up again by RuntimeId and use its current centre. Return a "stale label" error if it is gone, and note it if it is disabled.
 - Check the count `SendInput` returns. When input is blocked (UIPI, elevated target), return a clear "input blocked: the target window runs elevated" error.
 - Add a short pause between moving the cursor and pressing the button, because WinForms has been seen dropping instant clicks. Add a WinForms target to the desktop tests.
+
+- `Coercion.JsonList` returns non-arrays: the `loc`/`region` callers must check `ValueKind`, or `JsonList` must reject them.
 
 ## P4 (desktop control)
 
@@ -70,6 +82,8 @@ Ideas from the desk-mcp analysis (`DigitalDog1/desk-mcp` at e6d42fc, Apache-2.0)
 
 ## P5 (HTTP)
 
+- Scrape sampling: call SampleAsync with upstream's system prompt and max_tokens 2048, falling back to the raw content (tools/scrape.py:52-71).
+- IP allowlist: IPv4-mapped IPv6 client addresses need mapping in the matcher.
 - JSONL audit log written from the SDK call filter, so every tool call is recorded with its name, arguments (with secrets redacted), result status and duration.
 
 ## P6 (release)
@@ -91,4 +105,5 @@ Ideas from the desk-mcp analysis (`DigitalDog1/desk-mcp` at e6d42fc, Apache-2.0)
 - Windows On-device Agent Registry (`odr.exe`, preview): do not register yet. Packaged or sparse servers run contained in a separate agent session, which cannot drive the user's desktop. Add a README note. The `.mcpb` above can be registered experimentally with `odr mcp add` under Developer Mode with agent-connector protections reduced. Reassess when ODR reaches GA or Microsoft documents user-desktop access for third-party connectors. Research notes: `odr-research.md` (session scratchpad, summarised here).
 - Rejected from desk-mcp: Chrome DevTools Protocol browser tools (an open debug port and arbitrary JS evaluation), batch execution and delta snapshots (contract changes with unproven gains), and its compact JSON tree output (our line format is about 7x smaller).
 - NOTICE line 3 is about 110 characters.
+- Registry list wraps nothing: if a client depends on PowerShell's Format-List line wrapping, reproduce it; P1 prints each value on one line (P1 plan, Decisions 13).
 - Spec polish: re-flow the long line in §4 and the ragged line in §5.

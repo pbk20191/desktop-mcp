@@ -29,13 +29,13 @@ environment variables `DESKTOP_MCP_*` in place of `WINDOWS_MCP_*`. `ANONYMIZED_T
 | Topic | Decision | Why |
 |---|---|---|
 | Language | C# on .NET 10 (LTS), NativeAOT | Schannel TLS and IOCP sockets come from the platform; probes showed every needed area works under AOT with zero trim/AOT warnings. The Release `desktop-mcp.exe` is 10,399,744 bytes (win-x64) and 11,318,784 bytes (win-arm64), with Win2D linked in statically. |
-| Win32/COM bindings | CsWin32 with `comInterop.useComSourceGenerators` (`[GeneratedComInterface]`) | AOT-safe; generates every UIA interface we need. `Interop.UIAutomationClient` relies on built-in COM interop, which NativeAOT does not support. |
+| Win32/COM bindings | CsWin32 (`Microsoft.Windows.CsWin32` 0.3.347, `allowMarshaling: false`, `public: false`, `PrivateAssets=all`) in both `DesktopMcp.Core` and `DesktopMcp.Desktop` (user decision, 2026-10-19); P2 adds `comInterop.useComSourceGenerators` (`[GeneratedComInterface]`) for UIA | AOT-safe; generates every Win32 entry point and UIA interface we need. `Interop.UIAutomationClient` relies on built-in COM interop, which NativeAOT does not support. |
 | WinRT | CsWinRT through the `net10.0-windows10.0.22621.0` TFM | Toasts, `Windows.Graphics.Capture`, and the Windows App SDK's `Microsoft.UI.Dispatching` and `Microsoft.UI.Windowing`. |
 | MCP protocol | Official MCP C# SDK (`ModelContextProtocol`, `.AspNetCore`) | Protocol versions, sampling and cancellation come from the SDK. Accepted cost: the wire serialisation is the SDK's (field order, escaping) and the legacy SSE message path is `/message`. |
 | HTTP | Kestrel via `WebApplication.CreateSlimBuilder` | AOT-supported; HTTP/1.1 + HTTP/2 over Schannel with ALPN. HttpListener is ruled out (urlacl and `netsh http add sslcert` need admin). |
 | Tool contract | Per-port: `spec/macos/tools.json`, `spec/windows/tools.json` | The upstream servers expose different tool sets. |
 | Abstraction level | Prefer WinRT and libraries over raw Win32 where an AOT-friendly option exists | Screen capture uses Windows.Graphics.Capture; imaging and drawing use Win2D (`Microsoft.Graphics.Win2D` 1.4.0, linked statically; see the Win2D row). ImageSharp was dropped: 4.x refuses a Release build without a Six Labors license key, and the key-free 3.1.x / 2.1.x line fails restore with known-vulnerability errors (NU1902/NU1903). Direct2D was the fallback for imaging and was not needed. UIA, input injection, hooks and the other Win32 areas listed in the WinRT first row stay on thin CsWin32 or hand-declared wrappers because neither WinRT nor the Windows App SDK has an API for them. |
-| WinRT first | Wherever WinRT or the Windows App SDK has the API, use it; raw Win32/COM stays only where neither has one | The Windows App SDK removes hand-written interop and its failure modes. Raw Win32/COM remains for the UIA client, `SendInput`, low-level hooks and Raw Input, foreign-window control, virtual desktops, Shell app listing, Job Objects and Task Scheduler. Done: the dispatcher thread is `DispatcherQueueController.CreateOnDedicatedThread()`, and display ids come from `Microsoft.UI.Windowing.DisplayArea`. Planned: P1 Clipboard through WinRT `Clipboard` first; P2 DisplayInventory through `DisplayArea` plus `GetDpiForMonitor`; P4 overlays evaluate `AppWindow` with WinUI 3 or Composition plus Win2D first. Notifications stay on WinRT `ToastNotificationManager`: upstream's `app_id` parameter needs arbitrary AUMIDs, and `AppNotificationManager` cannot send under another app's identity. |
+| WinRT first | Wherever WinRT or the Windows App SDK has the API, use it; raw Win32/COM stays only where neither has one | The Windows App SDK removes hand-written interop and its failure modes. Raw Win32/COM remains for the UIA client, `SendInput`, low-level hooks and Raw Input, foreign-window control, virtual desktops, Shell app listing, Job Objects and Task Scheduler. Done: the dispatcher thread is `DispatcherQueueController.CreateOnDedicatedThread()`, and display ids come from `Microsoft.UI.Windowing.DisplayArea`. Done in P1: Clipboard through WinRT `Clipboard` first, with a bounded Win32 fallback (§8). Planned: P2 DisplayInventory through `DisplayArea` plus `GetDpiForMonitor`; P4 overlays evaluate `AppWindow` with WinUI 3 or Composition plus Win2D first. Notifications stay on WinRT `ToastNotificationManager`: upstream's `app_id` parameter needs arbitrary AUMIDs, and `AppNotificationManager` cannot send under another app's identity. |
 | Windows App SDK runtime | Framework-dependent and unpackaged; the user's machine must have the system Windows App SDK 2.5 runtime installed. The build references the component packages `Microsoft.WindowsAppSDK.Runtime` 2.5.1 and `Microsoft.WindowsAppSDK.InteractiveExperiences` 2.1.9, not the `Microsoft.WindowsAppSDK` metapackage | The dispatcher, `DisplayArea` and Win2D need it (user decision, 2026-10-19). `AppRuntime.EnsureInitialized()` bootstraps it lazily through kernelbase `TryCreatePackageDependency` / `AddPackageDependency`, the way windows-rs `windows-reactor` does: family `Microsoft.WindowsAppRuntime.2_8wekyb3d8bbwe`, minimum version 2.5.1.0, process lifetime. There is no `Microsoft.WindowsAppRuntime.Bootstrap.dll` and no SDK auto-initializer. If the runtime is missing, it throws with an install hint. |
 | Win2D | `Microsoft.Graphics.Win2D` 1.4.0, linked statically into the NativeAOT exe from the user's fork | One exe with no companion DLL. Win2D-WinUI 1.4.0 (source SHA 25680382) is built as static libraries on the public fork https://github.com/pbk20191/Win2D, branch `static-lib`, by a GitHub Actions workflow, and published as release `win2d-static-v1.4.0-1` (x64 and ARM64 zips with `winrt.lib`, the `win2dmod.lib` shim and their PDBs, plus `SHA256SUMS.txt`). NativeAOT publishes download the zip for the RID, verify the SHA-256 pinned in the repo and link the libs with `/WHOLEARCHIVE`; CsWinRT's `ActivationFactory.ActivationHandler` routes `Microsoft.Graphics.Canvas.*` to the linked `Win2DStatic_DllGetActivationFactory`. JIT builds and tests use the package's normal DLL. This is unofficial and unsupported: we own the build. |
 | Threads | One dedicated thread, driven by a Windows App SDK `DispatcherQueue` | See §5. |
@@ -67,15 +67,19 @@ desktop-mcp/
     probes/
       DesktopMcp.Probe/       # AOT probe exe (bootstrap, dispatcher, imaging, capture); not shipped
     src/
-      DesktopMcp/             # the exe: CLI, composition root, app.manifest (PerMonitorV2 DPI)
+      DesktopMcp/             # the exe: composition root (Program.cs calls CliApp.RunAsync),
+                              # app.manifest (PerMonitorV2 DPI)
       DesktopMcp.Core/        # platform-light logic: Config, ServePlan, Security, OAuth, Analytics,
                               # Scrape + HtmlToMarkdown, PowerShellRunner, FileSystem, Registry,
-                              # Processes, text formatting (tables, tree renderer)
-      DesktopMcp.Desktop/     # the only project that references CsWin32: Uia, Tree, Input, Capture,
-                              # Imaging, Displays, VirtualDesktops, Control, Overlay, Toast,
-                              # Clipboard, Apps, Dispatcher, AppRuntime.cs (Windows App SDK startup)
+                              # Processes, text formatting (tables, tree renderer); CsWin32 for
+                              # kernel32/ntdll (Job Object, console control, final paths,
+                              # NtQuerySystemInformation, process kill)
+      DesktopMcp.Desktop/     # CsWin32 and CsWinRT: Uia, Tree, Input, Capture, Imaging, Displays,
+                              # VirtualDesktops, Control, Overlay, Toast, Clipboard, Apps,
+                              # Dispatcher, AppRuntime.cs (Windows App SDK startup)
       DesktopMcp.Server/      # MCP SDK wiring: 21 McpServerTool subclasses, control gate filter,
-                              # session registry, Kestrel pipeline, transports
+                              # session registry, Kestrel pipeline, transports; Cli/ (the
+                              # System.CommandLine CLI, here so DesktopMcp.Server.Tests can test it)
     tests/
       DesktopMcp.Core.Tests/
       DesktopMcp.Server.Tests/
@@ -85,8 +89,12 @@ desktop-mcp/
     README.md
 ```
 
-P0 and P0b use hand-declared `LibraryImport`s in `Desktop/Interop/Native.cs` (the kernelbase
-package-dependency functions, HSTRING creation, monitors). CsWin32 arrives with UIA in P2.
+P0 and P0b used hand-declared `LibraryImport`s in `Desktop/Interop/Native.cs`. P1 replaced them
+with CsWin32: each of `DesktopMcp.Core` and `DesktopMcp.Desktop` lists its Win32 APIs in
+`NativeMethods.txt` and calls the generated `PInvoke`; new Win32 APIs are added there, not declared
+by hand. The only hand-declared pieces left are the Win2D static shim export
+(`Win2DStatic_DllGetActivationFactory`), a private 48-byte overlay for the `SYSTEM_PROCESS_INFORMATION`
+times (the metadata only has winternl.h's struct, which hides them), and imports in tests and probes.
 
 Boundary rule: BSTR, VARIANT, HRESULT, HWND and COM pointers never leave `DesktopMcp.Desktop`.
 Its public surface is plain C# records (`UiNode`, `WindowInfo`, `DisplayInfo`, `Rect`, `Point`) and
@@ -123,7 +131,7 @@ Result shapes:
   `TextContent` otherwise. Screenshot always includes the image.
 - An unexpected exception becomes `isError: true` with text `Error calling tool '<Name>': <message>`.
 - Parameter coercion follows upstream: `bool | "true"/"false"` strings (strict for most tools,
-  loose for Snapshot/Screenshot `use_*` and Scrape `use_dom`/`use_sampling`), and list parameters
+  loose for Snapshot/Screenshot `use_*`, Scrape `use_dom`/`use_sampling` and Process `force`), and list parameters
   (`loc`, `region`, `locs`, `labels`, `args`) also accept a JSON string. Validation messages are
   upstream's strings.
 
@@ -338,13 +346,20 @@ for stateless Streamable HTTP (as upstream).
   `--port` (8000), `--debug`, `--config`, `--auth-key`, `--allow-insecure-remote`,
   `--ip-allowlist`, `--tools`, `--exclude-tools`, `--cors-origins`, `--ssl-certfile`,
   `--ssl-keyfile`, `--oauth-client-id`, `--oauth-client-secret`, `--stateless-http`,
-  `--control/--no-control`, `--control-idle-timeout`, `--control-policy`, each with its
-  `DESKTOP_MCP_*` variable. Serve flags given before a subcommand produce upstream's usage error.
+  `--control/--no-control`, `--control-idle-timeout`, `--control-policy`. Only the options that
+  have an `envvar` upstream get a `DESKTOP_MCP_*` variable, plus `DESKTOP_MCP_DEBUG`; `--transport`,
+  `--host`, `--port`, `--config` and `--allow-insecure-remote` have none (P1 plan, Decisions 2).
+  Serve flags given before a subcommand produce upstream's usage error. P1 uses System.CommandLine
+  2.0.12. The CLI lives in DesktopMcp.Server/Cli so it can be tested; the exe's Program.cs only
+  calls it. In P1, install, uninstall, auth and the HTTP transports parse their options and report
+  the phase that brings them.
 - Precedence: CLI or environment, then `config.toml`, then defaults.
 - `~/.desktop-mcp/config.toml` (or `--config`) is parsed with Tomlyn's source generator, with
   upstream's sections (`[server]`, `[security]`, `[tools]`, `[control]`) and strict types (a TOML
   bool where an int is expected is an error). Certificate paths resolve relative to the config
-  file's folder.
+  file's folder. Tomlyn 2.10.1 reads TOML 1.1, a superset of the TOML 1.0 that upstream's tomllib
+  reads. Its source-generated context reads the file as an untyped table, so the strict-type
+  messages are upstream's. Tomlyn's reflection fallback is off in every build, tests included.
 - `ServePlan` is the validated, immutable result: SSL files both or neither, OAuth id and secret
   both or neither, a non-loopback HTTP bind requires an auth key, OAuth or
   `--allow-insecure-remote` (upstream's "Refusing to bind HTTP transport..." message), port range.
@@ -400,10 +415,16 @@ uses System.Text.Json source generation.
   Desktop folder), output formats and `Error: ...` texts.
 - **Registry**: `Microsoft.Win32.Registry` instead of PowerShell cmdlets; same modes, value types
   and output strings.
-- **Process**: `System.Diagnostics.Process`; CPU% from two samples a short interval apart (upstream
-  always reports about 0); fuzzy name filter (partial ratio above 60) implemented in `Core`; same
+- **Process**: names, memory and CPU times from `NtQuerySystemInformation(SystemProcessInformation)`
+  snapshots, so processes that deny `OpenProcess` still get real CPU; CPU% from two samples a short
+  interval apart (upstream always reports about 0); fuzzy name filter (partial ratio above 60) implemented in `Core`; same
   table and kill messages.
-- **Clipboard**: P1 tries the WinRT `Clipboard` first; the Win32 clipboard with `CF_UNICODETEXT` on a thread-pool thread is the fallback. Same messages.
+- **Clipboard**: WinRT `Clipboard` first, on a dedicated STA thread and bounded by 5 s; the Win32
+  clipboard with `CF_UNICODETEXT` on a thread-pool thread is the fallback, with its own 5 s bound.
+  Same messages. Probe outcome under NativeAOT (P1, Task 12): WinRT works on an STA thread and
+  Win32 works; a WinRT clipboard call on an MTA thread blocks instead of throwing, and after that
+  WinRT can block on STA in the same process too, so the bounded fallback carries the call.
+  Known issue; the root cause is a P2 follow-up.
 - **Notification**: CsWinRT `ToastNotificationManager.CreateToastNotifier(app_id).Show()` with
   ToastGeneric XML; never reads `notifier.Setting` (throws for unpackaged apps). It stays on
   `ToastNotificationManager` and not the Windows App SDK's `AppNotificationManager`, because `app_id`
@@ -411,11 +432,13 @@ uses System.Text.Json source generation.
 - **Scrape**: `HttpClient` over `SocketsHttpHandler` whose `ConnectCallback` connects only to the
   address that passed validation; http/https only, no URL credentials, private, loopback,
   link-local, multicast, reserved and unspecified addresses blocked (with the Fake-IP DNS message
-  for 198.18.0.0/15 and 2001:2::/48); up to 5 redirects followed manually and re-validated; 10 s
-  timeout. HTML is converted by a C# port of the macOS port's `HTMLToMarkdown.swift`. `use_dom`
-  reads DOM text nodes from the last snapshot. `use_sampling` calls the SDK's `SampleAsync` with
-  upstream's system prompt and `max_tokens` 2048, returning the raw content when the client
-  cannot sample or sampling fails.
+  for 198.18.0.0/15 and 2001:2::/48); at most 5 requests (4 redirects), as upstream, with
+  redirects followed manually and re-validated; 10 s timeout. HTML is converted by a C# port of the
+  macOS port's `HTMLToMarkdown.swift`. `use_dom` reads DOM text nodes from the last snapshot.
+  `use_sampling` calls the SDK's `SampleAsync` with upstream's system prompt and `max_tokens` 2048,
+  returning the raw content when the client cannot sample or sampling fails. P1 ships without
+  sampling and without DOM: use_dom returns upstream's "No DOM information found" text, and
+  sampling returns the raw content, as upstream does for a client that cannot sample.
 - **App**:
   - `launch` enumerates the Shell `AppsFolder` namespace (`IShellItem`, covering Win32 shortcuts
     and packaged apps with their localised names) instead of `Get-StartApps`, picks the best fuzzy
@@ -465,9 +488,23 @@ logs focus changes at debug level.
 | Core unit | config precedence and strict TOML types; ServePlan validation messages; SSRF rules; HTML to Markdown; OAuth/PKCE flows; PowerShell runner against real pwsh (encoding, timeout, tree kill); FileSystem formats; Shortcut parsing; table formatter; Snapshot text rendering from synthetic `UiNode`s; fuzzy matching; control state machine with a fake `TimeProvider` (takeover, idle return, lease, policy classification) | always |
 | Server | ContractTests (`tools/list` equals `spec/windows/tools.json` as JSON); in-memory Kestrel tests of middleware order, 401/403 bodies, CORS, OPTIONS, trusted host, `/health`; stdio initialize, tools/list and call | always |
 | Desktop integration | Notepad: Snapshot finds the edit control, Type, Shortcut, App switch and resize; capture and annotation; hooks, overlay, takeover; input-lock safety (heartbeat stops, input returns within 1 s) | `Category=Desktop`, run by hand in an interactive session |
-| AOT smoke | `build-release.ps1` publishes win-x64, launches the exe and runs initialize, tools/list and a Wait call over stdio; any IL2xxx/IL3xxx warning fails the build | every release build |
+| AOT smoke | `build-release.ps1` publishes win-x64 and win-arm64, launches the x64 exe and runs initialize, tools/list and the headless tools that leave the desktop alone over stdio, then runs the probe's `imaging` step (the AOT activation check); any IL2xxx/IL3xxx warning fails the build | every release build |
 
 xUnit runs under the JIT, so AOT-only failures are caught by the smoke step.
+
+P1 results (2026-10-20, Windows build 10.0.26220.9739): default suite 742 tests passed (Core 655,
+Server 76, Desktop non-desktop 11); Desktop suite passed (28 tests, by hand in an interactive
+session); build-release: win-x64 16,780,800 bytes, win-arm64 17,935,360 bytes, each dist folder
+holding only the exe and its pdb; stdio smoke OK under NativeAOT (initialize, tools/list equal to
+spec/windows/tools.json, Wait, FileSystem, Process, Registry, PowerShell, Scrape; graphics stack
+not loaded, 45 modules; the PowerShell grandchild died with the server; a second session with a
+config file excluding Registry listed the other 20 tools); AOT activation check OK; clipboard
+probe: `clipboard: Win32: OK`, `clipboard: WinRT on STA: OK`, `clipboard: WinRT on MTA:
+TimeoutException 0x80131505 The operation has timed out.`, `clipboard: SystemClipboard OK through
+WinRt (WinRT: TimeoutException 0x80131505: The WinRT clipboard did not respond within 5 s.)` (after
+the MTA hang, the WinRT write timed out on STA and the Win32 fallback carried it; the read went
+through WinRT); toast probe: shown. The smoke test on a machine without the Windows App SDK runtime
+(Windows Sandbox) was not run yet; it is a follow-up that needs the user.
 
 ## 10. Differences from upstream (for the Windows README)
 
@@ -491,6 +528,11 @@ xUnit runs under the JIT, so AOT-only failures are caught by the smoke step.
 - **Implementation**: capture uses Windows.Graphics.Capture, so `DESKTOP_MCP_SCREENSHOT_BACKEND`
   is ignored; Registry, Notification, the app list and `install` do not use PowerShell;
   `auth --with-tls` generates its own self-signed certificate.
+- **P1 decisions**: P1's deliberate departures from upstream in the CLI, config and headless tools
+  are listed in the P1 plan's "Decisions on upstream ambiguities"
+  (`docs/superpowers/plans/2026-10-19-windows-p1-headless.md`), which also records the rulings
+  made during P1's reviews (codec names, FileSystem overlap and links, Registry, Process, Scrape
+  address rules, HTML to Markdown limits).
 
 ## 11. Phases
 
@@ -501,7 +543,7 @@ work first.
 |---|---|---|
 | P0 Foundations and probes | Move `spec/tools.json` to `spec/macos/` and fix the macOS test path; write `spec/windows/tools.json`; solution skeleton and build settings; AOT probes for `DispatcherQueue` + LL hooks, Windows.Graphics.Capture, Win2D imaging; spec-driven `McpServerTool` base class and ContractTests | An empty server answers `tools/list` |
 | P0b Single exe | Windows 11 22H2 minimum; self-bootstrap of the system Windows App SDK 2.5 through the Dynamic Dependencies API; dispatcher and display ids on the Windows App SDK; Win2D linked statically from the pinned fork release; publish output trimmed to one exe | `dist/<rid>/desktop-mcp.exe` runs alone in an empty folder |
-| P1 Server core and headless tools | CLI, config, ServePlan, stdio; Wait, PowerShell, FileSystem, Clipboard, Process, Registry, Notification, Scrape without sampling | A useful server without desktop access |
+| P1 Server core and headless tools | CLI, config, ServePlan, stdio; Wait, PowerShell, FileSystem, Clipboard, Process, Registry, Notification, Scrape without sampling | A useful server without desktop access (done; results in §9) |
 | P2 Desktop read | Dispatcher, UIA wrapper, Tree, Snapshot without DOM, capture, imaging, Screenshot, DisplayInventory, virtual desktops | The agent can see the screen |
 | P3 Desktop act | Input, InputLedger, Click, Type, Scroll, Move, Shortcut, MultiSelect, MultiEdit, App, WaitFor | Upstream's core workflows |
 | P4 Desktop control | InputMonitor, state machine, overlay, capture flash, gate, notifier, ControlStatus | Protection against fighting the user |
@@ -529,3 +571,5 @@ P0 probe results were measured on Windows build 10.0.26220 (Insider).
 | The MCP SDK's serialisation or legacy SSE support changes | Pin the SDK version; ContractTests and HTTP tests catch drift |
 | LL hooks swallow input and lock the user out | Heartbeat-renewed suppression deadline, `LowLevelHooksTimeout`, integration tests |
 | UIA calls into hung apps | `IUIAutomation2` connection and transaction timeouts, serialised UIA access |
+| The Job Object kills every process the server started when the server exits, including apps started through the PowerShell tool (Start-Process) | Spec §5 behaviour, kept in P1; upstream has no job. Revisit if users report it; JOB_OBJECT_LIMIT_BREAKAWAY_OK plus CREATE_BREAKAWAY_FROM_JOB would let chosen launches escape. |
+| Under NativeAOT, a WinRT clipboard call on an MTA thread blocks instead of throwing, and WinRT can then block on STA in the same process | Known issue (measured in P1). `SystemClipboard` calls WinRT only on its STA thread, bounds it by 5 s and falls back to the Win32 clipboard, bounded by its own 5 s. Finding the root cause is a P2 follow-up. |

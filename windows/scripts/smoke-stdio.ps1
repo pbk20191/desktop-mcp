@@ -1,7 +1,8 @@
 #Requires -Version 7
 # Checks `serve --help`, then runs two stdio sessions of desktop-mcp.exe:
 # 1. `serve --config <empty file>`: initialize, that tools/list equals spec/windows/tools.json (all tools, as JSON
-#    values), one tool call, and that this headless run did not load the (delay-loaded) graphics stack: d2d1, d3d11,
+#    values), Wait and the headless tools that leave the desktop alone (FileSystem, Process, Registry, PowerShell,
+#    Scrape), and that this headless run did not load the (delay-loaded) graphics stack: d2d1, d3d11,
 #    dwrite, d3dcompiler_47. The empty file keeps a developer's ~/.desktop-mcp/config.toml out of the check. A
 #    PowerShell call starts a ping that must die with the server (the kill-on-close Job Object, spec §5).
 # 2. `serve --config <file excluding Registry>`: tools/list equals the spec less Registry, which proves the NativeAOT
@@ -48,6 +49,12 @@ function Assert-ToolsMatchSpec([string]$ResponseLine, [string]$Excluded = '') {
             throw "$name differs from spec/windows/tools.json`nspec:   $($tool.ToJsonString())`nserver: $($actual[$name].ToJsonString())"
         }
     }
+}
+function Invoke-Tool([int]$Id, [string]$Name, [hashtable]$Arguments) {
+    Send @{ jsonrpc = '2.0'; id = $Id; method = 'tools/call'; params = @{ name = $Name; arguments = $Arguments } }
+    $response = Receive $Id
+    if ($null -eq $response.result) { throw "$Name failed: $($response | ConvertTo-Json -Depth 5)" }
+    return $response.result
 }
 
 # Starts `serve --config $ConfigPath`, initializes and lists the tools, then runs $Body with the initialize response,
@@ -106,6 +113,23 @@ try {
         if ($null -eq $call.result -or $call.result.isError) { throw "Wait failed: $($call | ConvertTo-Json -Depth 5)" }
         if ($call.result.content[0].text -cne 'Waited for 0 seconds.') { throw "unexpected Wait text: $($call.result.content[0].text)" }
 
+        # Headless tools under NativeAOT. Clipboard and Notification are left out: they change the user's desktop.
+        $cases = @(
+            @{ Name = 'FileSystem'; Arguments = @{ mode = 'info'; path = $exePath }; Prefix = 'Path: '; IsError = $false },
+            @{ Name = 'Process'; Arguments = @{ mode = 'list'; limit = 1 }; Prefix = 'Processes (1 shown):'; IsError = $false },
+            @{ Name = 'Registry'; Arguments = @{ mode = 'list'; path = 'HKCU:\Environment' }; Prefix = 'Registry key [HKCU:\Environment]:'; IsError = $false },
+            @{ Name = 'PowerShell'; Arguments = @{ command = 'Write-Output smoke'; timeout = 30 }; Prefix = 'Response: smoke'; IsError = $false },
+            @{ Name = 'Scrape'; Arguments = @{ url = 'http://127.0.0.1:9/'; use_sampling = $false }; Prefix = "Error calling tool 'Scrape': Private, loopback"; IsError = $true }
+        )
+        $id = 10
+        foreach ($case in $cases) {
+            $result = Invoke-Tool ($id++) $case.Name $case.Arguments
+            $text = $result.content[0].text
+            if ([bool]$result.isError -ne $case.IsError -or -not $text.StartsWith($case.Prefix, [StringComparison]::Ordinal)) {
+                throw "$($case.Name): unexpected result (isError=$($result.isError)): $text"
+            }
+        }
+
         # A grandchild of the server: the kill-on-close job must stop it when the server exits.
         Send @{ jsonrpc = '2.0'; id = 4; method = 'tools/call'; params = @{ name = 'PowerShell'; arguments = @{ command = "(Start-Process -FilePath ping.exe -ArgumentList '-n','120','127.0.0.1' -WindowStyle Hidden -PassThru).Id"; timeout = 20 } } }
         $call = Receive 4
@@ -116,7 +140,7 @@ try {
         $script:process.Refresh()
         $graphics = @($script:process.Modules | Where-Object { $_.ModuleName -in 'd2d1.dll', 'd3d11.dll', 'dwrite.dll', 'd3dcompiler_47.dll' } | ForEach-Object ModuleName)
         if ($graphics.Count -gt 0) { throw "headless run loaded the graphics stack: $($graphics -join ', ')" }
-        $script:full = "$($init.result.serverInfo.name) $($init.result.serverInfo.version), $($list.result.tools.Count) tools match spec/windows/tools.json, Wait OK, graphics stack not loaded ($($script:process.Modules.Count) modules)"
+        $script:full = "$($init.result.serverInfo.name) $($init.result.serverInfo.version), $($list.result.tools.Count) tools match spec/windows/tools.json, Wait and $($cases.Count) headless tools OK, graphics stack not loaded ($($script:process.Modules.Count) modules)"
     }
     $ping = Get-Process -Id $script:pingId -ErrorAction SilentlyContinue
     if ($ping -and -not $ping.WaitForExit(5000)) { $ping.Kill(); throw "ping $($script:pingId) outlived the server: no kill-on-close job" }
