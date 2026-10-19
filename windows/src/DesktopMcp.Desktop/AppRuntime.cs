@@ -14,38 +14,30 @@ namespace DesktopMcp.Desktop;
 /// </summary>
 public static class AppRuntime
 {
-    private const string DownloadsPage = "https://learn.microsoft.com/windows/apps/windows-app-sdk/downloads";
+    /// <summary>The Windows App SDK downloads page, named in the install hint (checked in P2 Task 6).</summary>
+    internal const string DownloadsPage = "https://learn.microsoft.com/windows/apps/windows-app-sdk/downloads";
 
-    private static readonly Lock Gate = new();
-    private static bool _initialized;
+    private static readonly AppRuntimeInitializer Default = new(
+        osSupported: () => OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22621),
+        installActivation: Imaging.Win2DStaticActivation.Install,
+        addDependency: AddFrameworkDependency);
 
-    /// <summary>The full name of the Windows App SDK framework package resolved into this process (null before initialisation).</summary>
-    public static string? PackageFullName { get; private set; }
+    /// <summary>
+    /// The full name of the Windows App SDK framework package resolved into this process (null before initialisation).
+    /// When the OS returns no full name it is the family name with "(family name; no full name returned)" appended.
+    /// </summary>
+    public static string? PackageFullName => Default.PackageFullName;
 
     /// <summary>
     /// Adds the Windows App SDK framework package to this process's package graph (idempotent, thread-safe).
     /// Throws <see cref="InvalidOperationException"/> with an install hint when the runtime is missing.
     /// </summary>
-    public static void EnsureInitialized()
-    {
-        lock (Gate)
-        {
-            if (_initialized)
-                return;
-            // The Dynamic Dependencies API in kernelbase arrived in Windows 11 22H2; check before binding to it.
-            if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22621))
-                throw new InvalidOperationException(
-                    $"The Windows App SDK runtime needs Windows 11 22H2 (build 22621) or later; this is Windows {Environment.OSVersion.Version}.");
-            // NativeAOT publishes link Win2D statically: route its activation before any Win2D type is used.
-            Imaging.Win2DStaticActivation.Install();
-            PackageFullName = AddFrameworkDependency();
-            _initialized = true;
-        }
-    }
+    public static void EnsureInitialized() => Default.EnsureInitialized();
 
     private static unsafe string AddFrameworkDependency()
     {
         HRESULT hresult;
+        var call = "TryCreatePackageDependency";
         PWSTR dependencyId = default, fullName = default;
         try
         {
@@ -57,12 +49,13 @@ public static class AppRuntime
                 CreatePackageDependencyOptions.CreatePackageDependencyOptions_None, out dependencyId);
             if (hresult.Succeeded)
             {
+                call = "AddPackageDependency";
                 PACKAGEDEPENDENCY_CONTEXT context;
                 hresult = PInvoke.AddPackageDependency(dependencyId, (int)PInvoke.PACKAGE_DEPENDENCY_RANK_DEFAULT,
                     AddPackageDependencyOptions.AddPackageDependencyOptions_None, &context, &fullName);
             }
             if (hresult.Succeeded)
-                return fullName.ToString() ?? Framework.PackageFamilyName;
+                return fullName.ToString() ?? $"{Framework.PackageFamilyName} (family name; no full name returned)";
         }
         catch (EntryPointNotFoundException e)
         {
@@ -75,15 +68,23 @@ public static class AppRuntime
             if (fullName.Value != null) PInvoke.HeapFree(heap, 0, fullName);
             if (dependencyId.Value != null) PInvoke.HeapFree(heap, 0, dependencyId);
         }
-        throw new InvalidOperationException(
-            $"The Windows App SDK runtime {RuntimeVersion.DotQuadString} or later ({Framework.PackageFamilyName}, {Release.Major}.{Release.Minor}, " +
-            $"{RuntimeInformation.ProcessArchitecture.ToString().ToLowerInvariant()}) is not installed. " +
-            $"{InstallHint()} (HRESULT 0x{hresult.Value:X8}).");
+        throw new InvalidOperationException(InstallHint(call, hresult.Value));
     }
 
     /// <summary>"Install the Windows App SDK x.y runtime from &lt;downloads page&gt;"; shared with <c>ComErrors</c> for REGDB_E_CLASSNOTREG.</summary>
     internal static string InstallHint() => $"Install the Windows App SDK {Release.Major}.{Release.Minor} runtime from {DownloadsPage}";
 
+    /// <summary>The message for a failed <paramref name="call"/>; it names the minimum runtime version "or later".</summary>
+    internal static string InstallHint(string call, int hresult) =>
+        $"The Windows App SDK runtime {RuntimeVersion.DotQuadString} or later ({Framework.PackageFamilyName}, {Release.Major}.{Release.Minor}, " +
+        $"{RuntimeInformation.ProcessArchitecture.ToString().ToLowerInvariant()}) is not installed: {call} failed with HRESULT 0x{hresult:X8}. " +
+        $"{InstallHint()}.";
+
+    /// <summary>
+    /// The framework package to depend on: the one built for this process's architecture, not the machine's. An x64
+    /// process on an ARM64 machine (emulated) therefore asks for the x64 runtime, which Windows App SDK installs on ARM64
+    /// for that purpose; an x86 process on x64 asks for x86. ARM64EC and other architectures have no runtime package.
+    /// </summary>
     private static PackageDependencyProcessorArchitectures CurrentArchitecture() => RuntimeInformation.ProcessArchitecture switch
     {
         Architecture.X64 => PackageDependencyProcessorArchitectures.PackageDependencyProcessorArchitectures_X64,
@@ -91,4 +92,30 @@ public static class AppRuntime
         Architecture.X86 => PackageDependencyProcessorArchitectures.PackageDependencyProcessorArchitectures_X86,
         var other => throw new PlatformNotSupportedException($"The Windows App SDK runtime has no {other} build."),
     };
+}
+
+/// <summary>The once-only initialisation behind <see cref="AppRuntime"/>, with its OS calls injected for tests.</summary>
+internal sealed class AppRuntimeInitializer(Func<bool> osSupported, Action installActivation, Func<string> addDependency)
+{
+    private readonly Lock _gate = new();
+    private volatile bool _initialized;
+
+    public string? PackageFullName { get; private set; }
+
+    public void EnsureInitialized()
+    {
+        if (_initialized) return;
+        lock (_gate)
+        {
+            if (_initialized) return;
+            // The Dynamic Dependencies API in kernelbase arrived in Windows 11 22H2; check before binding to it.
+            if (!osSupported())
+                throw new InvalidOperationException(
+                    $"The Windows App SDK runtime needs Windows 11 22H2 (build 22621) or later; this is Windows {Environment.OSVersion.Version}.");
+            // NativeAOT publishes link Win2D statically: route its activation before any Win2D type is used.
+            installActivation();
+            PackageFullName = addDependency();
+            _initialized = true;
+        }
+    }
 }
