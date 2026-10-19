@@ -22,9 +22,16 @@ public struct DesktopMCPConfig: Equatable, Sendable {
         public var exclude: [String] = []
     }
 
+    /// `[osascript]`: this port's addition; the Shell tool's osascript mode runs in process and
+    /// can refuse Apple Events to listed applications.
+    public struct Osascript: Equatable, Sendable {
+        public var denyApps: [String] = []
+    }
+
     public var server = Server()
     public var security = Security()
     public var tools = Tools()
+    public var osascript = Osascript()
     public var sourcePath: String?
 
     public init() {}
@@ -61,6 +68,7 @@ public struct DesktopMCPConfig: Equatable, Sendable {
         let server = tables["server"] ?? [:]
         let security = tables["security"] ?? [:]
         let tools = tables["tools"] ?? [:]
+        let osascript = tables["osascript"] ?? [:]
         let base = url.deletingLastPathComponent()
 
         if let value = server["transport"] {
@@ -93,6 +101,7 @@ public struct DesktopMCPConfig: Equatable, Sendable {
         if let value = security["oauth_client_id"] { config.security.oauthClientID = value.text.nilIfEmpty }
         if let value = security["oauth_client_secret"] { config.security.oauthClientSecret = value.text.nilIfEmpty }
         if let value = tools["exclude"] { config.tools.exclude = try strings(value, "tools.exclude") }
+        if let value = osascript["deny_apps"] { config.osascript.denyApps = try strings(value, "osascript.deny_apps") }
         config.sourcePath = url.path
         return config
     }
@@ -141,6 +150,9 @@ public struct DesktopMCPConfig: Equatable, Sendable {
 
         if !tools.exclude.isEmpty {
             lines += ["[tools]", "exclude = [\(tools.exclude.map(quoted).joined(separator: ", "))]", ""]
+        }
+        if !osascript.denyApps.isEmpty {
+            lines += ["[osascript]", "deny_apps = [\(osascript.denyApps.map(quoted).joined(separator: ", "))]", ""]
         }
         return lines.joined(separator: "\n")
     }

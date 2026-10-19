@@ -220,3 +220,18 @@ final class ConfigTests: XCTestCase {
         XCTAssertFalse(SecurityUtil.constantTimeEquals("abc", "abcd"))
     }
 }
+
+extension ConfigTests {
+    func testOsascriptDenyAppsRoundTrips() throws {
+        let config = try DesktopMCPConfig.load(try file("[osascript]\ndeny_apps = [\"com.apple.systemevents\", \"com.apple.finder\"]\n"))
+        XCTAssertEqual(config.osascript.denyApps, ["com.apple.systemevents", "com.apple.finder"])
+        XCTAssertTrue(config.serialized().contains("[osascript]\ndeny_apps = [\"com.apple.systemevents\", \"com.apple.finder\"]"))
+        XCTAssertThrowsError(try DesktopMCPConfig.load(try file("[osascript]\ndeny_apps = \"x\"\n")))
+        XCTAssertFalse(DesktopMCPConfig().serialized().contains("osascript"))
+
+        var plan = try ServePlan.resolve(.init(), environment: [:], config: config)
+        XCTAssertEqual(plan.osaPolicy.deniedBundleIDs, ["com.apple.systemevents", "com.apple.finder"])
+        plan = try ServePlan.resolve(.init(), environment: [:], config: DesktopMCPConfig())
+        XCTAssertTrue(plan.osaPolicy.deniedBundleIDs.isEmpty)
+    }
+}

@@ -8,9 +8,10 @@ public enum DesktopMCP {
     """
 
     /// A server with every tool registered except those named in `excluding`.
-    public static func makeServer(desktop: Desktop = Desktop(), excluding excluded: [String] = []) async -> MCPServer {
+    public static func makeServer(desktop: Desktop = Desktop(), excluding excluded: [String] = [],
+                                  osaPolicy: OSARunner.Policy = OSARunner.Policy()) async -> MCPServer {
         let server = MCPServer(name: "desktop-mcp", version: version, instructions: instructions)
-        for tool in tools(desktop) {
+        for tool in tools(desktop, osaPolicy: osaPolicy) {
             await server.register(tool)
         }
         for name in excluded where !(await server.remove(tool: name)) {
@@ -66,7 +67,7 @@ public enum DesktopMCP {
 
     // MARK: Tools
 
-    static func tools(_ desktop: Desktop) -> [Tool] {
+    static func tools(_ desktop: Desktop, osaPolicy: OSARunner.Policy = OSARunner.Policy()) -> [Tool] {
         let locMessage = "Location must be a list of exactly 2 integers [x, y]"
         return [
             Tool(
@@ -100,7 +101,7 @@ public enum DesktopMCP {
                     let command = try args.requiredString("command")
                     let mode = try args.choice("mode", in: ["shell", "osascript"], default: "shell")
                     let timeout = try args.int("timeout") ?? 10
-                    let result = await Shell.execute(command, mode: mode, timeout: timeout)
+                    let result = await Shell.execute(command, mode: mode, timeout: timeout, osaPolicy: osaPolicy)
                     let label = mode == "osascript" ? "AppleScript" : "Shell"
                     return [.text("\(label) Response: \(result.output)\nStatus Code: \(result.status)")]
                 }),

@@ -12,6 +12,8 @@ public struct ServePlan: Equatable, Sendable {
     public var tls: (certificate: String, privateKey: String)?
     public var oauth: (clientID: String, clientSecret: String)?
     public var excludedTools: [String]
+    /// Apple Event policy for the Shell tool's osascript mode (`[osascript]` in config.toml).
+    public var osaPolicy = OSARunner.Policy()
     /// Non-fatal notes for the log.
     public var warnings: [String] = []
 
@@ -99,6 +101,7 @@ public struct ServePlan: Equatable, Sendable {
             allowInsecureRemote: allowInsecureRemote, ipAllowlist: allowlist,
             tls: certificate.flatMap { c in privateKey.map { (c, $0) } },
             oauth: oauth, excludedTools: excluded)
+        plan.osaPolicy.deniedBundleIDs = Set(config.osascript.denyApps)
         if transport == "stdio" && (authKey != nil || !allowlist.isEmpty) {
             plan.warnings.append("auth_key / ip_allowlist have no effect on stdio transport")
         }
@@ -113,6 +116,6 @@ public struct ServePlan: Equatable, Sendable {
             && lhs.ipAllowlist == rhs.ipAllowlist
             && lhs.tls?.certificate == rhs.tls?.certificate && lhs.tls?.privateKey == rhs.tls?.privateKey
             && lhs.oauth?.clientID == rhs.oauth?.clientID && lhs.oauth?.clientSecret == rhs.oauth?.clientSecret
-            && lhs.excludedTools == rhs.excludedTools && lhs.warnings == rhs.warnings
+            && lhs.excludedTools == rhs.excludedTools && lhs.warnings == rhs.warnings && lhs.osaPolicy == rhs.osaPolicy
     }
 }

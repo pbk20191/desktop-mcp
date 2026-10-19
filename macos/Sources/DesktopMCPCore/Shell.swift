@@ -18,10 +18,14 @@ public enum Shell {
         return cap > 0 ? min(timeout, cap) : timeout
     }
 
-    /// The Shell tool: `/bin/bash -c` or `osascript -e`, stdout and stderr combined.
-    public static func execute(_ command: String, mode: String, timeout requested: Int) async -> Result {
-        let argv = mode == "osascript" ? ["/usr/bin/osascript", "-e", command] : ["/bin/bash", "-c", command]
+    /// The Shell tool: `/bin/bash -c` with stdout and stderr combined, or AppleScript/JXA in process (`OSARunner`).
+    public static func execute(_ command: String, mode: String, timeout requested: Int,
+                               osaPolicy: OSARunner.Policy = OSARunner.Policy()) async -> Result {
         let timeout = clampTimeout(requested)
+        if mode == "osascript" {
+            return await OSARunner.run(command, timeout: Double(timeout), requested: requested, policy: osaPolicy)
+        }
+        let argv = ["/bin/bash", "-c", command]
         do {
             let run = try await self.run(argv, timeout: Double(timeout))
             let combined = combine(run.stdout, run.stderr)

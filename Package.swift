@@ -30,6 +30,7 @@ let package = Package(
                 .linkedFramework("AppKit"),
                 .linkedFramework("ScreenCaptureKit"),
                 .linkedFramework("Carbon"),
+                .linkedFramework("OSAKit"),
             ]
         ),
         // Socket layer for the HTTP transports: Network.framework via NIOTransportServices,

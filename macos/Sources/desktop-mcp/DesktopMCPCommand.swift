@@ -139,7 +139,7 @@ struct Serve: AsyncParsableCommand {
         let analytics = PostHogAnalytics.isEnabled() ? PostHogAnalytics(verbose: debug) : nil
         let debug = self.debug
         let stdio = plan.transport == "stdio"
-        let server = await DesktopMCP.makeServer(excluding: plan.excludedTools)
+        let server = await DesktopMCP.makeServer(excluding: plan.excludedTools, osaPolicy: plan.osaPolicy)
         await server.setObserver(analytics)
 
         // This task is the root; everything else is a child of it: telemetry delivery, the server

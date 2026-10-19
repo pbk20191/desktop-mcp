@@ -48,7 +48,7 @@ Run `desktop-mcp permissions` to check the current state and trigger the system 
 | `Shortcut` | e.g. `command+shift+t` |
 | `Wait` | Waits for N seconds |
 | `App` | launch / switch / resize / move |
-| `Shell` | `bash -c` or `osascript` |
+| `Shell` | `bash -c`, or AppleScript / JXA run in process (see below) |
 | `Scrape` | Fetches a URL and converts it to Markdown (private, loopback, and other internal addresses are blocked) |
 | `Desktop` | Creates a new Mission Control Space |
 | `Notification` | Shows a notification banner |
@@ -127,6 +127,9 @@ ip_allowlist = ["127.0.0.1", "10.0.0.0/8"]
 oauth_client_id = "…"
 oauth_client_secret = "…"
 
+[osascript]                 # this port only: Apple Events from Shell osascript-mode scripts
+deny_apps = ["com.apple.systemevents"]   # bundle IDs that scripts may not send events to
+
 [tools]
 exclude = ["Shell"]
 ```
@@ -139,6 +142,7 @@ As in the original, anonymous usage events go to the original project's (CursorT
 
 - **`install` finds the binary by its own path**, not by searching `$PATH` for `macos-mcp` or `uvx`, and prints the client config and the matching `claude mcp add` line afterwards.
 - **`connect` is a built-in stdio-to-HTTP bridge**, replacing the `mcp-remote` (Node) bridge the original's README suggests for Claude Desktop.
+- **`Shell` with `mode: osascript` runs the script in process through OSAKit** instead of spawning `osascript`. The output is the same (results rendered the way osascript prints them, errors as `start:end: execution error: message (number)`, `log` lines appended, status 1 on error), with three differences. A timeout or an MCP cancellation stops the script within a fraction of a second, including `delay`, loops and Apple Events still waiting for a reply, through the OSA active and send procs. Every Apple Event the script sends is checked against `[osascript] deny_apps` in `config.toml`; a denied application fails the statement with a privilege error (-10004). And JXA is available: start the source with `#!/usr/bin/osascript -l JavaScript` or `// language: JavaScript`. Scripts run concurrently on a dedicated queue, one language instance each.
 - **`Type` doesn't depend on the input source.** The original sent US-layout key codes, so typing English while the Korean input source was active produced Hangul jamo. This port injects every character as Unicode, and while typing it temporarily switches to an ASCII layout and restores the previous input source afterwards.
 - **`Click` with `clicks=2` sends a real double-click** (click state 1 followed by 2).
 - **`Scrape` parses HTML with the system parser** (libxml2 through Foundation's `XMLDocument`), so broken markup is repaired the way libxml2 does it rather than the way Python's `html.parser` does, and HTML 4 entities are decoded while HTML5-only names (such as `&check;`) are left as written. The contents of `<script>` and `<style>` are dropped; the original's markdownify `strip` option kept their text.
