@@ -169,7 +169,12 @@ public enum SSE {
         var payloads: [String] = []
         var current: [String]? = nil
         func flush() {
-            if let lines = current, !lines.isEmpty { payloads.append(lines.joined(separator: "\n")) }
+            // An empty payload carries nothing to forward: the stateful transport's priming
+            // event (`data: ` before each reply) would otherwise become an empty stdout line.
+            if let lines = current {
+                let payload = lines.joined(separator: "\n")
+                if !payload.isEmpty { payloads.append(payload) }
+            }
             current = nil
         }
         // "\r\n" is a single Character in Swift, so both line endings are matched as one unit.

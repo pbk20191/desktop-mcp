@@ -228,6 +228,21 @@ final class ToolRegistryTests: XCTestCase {
         XCTAssertEqual(result.content, [.text("Cancelled.")])
     }
 
+    func testCancelledEarlyMarkersKeepOnlyTheNewest() {
+        // A session server lives for hours; a disconnect on a request that never reaches a
+        // tool must not leave its marker behind forever.
+        var calls = ToolCalls()
+        for index in 0..<(ToolCalls.cancelledEarlyLimit + 10) {
+            XCTAssertNil(calls.cancel(handle: "h\(index)"))
+        }
+        XCTAssertEqual(calls.cancelledEarly.count, ToolCalls.cancelledEarlyLimit)
+        XCTAssertEqual(calls.cancelledEarly.first, "h10")
+        let task = Task<[MCP.Tool.Content], Error> { [] }
+        XCTAssertTrue(calls.register(task, id: UUID(), handle: "h0"), "the oldest marker was dropped")
+        XCTAssertFalse(calls.register(task, id: UUID(), handle: "h10"))
+        XCTAssertEqual(calls.cancelledEarly.count, ToolCalls.cancelledEarlyLimit - 1)
+    }
+
     func testCallsWithoutAHandleAreUnaffectedByCancelByHandle() async throws {
         let (client, started) = try await connect(await DesktopMCP.makeRegistry())
         defer { Task { await started.shutdown() } }

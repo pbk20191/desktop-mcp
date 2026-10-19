@@ -158,7 +158,11 @@ public enum RequestHandle {
 struct ToolCalls {
     var tasks: [UUID: Task<[MCP.Tool.Content], Error>] = [:]
     var byHandle: [String: UUID] = [:]
-    var cancelledEarly: Set<String> = []
+    /// Handles cancelled before their call registered, oldest first. Capped at
+    /// `cancelledEarlyLimit`: a session's server lives for hours, and a request that never
+    /// reaches a tool (a `ping`, an unknown tool) would otherwise leave its marker forever.
+    var cancelledEarly: [String] = []
+    static let cancelledEarlyLimit = 256
     private(set) var closed = false
 
     /// False when closed, or when `handle` was cancelled before this call registered: the
@@ -166,7 +170,10 @@ struct ToolCalls {
     mutating func register(_ task: Task<[MCP.Tool.Content], Error>, id: UUID, handle: String? = nil) -> Bool {
         guard !closed else { return false }
         if let handle {
-            guard cancelledEarly.remove(handle) == nil else { return false }
+            if let index = cancelledEarly.firstIndex(of: handle) {
+                cancelledEarly.remove(at: index)
+                return false
+            }
             byHandle[handle] = id
         }
         tasks[id] = task
@@ -183,7 +190,10 @@ struct ToolCalls {
     /// marks the handle so the call is refused when it registers.
     mutating func cancel(handle: String) -> Task<[MCP.Tool.Content], Error>? {
         if let id = byHandle[handle], let task = tasks[id] { return task }
-        if !closed { cancelledEarly.insert(handle) }
+        if !closed, !cancelledEarly.contains(handle) {
+            if cancelledEarly.count >= Self.cancelledEarlyLimit { cancelledEarly.removeFirst() }
+            cancelledEarly.append(handle)
+        }
         return nil
     }
 

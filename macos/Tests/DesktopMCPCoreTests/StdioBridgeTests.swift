@@ -7,6 +7,8 @@ final class StdioBridgeTests: XCTestCase {
         XCTAssertEqual(SSE.dataPayloads(stream), ["{\"a\":\n1}", "x", "y"])
         XCTAssertEqual(SSE.dataPayloads(""), [])
         XCTAssertEqual(SSE.dataPayloads("event: ping\n\n"), [])
+        // The stateful transport's priming event carries an empty `data` line before each reply.
+        XCTAssertEqual(SSE.dataPayloads("id: 1\ndata: \n\nevent: message\ndata: {}\n\n"), ["{}"])
     }
 
     func testInstalledTargetComesFromTheAgentPlistAndConfig() throws {
