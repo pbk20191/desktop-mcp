@@ -144,6 +144,29 @@ final class StdioBridgeServerTests: XCTestCase {
         await busy.value
     }
 
+    /// The session ends mid-call: the server finishes the response stream without the reply,
+    /// and the stdio client gets an error for its request instead of waiting forever.
+    func testAStreamThatEndsWithoutTheReplyIsAnError() async throws {
+        let (port, task, app) = try await startApp()
+        defer { task.cancel(); Task { await app.shutdown() } }
+        let bridge = bridge(port: port, authKey: nil)
+        _ = await forward(Self.initializeLine, through: bridge)
+
+        let collector = LineCollector()
+        let call = Self.wait(id: 5, seconds: 5)
+        let forwarding = Task { await bridge.forward(call) { await collector.append($0) } }
+        try await Task.sleep(for: .milliseconds(300))
+        await app.evictAllSessions()
+
+        try await collector.waitFor(count: 1, timeout: 2)
+        await forwarding.value
+        let lines = await collector.all()
+        XCTAssertEqual(lines.count, 1, "\(lines)")
+        let reply = try JSON.parse(lines[0])
+        XCTAssertEqual(reply["id"]?.intValue, 5)
+        XCTAssertEqual(reply["error"]?["code"]?.intValue, -32000, lines[0])
+    }
+
     func testNotificationGetting404IsReplayedSilently() async throws {
         let (port, task, app) = try await startApp()
         defer { task.cancel() }

@@ -32,12 +32,26 @@ final class StdioBridgeTests: XCTestCase {
 
     func testEmptyAndCommentEventsAreDropped() async throws {
         StubHTTP.respond { _ in
-            (200, Self.sseHeaders, [(0, Data("id: 1\ndata: \n\n: keepalive\n\ndata: {\"id\":3}\n\n".utf8))])
+            (200, Self.sseHeaders, [(0, Data("id: 1\ndata: \n\n: keepalive\n\ndata: {\"id\":1}\n\n".utf8))])
         }
         let collector = LineCollector()
         await stubBridge().forward(Self.ping) { await collector.append($0) }
         let lines = await collector.all()
-        XCTAssertEqual(lines, [#"{"id":3}"#])
+        XCTAssertEqual(lines, [#"{"id":1}"#])
+    }
+
+    func testAStreamEndingWithoutTheReplyIsAnError() async throws {
+        // A notification first, then the stream ends: the request was never answered.
+        StubHTTP.respond { _ in
+            (200, Self.sseHeaders, [(0, Data("id: 1\ndata: \n\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"n\"}\n\n".utf8))])
+        }
+        let collector = LineCollector()
+        await stubBridge().forward(Self.ping) { await collector.append($0) }
+        let lines = await collector.all()
+        XCTAssertEqual(lines.count, 2, "\(lines)")
+        let reply = try JSON.parse(lines.last ?? "")
+        XCTAssertEqual(reply["id"]?.intValue, 1)
+        XCTAssertEqual(reply["error"]?["code"]?.intValue, -32000)
     }
 
     func testJSONBodyIsEmittedOnceWhenComplete() async throws {

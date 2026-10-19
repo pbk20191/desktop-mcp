@@ -147,7 +147,8 @@ public struct StdioBridge: Sendable {
     /// One message in, zero or more messages out, each handed to `output` as soon as it is
     /// complete: nothing for notifications and responses (HTTP 202), the reply for a request
     /// (after whatever the server sends first on its event stream), or a JSON-RPC error carrying
-    /// the HTTP failure when the server could not be reached or refused the request.
+    /// the HTTP failure when the server could not be reached, refused the request, or ended the
+    /// response without the reply.
     ///
     /// When the server has forgotten the session (404), the first `initialize` this bridge
     /// forwarded is sent again for a new one, its reply dropped (the stdio client has had its
@@ -191,6 +192,10 @@ public struct StdioBridge: Sendable {
                 for try await byte in bytes { data.append(byte) }
                 if !data.isEmpty { await emit(String(decoding: data, as: UTF8.self)) }
             }
+            // The server ended the response without answering (it restarted, or the session
+            // ended mid-call): the stdio client would otherwise wait for the reply forever.
+            // Not retried: the request may have had effects.
+            if id != nil, !answered { throw Failure("the server ended the response without a reply") }
         } catch {
             let message = "desktop-mcp connect: \(target.url.absoluteString): \((error as? Failure)?.description ?? error.localizedDescription)"
             // Nobody waits for an answer to a notification or a response, and a request whose
