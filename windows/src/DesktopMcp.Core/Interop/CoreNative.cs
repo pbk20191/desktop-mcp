@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 
 namespace DesktopMcp.Core.Interop;
 
@@ -73,4 +74,16 @@ internal static unsafe partial class CoreNative
     [LibraryImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool CloseHandle(nint handle);
+
+    // kernel32: final path names (FileSystem path resolution, like Python's os.path.realpath)
+    internal const uint FileShareAll = 0x7;                      // read | write | delete
+    internal const uint OpenExisting = 3;
+    internal const uint FileFlagBackupSemantics = 0x02000000;    // required to open a directory
+
+    [LibraryImport("kernel32.dll", EntryPoint = "CreateFileW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+    internal static partial SafeFileHandle CreateFile(string fileName, uint desiredAccess, uint shareMode, nint securityAttributes,
+        uint creationDisposition, uint flagsAndAttributes, nint templateFile);
+
+    [LibraryImport("kernel32.dll", EntryPoint = "GetFinalPathNameByHandleW", SetLastError = true)]
+    internal static partial uint GetFinalPathNameByHandle(SafeFileHandle file, char* buffer, uint bufferLength, uint flags);
 }

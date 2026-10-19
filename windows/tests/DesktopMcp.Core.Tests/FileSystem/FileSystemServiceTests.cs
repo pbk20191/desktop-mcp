@@ -1,0 +1,240 @@
+using System.Globalization;
+using DesktopMcp.Core.FileSystem;
+
+namespace DesktopMcp.Core.Tests;
+
+public sealed class FileSystemServiceTests : IDisposable
+{
+    private const string Hint = "\n\nHINT: This operation may require an elevated (Administrator) terminal.";
+    private readonly TempDirectory _temp = new();
+    private readonly string _root;
+    private readonly FileSystemService _fs;
+
+    public FileSystemServiceTests()
+    {
+        _root = PathResolver.Resolve(_temp.Path);
+        _fs = new FileSystemService(_root, () => true);
+    }
+
+    public void Dispose() => _temp.Dispose();
+
+    private string P(params string[] parts) => Path.Combine([_root, .. parts]);
+
+    private string Write(string relative, string content)
+    {
+        var path = P(relative);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, content);
+        return path;
+    }
+
+    [Fact]
+    public void RelativeArgumentsResolveFromTheDefaultDirectory()
+    {
+        Assert.Equal(P("a.txt"), _fs.ResolveArgument("a.txt"));
+        Assert.Equal(@"D:\x.txt", _fs.ResolveArgument(@"D:\x.txt"));
+    }
+
+    [Fact]
+    public void ReadWholeFile() =>
+        Assert.Equal($"File: {P("a.txt")}\na\nb\nc", _fs.ReadFile(Write("a.txt", "a\r\nb\rc"), null, null, "utf-8"));
+
+    [Theory]
+    [InlineData(2L, 2L, "Lines 2-3 of 4:\n2\n3\n")]
+    [InlineData(3L, 10L, "Lines 3-4 of 4:\n3\n4\n")]
+    [InlineData(0L, 0L, "Lines 1-4 of 4:\n1\n2\n3\n4\n")]
+    [InlineData(-5L, 1L, "Lines 1-1 of 4:\n1\n")]
+    [InlineData(1L, -1L, "Lines 1--1 of 4:\n1\n2\n3\n")]
+    public void ReadWithOffsetAndLimitFollowsPythonSlicing(long offset, long limit, string expected)
+    {
+        var path = Write("n.txt", "1\n2\n3\n4\n");
+        Assert.Equal($"File: {path}\n{expected}", _fs.ReadFile(path, offset, limit, "utf-8"));
+    }
+
+    [Fact]
+    public void ReadErrors()
+    {
+        Assert.Equal($"Error: File not found: {P("nope.txt")}", _fs.ReadFile(P("nope.txt"), null, null, "utf-8"));
+        Assert.Equal($"Error: Path is not a file: {_root}", _fs.ReadFile(_root, null, null, "utf-8"));
+        Assert.Equal("Error reading file: unknown encoding: nope", _fs.ReadFile(Write("a.txt", "x"), null, null, "nope"));
+    }
+
+    [Fact]
+    public void ReadRefusesLargeFiles()
+    {
+        var path = P("big.bin");
+        using (var stream = File.Create(path)) stream.SetLength(FileSystemService.MaxReadSize + 1);
+        Assert.Equal("Error: File too large (10,485,761 bytes). Maximum is 10,485,760 bytes. Use offset/limit parameters or the Shell tool for large files.",
+            _fs.ReadFile(path, null, null, "utf-8"));
+    }
+
+    [Fact]
+    public void ALockedFileIsPermissionDeniedWithTheHintWhenNotElevated()
+    {
+        var path = Write("locked.txt", "x");
+        using var hold = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        Assert.Equal($"Error: Permission denied: {path}{Hint}", new FileSystemService(_root, () => false).ReadFile(path, null, null, "utf-8"));
+    }
+
+    [Fact]
+    public void WriteAndAppendReportTheSize()
+    {
+        Assert.Equal($"Written to {P("w.txt")} (7 bytes)", _fs.WriteFile(P("w.txt"), "a\nb\nc", false, "utf-8"));
+        Assert.Equal($"Appended to {P("w.txt")} (9 bytes)", _fs.WriteFile(P("w.txt"), "\n", true, "utf-8"));
+        Assert.Equal("a\r\nb\r\nc\r\n", File.ReadAllText(P("w.txt")));
+    }
+
+    [Fact]
+    public void WriteCreatesParentDirectories()
+    {
+        _fs.WriteFile(P("sub", "dir", "f.txt"), "x", false, "utf-8");
+        Assert.True(File.Exists(P("sub", "dir", "f.txt")));
+    }
+
+    [Fact]
+    public void CopyFileDirectoryAndOverwrite()
+    {
+        var source = Write("a.txt", "x");
+        Assert.Equal($"Copied file: {source} -> {P("b.txt")}", _fs.CopyPath(source, P("b.txt"), false, CancellationToken.None));
+        Assert.Equal($"Error: Destination already exists: {P("b.txt")}. Set overwrite=True to replace.", _fs.CopyPath(source, P("b.txt"), false, CancellationToken.None));
+        Directory.CreateDirectory(P("into"));
+        Assert.Equal($"Copied file: {source} -> {P("into")}", _fs.CopyPath(source, P("into"), true, CancellationToken.None));
+        Assert.True(File.Exists(P("into", "a.txt")));
+        Write(@"tree\x\y.txt", "y");
+        Assert.Equal($"Copied directory: {P("tree")} -> {P("tree2")}", _fs.CopyPath(P("tree"), P("tree2"), false, CancellationToken.None));
+        Assert.Equal("y", File.ReadAllText(P("tree2", "x", "y.txt")));
+        Assert.Equal($"Error: Source not found: {P("none")}", _fs.CopyPath(P("none"), P("z"), false, CancellationToken.None));
+    }
+
+    [Fact]
+    public void MoveAndOverwrite()
+    {
+        var source = Write("a.txt", "x");
+        Write("b.txt", "old");
+        Assert.Equal($"Error: Destination already exists: {P("b.txt")}. Set overwrite=True to replace.", _fs.MovePath(source, P("b.txt"), false));
+        Assert.Equal($"Moved: {source} -> {P("b.txt")}", _fs.MovePath(source, P("b.txt"), true));
+        Assert.Equal("x", File.ReadAllText(P("b.txt")));
+        Assert.False(File.Exists(source));
+    }
+
+    [Fact]
+    public void MoveOntoItselfWithOverwriteKeepsTheFile()
+    {
+        var path = Write("a.txt", "x");
+        Assert.Equal($"Moved: {path} -> {path}", _fs.MovePath(path, P("A.TXT"), true));
+        Assert.Equal("x", File.ReadAllText(path));
+    }
+
+    [Fact]
+    public void Delete()
+    {
+        var file = Write("a.txt", "x");
+        Assert.Equal($"Deleted file: {file}", _fs.DeletePath(file, false));
+        Write(@"d\x.txt", "x");
+        Assert.Equal($"Error: Directory is not empty: {P("d")}. Set recursive=True to delete non-empty directories.", _fs.DeletePath(P("d"), false));
+        Assert.Equal($"Deleted directory: {P("d")}", _fs.DeletePath(P("d"), true));
+        Directory.CreateDirectory(P("e"));
+        Assert.Equal($"Deleted directory: {P("e")}", _fs.DeletePath(P("e"), false));
+        Assert.Equal($"Error: Path not found: {P("e")}", _fs.DeletePath(P("e"), false));
+    }
+
+    [Fact]
+    public void ListPutsDirectoriesFirstAndHidesDotNames()
+    {
+        Write("b.txt", "12345");
+        Write(".hidden", "x");
+        Write("a.log", new string('x', 2048));
+        Directory.CreateDirectory(P("Alpha"));
+        Assert.Equal($"Directory: {_root}\n  [DIR ] Alpha  \n  [FILE] a.log  2.0 KB\n  [FILE] b.txt  5 B",
+            _fs.ListDirectory(_root, null, false, false, CancellationToken.None));
+        Assert.Equal($"Directory: {_root}\n  [DIR ] Alpha  \n  [FILE] .hidden  1 B\n  [FILE] a.log  2.0 KB\n  [FILE] b.txt  5 B",
+            _fs.ListDirectory(_root, null, false, true, CancellationToken.None));
+        Assert.Equal($"Directory: {_root} (filter: *.txt)\n  [FILE] b.txt  5 B",
+            _fs.ListDirectory(_root, "*.txt", false, false, CancellationToken.None));
+        Assert.Equal($"Directory {_root} is empty matching \"*.zz\".", _fs.ListDirectory(_root, "*.zz", false, false, CancellationToken.None));
+    }
+
+    [Fact]
+    public void ListRecursiveShowsRelativePaths()
+    {
+        Write("z.txt", "1");
+        Write(@"sub\a.txt", "1");
+        Assert.Equal($"Directory: {_root}\n  [DIR ] sub  \n  [FILE] sub\\a.txt  1 B\n  [FILE] z.txt  1 B",
+            _fs.ListDirectory(_root, null, true, false, CancellationToken.None));
+    }
+
+    [Fact]
+    public void ListEdgeCases()
+    {
+        Directory.CreateDirectory(P("e"));
+        Assert.Equal($"Directory {P("e")} is empty.", _fs.ListDirectory(P("e"), null, false, false, CancellationToken.None));
+        Assert.Equal($"Error: Directory not found: {P("none")}", _fs.ListDirectory(P("none"), null, false, false, CancellationToken.None));
+        var file = Write("f.txt", "x");
+        Assert.Equal($"Error: Path is not a directory: {file}", _fs.ListDirectory(file, null, false, false, CancellationToken.None));
+    }
+
+    [Fact]
+    public void ListStopsAfterFiveHundredItems()
+    {
+        for (var i = 0; i < 501; i++) Write($"f{i:D3}.txt", "");
+        var lines = _fs.ListDirectory(_root, null, false, false, CancellationToken.None).Split('\n');
+        Assert.Equal(502, lines.Length);
+        Assert.Equal("... (truncated, 500+ items)", lines[^1]);
+    }
+
+    [Fact]
+    public void Search()
+    {
+        Write("a.txt", "1");
+        Write(@"sub\b.txt", "1");
+        Write(@"sub\c.log", "1");
+        Assert.Equal($"Search: \"*.txt\" in {_root} (2 matches)\n  [FILE] a.txt  1 B\n  [FILE] sub\\b.txt  1 B",
+            _fs.SearchFiles(_root, "*.txt", true, CancellationToken.None));
+        Assert.Equal($"Search: \"*.txt\" in {_root} (1 matches)\n  [FILE] a.txt  1 B", _fs.SearchFiles(_root, "*.txt", false, CancellationToken.None));
+        Assert.Equal($"No matches found for \"*.zz\" in {_root}", _fs.SearchFiles(_root, "*.zz", true, CancellationToken.None));
+        Assert.Equal("Error searching: Non-relative patterns are unsupported", _fs.SearchFiles(_root, @"C:\*.txt", true, CancellationToken.None));
+        Assert.Equal($"Error: Search path not found: {P("none")}", _fs.SearchFiles(P("none"), "*", true, CancellationToken.None));
+    }
+
+    [Fact]
+    public void InfoForAFile()
+    {
+        var path = Write("info.txt", "hello");
+        var info = new FileInfo(path);
+        string Stamp(DateTime time) => time.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+        Assert.Equal(
+            $"Path: {path}\nType: File\nSize: 5 B (5 bytes)\nCreated: {Stamp(info.CreationTime)}\nModified: {Stamp(info.LastWriteTime)}\n" +
+            $"Accessed: {Stamp(info.LastAccessTime)}\nRead-only: False\nExtension: .txt",
+            _fs.GetFileInfo(path));
+        File.SetAttributes(path, FileAttributes.ReadOnly);
+        Assert.Contains("\nRead-only: True\n", _fs.GetFileInfo(path));
+    }
+
+    [Fact]
+    public void InfoForADirectory()
+    {
+        Write(@"d\a.txt", "x");
+        Directory.CreateDirectory(P("d", "s"));
+        var text = _fs.GetFileInfo(P("d"));
+        Assert.StartsWith($"Path: {P("d")}\nType: Directory\nSize: 0 B (0 bytes)\n", text);
+        Assert.EndsWith("\nRead-only: False\nContents: 1 files, 1 directories", text);
+        Assert.Equal($"Error: Path not found: {P("none")}", _fs.GetFileInfo(P("none")));
+    }
+
+    [Theory]
+    [InlineData("a.txt", ".txt")]
+    [InlineData(".env", "(none)")]
+    [InlineData("noext", "(none)")]
+    [InlineData("a.tar.gz", ".gz")]
+    [InlineData("a.", ".")]
+    public void SuffixFollowsPathlib(string name, string expected) => Assert.Equal(expected, FileSystemService.Suffix(name));
+
+    [Theory]
+    [InlineData(0L, "0 B")]
+    [InlineData(1023L, "1023 B")]
+    [InlineData(1024L, "1.0 KB")]
+    [InlineData(1536L, "1.5 KB")]
+    [InlineData(1048576L, "1.0 MB")]
+    [InlineData(1610612736L, "1.5 GB")]
+    public void FormatSizeMatchesUpstream(long bytes, string expected) => Assert.Equal(expected, FileSystemService.FormatSize(bytes));
+}
