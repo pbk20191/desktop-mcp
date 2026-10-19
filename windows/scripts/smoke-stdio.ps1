@@ -1,5 +1,6 @@
 #Requires -Version 7
-# Starts desktop-mcp.exe over stdio and checks initialize, tools/list and one tool call.
+# Starts desktop-mcp.exe over stdio and checks initialize, tools/list and one tool call, and that this
+# headless run did not load the (delay-loaded) graphics stack: d2d1, d3d11, dwrite, d3dcompiler_47.
 param([Parameter(Mandatory)][string]$Exe)
 $ErrorActionPreference = 'Stop'
 
@@ -52,7 +53,12 @@ try {
     $call = Receive 3
     if ($null -eq $call.result) { throw "tools/call failed: $($call | ConvertTo-Json -Depth 5)" }
 
-    Write-Host "smoke OK: $($init.result.serverInfo.name) $($init.result.serverInfo.version), $($list.result.tools.Count) tools"
+    # The graphics stack is delay-loaded (Win2DStatic.targets): a run that never renders must not load it.
+    $process.Refresh()
+    $graphics = @($process.Modules | Where-Object { $_.ModuleName -in 'd2d1.dll', 'd3d11.dll', 'dwrite.dll', 'd3dcompiler_47.dll' } | ForEach-Object ModuleName)
+    if ($graphics.Count -gt 0) { throw "headless run loaded the graphics stack: $($graphics -join ', ')" }
+
+    Write-Host "smoke OK: $($init.result.serverInfo.name) $($init.result.serverInfo.version), $($list.result.tools.Count) tools, graphics stack not loaded ($($process.Modules.Count) modules)"
 }
 finally {
     $process.StandardInput.Close()

@@ -30,6 +30,10 @@ public static class AppRuntime
         {
             if (_initialized)
                 return;
+            // The Dynamic Dependencies API in kernelbase arrived in Windows 11 22H2; check before binding to it.
+            if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22621))
+                throw new InvalidOperationException(
+                    $"The Windows App SDK runtime needs Windows 11 22H2 (build 22621) or later; this is Windows {Environment.OSVersion.Version}.");
             // NativeAOT publishes link Win2D statically: route its activation before any Win2D type is used.
             Imaging.Win2DStaticActivation.Install();
             PackageFullName = AddFrameworkDependency();

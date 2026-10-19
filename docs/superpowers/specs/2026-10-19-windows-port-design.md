@@ -13,7 +13,8 @@ Streamable HTTP and legacy HTTP+SSE transports, bearer auth, IP allowlist, CORS,
 PKCE, the desktop-control feature and telemetry. It ships as a NativeAOT `desktop-mcp.exe` per
 architecture (win-x64, win-arm64). Each ships as one file: the exe runs alone in an empty folder. It
 needs Windows 11 22H2 or later and the system Windows App SDK 2.5 runtime, but no Python, PowerShell
-5.1 or other external tools.
+5.1 or other external tools. The graphics DLLs that the static Win2D imports (d2d1, d3d11, dwrite,
+d3dcompiler_47 and the shcore WinRT stream API set) are delay-loaded, so headless runs never load them.
 
 Parity means the tool **contract** (names, parameters, schemas, descriptions, annotations) matches
 upstream exactly. Tool **output text** and **behaviour** match upstream except where this document
@@ -27,7 +28,7 @@ environment variables `DESKTOP_MCP_*` in place of `WINDOWS_MCP_*`. `ANONYMIZED_T
 
 | Topic | Decision | Why |
 |---|---|---|
-| Language | C# on .NET 10 (LTS), NativeAOT | Schannel TLS and IOCP sockets come from the platform; probes showed every needed area works under AOT with zero trim/AOT warnings. The Release `desktop-mcp.exe` is 10,399,232 bytes (win-x64) and 11,318,272 bytes (win-arm64), with Win2D linked in statically. |
+| Language | C# on .NET 10 (LTS), NativeAOT | Schannel TLS and IOCP sockets come from the platform; probes showed every needed area works under AOT with zero trim/AOT warnings. The Release `desktop-mcp.exe` is 10,399,744 bytes (win-x64) and 11,318,784 bytes (win-arm64), with Win2D linked in statically. |
 | Win32/COM bindings | CsWin32 with `comInterop.useComSourceGenerators` (`[GeneratedComInterface]`) | AOT-safe; generates every UIA interface we need. `Interop.UIAutomationClient` relies on built-in COM interop, which NativeAOT does not support. |
 | WinRT | CsWinRT through the `net10.0-windows10.0.22621.0` TFM | Toasts, `Windows.Graphics.Capture`, and the Windows App SDK's `Microsoft.UI.Dispatching` and `Microsoft.UI.Windowing`. |
 | MCP protocol | Official MCP C# SDK (`ModelContextProtocol`, `.AspNetCore`) | Protocol versions, sampling and cancellation come from the SDK. Accepted cost: the wire serialisation is the SDK's (field order, escaping) and the legacy SSE message path is `/message`. |
@@ -51,14 +52,16 @@ desktop-mcp/
   windows/
     global.json               # pins the .NET 10 SDK
     Directory.Build.props     # TFM, default RuntimeIdentifier (win-<arch>), Windows App SDK properties,
-                              # PublishAot, Nullable, TreatWarningsAsErrors (IL2xxx/IL3xxx included),
-                              # the exclusion block for Win2D's WinUI dependencies
-    Directory.Build.targets   # imports build/Win2DStatic.targets for NativeAOT publishes only; trims the
-                              # publish output to the exe
+                              # Nullable, TreatWarningsAsErrors (IL2xxx/IL3xxx included), the exclusion
+                              # block for Win2D's WinUI dependencies (PublishAot is set in the two exe
+                              # csprojs, src/DesktopMcp and probes/DesktopMcp.Probe)
+    Directory.Build.targets   # imports build/Win2DStatic.targets for every PublishAot project (only its
+                              # targets are publish-only); trims the publish output to the exe
     build/
       Win2DStatic.props       # pinned fork release: version, URL, SHA-256 per platform, cache root
-      Win2DStatic.targets     # Win2DStaticFetch (download, verify, cache), Win2DStaticLink (libs,
-                              # DirectPInvoke, feature switch), Win2DStaticStripCanvasDll
+      Win2DStatic.targets     # Win2DStaticCheckPlatform (RID check), Win2DStaticFetch (download, verify,
+                              # cache), Win2DStaticLink (libs, DirectPInvoke, delay-loaded graphics DLLs,
+                              # feature switch), Win2DStaticStripCanvasDll
     .deps/                    # git-ignored download cache: .deps/win2d-static/<version>/<platform>/
     DesktopMcp.slnx
     probes/
@@ -267,9 +270,10 @@ by the AI and releases them on preemption, cancellation or shutdown.
   label, not random. `IImageRenderer.RenderPngAsync` is asynchronous.
 - `DESKTOP_MCP_SCREENSHOT_BACKEND` is accepted and ignored; the README says so.
 - `IScreenCapture` and `IImageRenderer` hide both choices. Both passed the P0 probe, so no fallback
-  was needed. Win2D entry points (`Win2DRenderer`, `GraphicsCaptureService`) must call
-  `AppRuntime.EnsureInitialized()`, which also installs the static activation hook; a missing call works
-  under the JIT but fails under AOT with `REGDB_E_CLASSNOTREG`.
+  was needed. Callers of the Win2D entry points (`Win2DRenderer`, `GraphicsCaptureService`) must call
+  `AppRuntime.EnsureInitialized()` first, which also installs the static activation hook; a missing call
+  works under the JIT but fails under AOT with `REGDB_E_CLASSNOTREG`. P2 moves the call into the entry
+  points themselves.
 
 ### Displays
 
@@ -515,7 +519,8 @@ P0 probe results were measured on Windows build 10.0.26220 (Insider).
 | The imaging library produces trim/AOT warnings or adds too much size | Measured in P0 with Win2D: a 1920x1080 frame with 40 annotations at scale 0.75 gives a 45 KB PNG in 102-149 ms; the probe exe grew by about 461 KB; 0 warnings. In P0b the statically linked build rendered the same image in 94 ms. ImageSharp was dropped for licensing and vulnerability reasons (§2). |
 | The Windows App SDK metapackage copied about 113 MB per RID of unused files (DirectML, onnxruntime, AI.MachineLearning, WebView2) into publish output | Solved in P0b: the build references the Runtime and InteractiveExperiences component packages, and `build-release.ps1` fails unless each `dist/<rid>` folder holds only `desktop-mcp.exe` and its `.pdb`. |
 | The Windows App SDK 2.5 runtime is not installed on the user's machine | `AppRuntime.EnsureInitialized()` throws with an install hint; documented as an installation requirement (§10). |
-| The self-bootstrap needs Windows 11 22H2 (the Dynamic Dependencies API) | The minimum OS is 22H2 (§2). On an older build the missing kernelbase export becomes an `InvalidOperationException` that names Windows 11 22H2. |
+| The self-bootstrap needs Windows 11 22H2 (the Dynamic Dependencies API) | The minimum OS is 22H2 (§2). `AppRuntime.EnsureInitialized` checks `OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22621)` before the kernelbase call and throws an `InvalidOperationException` that names Windows 11 22H2; a missing kernelbase export becomes the same exception. |
+| Statically linked Win2D would load the graphics stack (d2d1, d3d11, dwrite) at the start of every run, headless ones included | Solved in P0b: `Win2DStatic.targets` delay-loads d2d1.dll, d3d11.dll, dwrite.dll, d3dcompiler_47.dll and api-ms-win-shcore-stream-winrt-l1-1-0.dll, so they load on the first Win2D call. `smoke-stdio.ps1` fails if a headless run (initialize, tools/list, `Wait`) has any of the DLLs loaded. |
 | We own the Win2D static build: the fork is unofficial and unsupported, and only CsWinRT activation is routed (a direct `RoGetActivationFactory` call for a Canvas class fails with `REGDB_E_CLASSNOTREG`) | The release is pinned by version and SHA-256, cross-checked against a fresh download. Moving to a new Win2D release means bumping the pinned version and hashes. |
 | The ARM64 exe is build-verified only; it was never run (no ARM64 machine) | Run the smoke test and the probe on ARM64 hardware before the release. |
 | Concurrent cold-cache publishes (for example publishing the solution) can race on the Win2D download | The release script publishes one project at a time; making the fetch safe is a P6 follow-up. |

@@ -1,14 +1,15 @@
 <Project>
   <!--
     Links Win2D statically into a NativeAOT exe, so that Microsoft.Graphics.Canvas.dll is not shipped.
-    Imported by Directory.Build.targets only for projects with PublishAot=true and a RuntimeIdentifier.
-    Everything here runs inside the NativeAOT publish pipeline; dotnet build/run/test (JIT) are untouched
+    Imported by Directory.Build.targets for every project with PublishAot=true and a RuntimeIdentifier (also for
+    build/run); only its targets are publish-only: they hook the NativeAOT publish pipeline, so dotnet build/run/test (JIT) are untouched
     and keep loading the package's Microsoft.Graphics.Canvas.dll.
 
       Win2DStaticFetch  downloads the release zip for the RID's platform into the git-ignored cache
                         (windows/.deps/win2d-static/<version>/<platform>/), checks its SHA-256 and extracts it.
                         Skipped when the cache already holds the verified libs, or when Win2DStaticDir is set
-                        (offline override: an already extracted folder with winrt.lib, win2dmod.lib and their PDBs).
+                        (offline override: an already extracted folder with winrt.lib, win2dmod.lib and their PDBs;
+                        not hash-verified, which the build reports). The RID check runs in both cases.
       Win2DStaticLink   adds the link items before ILC runs, and the feature switch that makes
                         AppRuntime.EnsureInitialized route Microsoft.Graphics.Canvas.* activation to the shim.
       Win2DStaticStripCanvasDll  drops the package's native Microsoft.Graphics.Canvas.dll from the publish output.
@@ -29,10 +30,15 @@
     <Win2DStaticFeatureSwitch>DesktopMcp.Desktop.Win2DStatic</Win2DStaticFeatureSwitch>
   </PropertyGroup>
 
-  <Target Name="Win2DStaticFetch" Condition="'$(_Win2DStaticUseCache)' == 'true'">
+  <!-- Runs for the cache and for the offline override alike: the override cannot fix an unsupported RID. -->
+  <Target Name="Win2DStaticCheckPlatform">
     <Error Condition="'$(Win2DStaticPlatform)' == ''"
            Text="Static Win2D has no build for RuntimeIdentifier '$(RuntimeIdentifier)' (supported: win-x64, win-arm64)." />
+    <Message Importance="high" Condition="'$(_Win2DStaticUseCache)' != 'true'"
+             Text="Win2D static $(Win2DStaticPlatform): using Win2DStaticDir override $(_Win2DStaticLibDir); these libraries are not hash-verified." />
+  </Target>
 
+  <Target Name="Win2DStaticFetch" Condition="'$(_Win2DStaticUseCache)' == 'true'" DependsOnTargets="Win2DStaticCheckPlatform">
     <PropertyGroup>
       <_Win2DStaticStamp>$(_Win2DStaticLibDir).sha256</_Win2DStaticStamp>
       <_Win2DStaticZip>$(Win2DStaticCacheRoot)$(Win2DStaticZipName)</_Win2DStaticZip>
@@ -70,7 +76,7 @@
 
   <!-- SetupOSSpecificProps (ILCompiler) turns NativeLibrary into linker inputs and runs before PrepareForILLink
        (which turns Trim="true" options into ILC feature switches) and WriteIlcRspFileForCompilation (DirectPInvoke). -->
-  <Target Name="Win2DStaticLink" BeforeTargets="SetupOSSpecificProps" DependsOnTargets="Win2DStaticFetch">
+  <Target Name="Win2DStaticLink" BeforeTargets="SetupOSSpecificProps" DependsOnTargets="Win2DStaticCheckPlatform;Win2DStaticFetch">
     <Error Condition="!Exists('$(_Win2DStaticLibDir)winrt.lib') or !Exists('$(_Win2DStaticLibDir)win2dmod.lib')"
            Text="Static Win2D libraries not found in '$(_Win2DStaticLibDir)' (expected winrt.lib and win2dmod.lib, with winrt.pdb and win2dmod.pdb beside them)." />
     <ItemGroup>
@@ -81,7 +87,12 @@
       <NativeLibrary Include="d2d1.lib;d3d11.lib;d3dcompiler.lib;windowscodecs.lib;dwrite.lib;runtimeobject.lib;rpcrt4.lib;shcore.lib;dxgi.lib;delayimp.lib" />
       <!-- WRL registers activatable classes through linker sections; pull every object in. -->
       <LinkerArg Include="/WHOLEARCHIVE:&quot;$(_Win2DStaticLibDir)winrt.lib&quot;" />
-      <LinkerArg Include="/DELAYLOAD:d3dcompiler_47.dll" />
+      <!-- Delay-load the graphics stack the static Win2D imports, so that runs which never render (headless
+           tool calls, the stdio protocol) do not load it. The DLLs load on the first Win2D call instead.
+           dxgi.dll and windowscodecs.dll are not listed: the linked code imports nothing from them directly
+           (Win2D reaches them through D3D11/COM), and /DELAYLOAD of a DLL without imports warns (LNK4199). -->
+      <LinkerArg Include="/DELAYLOAD:d2d1.dll;/DELAYLOAD:d3d11.dll;/DELAYLOAD:dwrite.dll;/DELAYLOAD:d3dcompiler_47.dll" />
+      <LinkerArg Include="/DELAYLOAD:api-ms-win-shcore-stream-winrt-l1-1-0.dll" />
       <RuntimeHostConfigurationOption Include="$(Win2DStaticFeatureSwitch)" Value="true" Trim="true" />
     </ItemGroup>
   </Target>

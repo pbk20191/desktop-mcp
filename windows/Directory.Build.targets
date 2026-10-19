@@ -1,5 +1,9 @@
 <Project>
-  <!-- NativeAOT exes (src/DesktopMcp, probes/DesktopMcp.Probe): link Win2D statically when published. -->
+  <!--
+    NativeAOT exes (src/DesktopMcp, probes/DesktopMcp.Probe; their csprojs set PublishAot): link Win2D statically
+    when published. The file is imported for every PublishAot project with a RuntimeIdentifier, for build and run
+    too; only its hooked targets are publish-only.
+  -->
   <Import Project="$(MSBuildThisFileDirectory)build\Win2DStatic.targets"
           Condition="'$(PublishAot)' == 'true' and '$(RuntimeIdentifier)' != ''" />
 

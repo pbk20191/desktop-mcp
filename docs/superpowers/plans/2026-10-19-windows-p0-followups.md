@@ -61,10 +61,9 @@ left for later phases. Each later phase's plan must pick up its section.
 
 - Win2D static cache (`windows/build/Win2DStatic.targets`):
   - Make concurrent cold-cache publishes safe (publishing the solution can race on the download; the scripts publish one project at a time).
-  - Log a warning when `-p:Win2DStaticDir` (the offline override, which skips hash verification) is used.
-  - Correct the comment on the import condition in `Directory.Build.targets`.
   - `LinkNative` re-runs on every publish (about 0.8 s), because `NativeLibrary` items such as `d2d1.lib` are not files, so the target's inputs are never up to date. `SdkNativeLibrary` would avoid it but is less documented.
   - Try to shrink the WinUI/Foundation/WebView2 exclusion block in `Directory.Build.props`. It was kept because `Microsoft.Graphics.Win2D` 1.4.0 depends on `Microsoft.WindowsAppSDK.WinUI`; nothing tried to remove one of the three entries.
+- Provenance of the Win2D static libs: add GitHub artifact attestations to the fork's workflow and verify them (`gh attestation verify`) when bumping the pin, or record the producing run URL next to the hashes in Win2DStatic.props.
 - Move the fork to the next Win2D release: bump `Win2DStaticVersion` and both pinned hashes in `windows/build/Win2DStatic.props` after the fork publishes the new release.
 - Run the ARM64 exe on ARM64 hardware (smoke test and probe). It is build-verified only.
 - Only CsWinRT activation is routed to the static Win2D. A direct `RoGetActivationFactory` call for a `Microsoft.Graphics.Canvas.*` class fails with `REGDB_E_CLASSNOTREG`; keep any new Win2D use on the projected types.
