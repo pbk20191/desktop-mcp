@@ -1,0 +1,267 @@
+import Foundation
+
+public enum DesktopMCP {
+    public static let version = "0.1.0"
+    public static let instructions = """
+    macOS MCP server provides tools to interact directly with the macOS desktop, \
+    enabling operation of the desktop on the user's behalf.
+    """
+
+    /// A server with every tool registered except those named in `excluding`.
+    public static func makeServer(desktop: Desktop = Desktop(), excluding excluded: [String] = []) async -> MCPServer {
+        let server = MCPServer(name: "desktop-mcp", version: version, instructions: instructions)
+        for tool in tools(desktop) {
+            await server.register(tool)
+        }
+        for name in excluded where !(await server.remove(tool: name)) {
+            log("Could not exclude tool '\(name)' — not found")
+        }
+        return server
+    }
+
+    // MARK: Schema helpers
+
+    static func schema(_ properties: [String: JSONValue], required: [String] = []) -> JSONValue {
+        var schema: [String: JSONValue] = ["type": "object", "properties": .object(properties)]
+        if !required.isEmpty { schema["required"] = .array(required.map { .string($0) }) }
+        return .object(schema)
+    }
+
+    static func string(_ description: String? = nil, default value: String? = nil, enum options: [String]? = nil) -> JSONValue {
+        var p: [String: JSONValue] = ["type": "string"]
+        if let options { p["enum"] = .array(options.map { .string($0) }) }
+        if let value { p["default"] = .string(value) }
+        if let description { p["description"] = .string(description) }
+        return .object(p)
+    }
+
+    static func nullableString(enum options: [String]? = nil) -> JSONValue {
+        var p: [String: JSONValue] = ["type": ["string", "null"], "default": nil]
+        if let options { p["enum"] = .array(options.map { .string($0) } + [.null]) }
+        return .object(p)
+    }
+
+    static func integer(default value: Int? = nil) -> JSONValue {
+        var p: [String: JSONValue] = ["type": "integer"]
+        if let value { p["default"] = .integer(Int64(value)) }
+        return .object(p)
+    }
+
+    static func boolean(default value: Bool) -> JSONValue {
+        ["type": "boolean", "default": .bool(value)]
+    }
+
+    static func intPair(nullable: Bool) -> JSONValue {
+        if nullable {
+            return ["anyOf": [["type": "array", "items": ["type": "integer"]], ["type": "null"]], "default": nil]
+        }
+        return ["type": "array", "items": ["type": "integer"]]
+    }
+
+    static func point(_ args: ToolArguments, _ name: String, message: String) throws -> (Int, Int)? {
+        guard let list = try args.intList(name) else { return nil }
+        guard list.count == 2 else { throw ToolError(message) }
+        return (list[0], list[1])
+    }
+
+    // MARK: Tools
+
+    static func tools(_ desktop: Desktop) -> [Tool] {
+        let locMessage = "Location must be a list of exactly 2 integers [x, y]"
+        return [
+            Tool(
+                name: "App",
+                description: "Manages macOS applications with four modes: 'launch' (opens the application), 'resize' (adjusts active window size), 'move' (repositions active window), 'switch' (brings specific app into focus).",
+                inputSchema: schema([
+                    "mode": string(default: "launch", enum: ["launch", "resize", "move", "switch"]),
+                    "name": nullableString(),
+                    "window_loc": intPair(nullable: true),
+                    "window_size": intPair(nullable: true),
+                ]),
+                annotations: ToolAnnotations(title: "App", readOnly: false, destructive: true, idempotent: false, openWorld: false),
+                handler: { args in
+                    let mode = try args.choice("mode", in: ["launch", "resize", "move", "switch"], default: "launch")
+                    let text = try await desktop.app(mode: mode, name: try args.string("name"),
+                                                     windowLoc: try args.intList("window_loc"),
+                                                     windowSize: try args.intList("window_size"))
+                    return [.text(text)]
+                }),
+
+            Tool(
+                name: "Shell",
+                description: "Execute commands on macOS. Modes: 'shell' (default) for bash/zsh commands, 'osascript' for AppleScript. Use for file system, process management, system operations, and automation scripts. SECURITY WARNING: Commands are executed with the same permissions as the terminal/application running this server. Review and understand all actions before execution, especially those involving file operations, system modifications, or external processes.",
+                inputSchema: schema([
+                    "command": string(),
+                    "mode": string(default: "shell", enum: ["shell", "osascript"]),
+                    "timeout": integer(default: 10),
+                ], required: ["command"]),
+                annotations: ToolAnnotations(title: "Shell", readOnly: false, destructive: true, idempotent: false, openWorld: true),
+                handler: { args in
+                    let command = try args.requiredString("command")
+                    let mode = try args.choice("mode", in: ["shell", "osascript"], default: "shell")
+                    let timeout = try args.int("timeout") ?? 10
+                    let result = await Shell.execute(command, mode: mode, timeout: timeout)
+                    let label = mode == "osascript" ? "AppleScript" : "Shell"
+                    return [.text("\(label) Response: \(result.output)\nStatus Code: \(result.status)")]
+                }),
+
+            Tool(
+                name: "Snapshot",
+                description: "Captures complete desktop state including: focused window, open applications, interactive elements (buttons, text fields, links, menus with coordinates), and scrollable areas. Set use_vision=True to include screenshot with numbered annotations on interactive elements. Always call this first to understand the current desktop state before taking actions.",
+                inputSchema: schema(["use_vision": boolean(default: false)]),
+                annotations: ToolAnnotations(title: "Snapshot", readOnly: true, destructive: false, idempotent: true, openWorld: false),
+                handler: { args in
+                    await desktop.snapshot(useVision: try args.bool("use_vision") ?? false)
+                }),
+
+            Tool(
+                name: "Click",
+                description: "Performs mouse clicks at specified coordinates [x, y]. Supports button types: 'left' for selection/activation, 'right' for context menus, 'middle'. Supports clicks: 0=hover only, 1=single click, 2=double click.",
+                inputSchema: schema([
+                    "loc": intPair(nullable: false),
+                    "button": string(default: "left", enum: ["left", "right", "middle"]),
+                    "clicks": integer(default: 1),
+                ], required: ["loc"]),
+                annotations: ToolAnnotations(title: "Click", readOnly: false, destructive: true, idempotent: false, openWorld: false),
+                handler: { args in
+                    guard let (x, y) = try point(args, "loc", message: locMessage) else { throw ToolError("Missing required argument 'loc'") }
+                    let button = try args.choice("button", in: ["left", "right", "middle"], default: "left")
+                    let clicks = try args.int("clicks") ?? 1
+                    try await desktop.click(x: x, y: y, button: Input.Button(rawValue: button)!, clicks: clicks)
+                    let label = [0: "Hover", 1: "Single", 2: "Double"][clicks] ?? "None"
+                    return [.text("\(label) \(button) clicked at (\(x),\(y)).")]
+                }),
+
+            Tool(
+                name: "Type",
+                description: "Types text at specified coordinates [x, y]. Set clear=True to clear existing text first. Set press_enter=True to submit after typing. Set caret_position to 'start', 'end', or 'idle' (default).",
+                inputSchema: schema([
+                    "loc": intPair(nullable: false),
+                    "text": string(),
+                    "clear": boolean(default: false),
+                    "caret_position": string(default: "idle", enum: ["start", "idle", "end"]),
+                    "press_enter": boolean(default: false),
+                ], required: ["loc", "text"]),
+                annotations: ToolAnnotations(title: "Type", readOnly: false, destructive: true, idempotent: false, openWorld: false),
+                handler: { args in
+                    guard let (x, y) = try point(args, "loc", message: locMessage) else { throw ToolError("Missing required argument 'loc'") }
+                    let text = try args.requiredString("text")
+                    try await desktop.type(
+                        x: x, y: y, text: text,
+                        caret: try args.choice("caret_position", in: ["start", "idle", "end"], default: "idle"),
+                        clear: try args.bool("clear") ?? false,
+                        pressEnter: try args.bool("press_enter") ?? false)
+                    return [.text("Typed \(text) at (\(x),\(y)).")]
+                }),
+
+            Tool(
+                name: "Scroll",
+                description: "Scrolls at coordinates [x, y] or current mouse position if loc=None. Type: vertical (default) or horizontal. Direction: up/down for vertical, left/right for horizontal. wheel_times controls scroll amount.",
+                inputSchema: schema([
+                    "loc": intPair(nullable: true),
+                    "type": string(default: "vertical", enum: ["horizontal", "vertical"]),
+                    "direction": string(default: "down", enum: ["up", "down", "left", "right"]),
+                    "wheel_times": integer(default: 1),
+                ]),
+                annotations: ToolAnnotations(title: "Scroll", readOnly: false, destructive: false, idempotent: true, openWorld: false),
+                handler: { args in
+                    let loc = try point(args, "loc", message: locMessage)
+                    let type = try args.choice("type", in: ["horizontal", "vertical"], default: "vertical")
+                    let direction = try args.choice("direction", in: ["up", "down", "left", "right"], default: "down")
+                    let times = try args.int("wheel_times") ?? 1
+                    if let message = try await desktop.scroll(loc: loc, type: type, direction: direction, wheelTimes: times) {
+                        return [.text(message)]
+                    }
+                    let at = loc.map { " at (\($0.0),\($0.1))." } ?? "."
+                    return [.text("Scrolled \(type) \(direction) by \(times) wheel times\(at)")]
+                }),
+
+            Tool(
+                name: "Move",
+                description: "Moves mouse cursor to coordinates [x, y]. Set drag=True to perform a drag-and-drop operation from current position to target coordinates.",
+                inputSchema: schema([
+                    "loc": intPair(nullable: false),
+                    "drag": boolean(default: false),
+                ], required: ["loc"]),
+                annotations: ToolAnnotations(title: "Move", readOnly: false, destructive: false, idempotent: true, openWorld: false),
+                handler: { args in
+                    guard let (x, y) = try point(args, "loc", message: "loc must be a list of exactly 2 integers [x, y]") else {
+                        throw ToolError("Missing required argument 'loc'")
+                    }
+                    if try args.bool("drag") ?? false {
+                        try await desktop.drag(toX: x, y: y)
+                        return [.text("Dragged to (\(x),\(y)).")]
+                    }
+                    Input.move(to: x, y)
+                    return [.text("Moved the mouse pointer to (\(x),\(y)).")]
+                }),
+
+            Tool(
+                name: "Shortcut",
+                description: "Executes keyboard shortcuts using key combinations separated by +. Examples: \"command+c\" (copy), \"command+v\" (paste), \"command+tab\" (switch apps), \"command+space\" (Spotlight). Note: Use \"command\" instead of \"ctrl\" on macOS.",
+                inputSchema: schema(["shortcut": string()], required: ["shortcut"]),
+                annotations: ToolAnnotations(title: "Shortcut", readOnly: false, destructive: true, idempotent: false, openWorld: false),
+                handler: { args in
+                    let shortcut = try args.requiredString("shortcut")
+                    try await desktop.shortcut(shortcut)
+                    return [.text("Pressed \(shortcut).")]
+                }),
+
+            Tool(
+                name: "Wait",
+                description: "Pauses execution for specified duration in seconds. Use when waiting for: applications to launch, UI animations to complete, content to load. Helps ensure UI is ready before next interaction.",
+                inputSchema: schema(["duration": integer()], required: ["duration"]),
+                annotations: ToolAnnotations(title: "Wait", readOnly: true, destructive: false, idempotent: true, openWorld: false),
+                handler: { args in
+                    guard let duration = try args.int("duration") else { throw ToolError("Missing required argument 'duration'") }
+                    try await Task.sleep(for: .seconds(max(0, duration)))
+                    return [.text("Waited for \(duration) seconds.")]
+                }),
+
+            Tool(
+                name: "Scrape",
+                description: "Fetch content from a URL. Performs a lightweight HTTP request and returns the page content as text.",
+                inputSchema: schema(["url": string()], required: ["url"]),
+                annotations: ToolAnnotations(title: "Scrape", readOnly: true, destructive: false, idempotent: true, openWorld: true),
+                handler: { args in
+                    [.text(try await Scrape.run(try args.requiredString("url")))]
+                }),
+
+            Tool(
+                name: "Desktop",
+                description: "Manages Mission Control desktop Spaces. mode='create' opens Mission Control and clicks 'Add Desktop' to create a new virtual desktop, verifying the space count increased before reporting success. Uses Accessibility only. Requires Accessibility permission. UI layout can vary by macOS version/locale.",
+                inputSchema: schema([
+                    "mode": string(default: "create", enum: ["create"]),
+                    "close_after": boolean(default: true),
+                    "open_delay": ["type": "number", "default": 0.9],
+                ]),
+                annotations: ToolAnnotations(title: "Desktop", readOnly: false, destructive: false, idempotent: false, openWorld: false),
+                handler: { args in
+                    let mode = try args.string("mode") ?? "create"
+                    guard mode == "create" else { return [.text("Unknown mode: \(mode). Supported modes: create.")] }
+                    let text = await Spaces.createDesktop(openDelay: try args.double("open_delay") ?? 0.9,
+                                                          closeAfter: try args.bool("close_after") ?? true)
+                    return [.text(text)]
+                }),
+
+            Tool(
+                name: "Notification",
+                description: "Sends a macOS notification banner with a message, title, optional subtitle, and optional sound.",
+                inputSchema: schema([
+                    "message": string(),
+                    "title": string(default: "Notification"),
+                    "subtitle": nullableString(),
+                    "sound": nullableString(enum: ["Glass", "Ping", "Basso", "Tink", "Funk", "Bottle", "Frog",
+                                                   "Hero", "Morse", "Pop", "Purr", "Sosumi", "Submarine"]),
+                ], required: ["message"]),
+                annotations: ToolAnnotations(title: "Notification", readOnly: false, destructive: false, idempotent: false, openWorld: false),
+                handler: { args in
+                    let text = await desktop.notify(message: try args.requiredString("message"),
+                                                    title: try args.string("title") ?? "Notification",
+                                                    subtitle: try args.string("subtitle"),
+                                                    sound: try args.string("sound"))
+                    return [.text(text)]
+                }),
+        ]
+    }
+}

@@ -1,0 +1,438 @@
+{
+  "$comment": "Tool contract shared by every desktop-mcp port: names, parameters and descriptions must match this file. Generated from the macOS port (tools/list) and checked by each port's conformance test.",
+  "tools": [
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "App"
+      },
+      "description": "Manages macOS applications with four modes: 'launch' (opens the application), 'resize' (adjusts active window size), 'move' (repositions active window), 'switch' (brings specific app into focus).",
+      "inputSchema": {
+        "properties": {
+          "mode": {
+            "default": "launch",
+            "enum": [
+              "launch",
+              "resize",
+              "move",
+              "switch"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "window_loc": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "window_size": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "type": "object"
+      },
+      "name": "App"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false,
+        "title": "Shell"
+      },
+      "description": "Execute commands on macOS. Modes: 'shell' (default) for bash/zsh commands, 'osascript' for AppleScript. Use for file system, process management, system operations, and automation scripts. SECURITY WARNING: Commands are executed with the same permissions as the terminal/application running this server. Review and understand all actions before execution, especially those involving file operations, system modifications, or external processes.",
+      "inputSchema": {
+        "properties": {
+          "command": {
+            "type": "string"
+          },
+          "mode": {
+            "default": "shell",
+            "enum": [
+              "shell",
+              "osascript"
+            ],
+            "type": "string"
+          },
+          "timeout": {
+            "default": 10,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "type": "object"
+      },
+      "name": "Shell"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Snapshot"
+      },
+      "description": "Captures complete desktop state including: focused window, open applications, interactive elements (buttons, text fields, links, menus with coordinates), and scrollable areas. Set use_vision=True to include screenshot with numbered annotations on interactive elements. Always call this first to understand the current desktop state before taking actions.",
+      "inputSchema": {
+        "properties": {
+          "use_vision": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "name": "Snapshot"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "Click"
+      },
+      "description": "Performs mouse clicks at specified coordinates [x, y]. Supports button types: 'left' for selection/activation, 'right' for context menus, 'middle'. Supports clicks: 0=hover only, 1=single click, 2=double click.",
+      "inputSchema": {
+        "properties": {
+          "button": {
+            "default": "left",
+            "enum": [
+              "left",
+              "right",
+              "middle"
+            ],
+            "type": "string"
+          },
+          "clicks": {
+            "default": 1,
+            "type": "integer"
+          },
+          "loc": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "loc"
+        ],
+        "type": "object"
+      },
+      "name": "Click"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "Type"
+      },
+      "description": "Types text at specified coordinates [x, y]. Set clear=True to clear existing text first. Set press_enter=True to submit after typing. Set caret_position to 'start', 'end', or 'idle' (default).",
+      "inputSchema": {
+        "properties": {
+          "caret_position": {
+            "default": "idle",
+            "enum": [
+              "start",
+              "idle",
+              "end"
+            ],
+            "type": "string"
+          },
+          "clear": {
+            "default": false,
+            "type": "boolean"
+          },
+          "loc": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "press_enter": {
+            "default": false,
+            "type": "boolean"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "text"
+        ],
+        "type": "object"
+      },
+      "name": "Type"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "Scroll"
+      },
+      "description": "Scrolls at coordinates [x, y] or current mouse position if loc=None. Type: vertical (default) or horizontal. Direction: up/down for vertical, left/right for horizontal. wheel_times controls scroll amount.",
+      "inputSchema": {
+        "properties": {
+          "direction": {
+            "default": "down",
+            "enum": [
+              "up",
+              "down",
+              "left",
+              "right"
+            ],
+            "type": "string"
+          },
+          "loc": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "type": {
+            "default": "vertical",
+            "enum": [
+              "horizontal",
+              "vertical"
+            ],
+            "type": "string"
+          },
+          "wheel_times": {
+            "default": 1,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "Scroll"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "Move"
+      },
+      "description": "Moves mouse cursor to coordinates [x, y]. Set drag=True to perform a drag-and-drop operation from current position to target coordinates.",
+      "inputSchema": {
+        "properties": {
+          "drag": {
+            "default": false,
+            "type": "boolean"
+          },
+          "loc": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "loc"
+        ],
+        "type": "object"
+      },
+      "name": "Move"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "Shortcut"
+      },
+      "description": "Executes keyboard shortcuts using key combinations separated by +. Examples: \"command+c\" (copy), \"command+v\" (paste), \"command+tab\" (switch apps), \"command+space\" (Spotlight). Note: Use \"command\" instead of \"ctrl\" on macOS.",
+      "inputSchema": {
+        "properties": {
+          "shortcut": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "shortcut"
+        ],
+        "type": "object"
+      },
+      "name": "Shortcut"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Wait"
+      },
+      "description": "Pauses execution for specified duration in seconds. Use when waiting for: applications to launch, UI animations to complete, content to load. Helps ensure UI is ready before next interaction.",
+      "inputSchema": {
+        "properties": {
+          "duration": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "duration"
+        ],
+        "type": "object"
+      },
+      "name": "Wait"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true,
+        "readOnlyHint": true,
+        "title": "Scrape"
+      },
+      "description": "Fetch content from a URL. Performs a lightweight HTTP request and returns the page content as text.",
+      "inputSchema": {
+        "properties": {
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
+      "name": "Scrape"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "Desktop"
+      },
+      "description": "Manages Mission Control desktop Spaces. mode='create' opens Mission Control and clicks 'Add Desktop' to create a new virtual desktop, verifying the space count increased before reporting success. Uses Accessibility only. Requires Accessibility permission. UI layout can vary by macOS version/locale.",
+      "inputSchema": {
+        "properties": {
+          "close_after": {
+            "default": true,
+            "type": "boolean"
+          },
+          "mode": {
+            "default": "create",
+            "enum": [
+              "create"
+            ],
+            "type": "string"
+          },
+          "open_delay": {
+            "default": 0.9,
+            "type": "number"
+          }
+        },
+        "type": "object"
+      },
+      "name": "Desktop"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "Notification"
+      },
+      "description": "Sends a macOS notification banner with a message, title, optional subtitle, and optional sound.",
+      "inputSchema": {
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "sound": {
+            "default": null,
+            "enum": [
+              "Glass",
+              "Ping",
+              "Basso",
+              "Tink",
+              "Funk",
+              "Bottle",
+              "Frog",
+              "Hero",
+              "Morse",
+              "Pop",
+              "Purr",
+              "Sosumi",
+              "Submarine",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subtitle": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "default": "Notification",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "type": "object"
+      },
+      "name": "Notification"
+    }
+  ]
+}
