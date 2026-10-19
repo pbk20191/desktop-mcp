@@ -23,6 +23,7 @@ public static class ToolRegistry
         "Clipboard" => new ClipboardTool(protocolTool, services.Clipboard),
         "Notification" => new NotificationTool(protocolTool, services.Toasts),
         "Scrape" => new ScrapeTool(protocolTool, services.Scrape),
+        "DisplayInventory" => new DisplayInventoryTool(protocolTool, services.Displays),
         _ => new PendingTool(protocolTool),
     };
 }

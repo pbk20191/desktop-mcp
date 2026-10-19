@@ -13,6 +13,17 @@ public static class ToolResults
             new Dictionary<string, string> { ["result"] = text }, ToolJsonContext.Default.DictionaryStringString),
     };
 
+    /// <summary>A JSON result (spec §4): the JSON as text, plus structuredContent {"result": json}.</summary>
+    public static CallToolResult Json(string json)
+    {
+        using var document = JsonDocument.Parse($"{{\"result\":{json}}}");
+        return new()
+        {
+            Content = [new TextContentBlock { Text = json }],
+            StructuredContent = document.RootElement.Clone(),
+        };
+    }
+
     public static CallToolResult Error(string toolName, string message) => new()
     {
         IsError = true,

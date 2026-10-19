@@ -48,3 +48,14 @@ SafeArrayUnaccessData
 SafeArrayDestroy
 GetDpiForSystem
 GetForegroundWindow
+// Displays (DisplayInventory, display selection; upstream uia/core.py:599-828)
+EnumDisplayMonitors
+GetMonitorInfo
+MONITORINFOEXW
+MONITORINFOF_PRIMARY
+EnumDisplayDevices
+DISPLAY_DEVICE_STATE_FLAGS
+EnumDisplaySettings
+ENUM_DISPLAY_SETTINGS_MODE
+GetDpiForMonitor
+GetSystemMetrics

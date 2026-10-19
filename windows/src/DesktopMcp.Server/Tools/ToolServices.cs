@@ -4,6 +4,7 @@ using DesktopMcp.Core.Processes;
 using DesktopMcp.Core.Scrape;
 using DesktopMcp.Core.WindowsRegistry;
 using DesktopMcp.Desktop.ClipboardAccess;
+using DesktopMcp.Desktop.Displays;
 using DesktopMcp.Desktop.Toasts;
 
 namespace DesktopMcp.Server.Tools;
@@ -21,6 +22,7 @@ public sealed record ToolServices
     public required IClipboard Clipboard { get; init; }
     public required IToastSender Toasts { get; init; }
     public required ScrapeClient Scrape { get; init; }
+    public required IDisplayProvider Displays { get; init; }
 
     public static ToolServices CreateDefault() => new()
     {
@@ -31,5 +33,6 @@ public sealed record ToolServices
         Clipboard = new SystemClipboard(),
         Toasts = new ToastSender(),
         Scrape = new ScrapeClient(),
+        Displays = new Win32Displays(),
     };
 }
