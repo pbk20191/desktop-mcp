@@ -106,11 +106,14 @@ public sealed class PowerShellRunner
         var extensions = (string.IsNullOrEmpty(pathExt) ? ShellEnvironment.FallbackPathExt : pathExt).Split(';', StringSplitOptions.RemoveEmptyEntries);
         string[] candidates = extensions.Any(e => name.EndsWith(e, StringComparison.OrdinalIgnoreCase)) ? [name] : extensions.Select(e => name + e).ToArray();
         if (!string.IsNullOrEmpty(Path.GetDirectoryName(name))) return candidates.FirstOrDefault(File.Exists);
-        foreach (var directory in (path ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries))
+        foreach (var entry in (path ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries))
         {
+            // A relative entry such as "." would resolve against the server's working directory.
+            var directory = entry.Trim('"');
+            if (!Path.IsPathFullyQualified(directory)) continue;
             foreach (var candidate in candidates)
             {
-                var full = Path.Combine(directory.Trim('"'), candidate);
+                var full = Path.Combine(directory, candidate);
                 if (File.Exists(full)) return full;
             }
         }

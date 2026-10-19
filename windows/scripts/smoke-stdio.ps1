@@ -109,9 +109,7 @@ try {
         # A grandchild of the server: the kill-on-close job must stop it when the server exits.
         Send @{ jsonrpc = '2.0'; id = 4; method = 'tools/call'; params = @{ name = 'PowerShell'; arguments = @{ command = "(Start-Process -FilePath ping.exe -ArgumentList '-n','120','127.0.0.1' -WindowStyle Hidden -PassThru).Id"; timeout = 20 } } }
         $call = Receive 4
-        if ($null -eq $call.result -or $call.result.isError -or $call.result.content[0].text -notmatch '^Response: (\d+)?
-
-Status Code: 0$') { throw "PowerShell failed: $($call | ConvertTo-Json -Depth 5)" }
+        if ($null -eq $call.result -or $call.result.isError -or $call.result.content[0].text -notmatch '^Response: (\d+)\r?\n\nStatus Code: 0$') { throw "PowerShell failed: $($call | ConvertTo-Json -Depth 5)" }
         $script:pingId = [int]$Matches[1]
 
         # The graphics stack is delay-loaded (Win2DStatic.targets): a run that never renders must not load it.
