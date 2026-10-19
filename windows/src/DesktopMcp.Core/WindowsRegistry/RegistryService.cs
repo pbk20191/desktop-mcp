@@ -18,7 +18,8 @@ public sealed partial class RegistryService
             var location = RegistryLocation.Parse(path);
             using var key = location.Open(path, writable: false);
             var valueName = ValueName(name);
-            if (!HasValue(key, valueName)) throw new RegistryCommandException($"Property {name} does not exist at path {location.ProviderPath}.");
+            // An empty name is no property at all; only "(default)" names the default value.
+            if (name.Length == 0 || !HasValue(key, valueName)) throw new RegistryCommandException($"Property {name} does not exist at path {location.ProviderPath}.");
             // Get-ItemProperty | Select-Object -ExpandProperty: one line per item, then Python's strip().
             return $"Registry value [{path}] \"{name}\" = {ExpandedText(key.GetValue(valueName)).Trim()}";
         }
@@ -37,6 +38,8 @@ public sealed partial class RegistryService
             var location = RegistryLocation.Parse(path);
             // Upstream creates the key first, then converts and sets the value.
             using var key = location.CreateOrOpen();
+            // pwsh rejects the empty name when binding Set-ItemProperty, after New-Item has created the key.
+            if (name.Length == 0) throw new RegistryCommandException("Cannot bind argument to parameter 'Name' because it is an empty string.");
             var (data, kind) = Convert(value, type);
             key.SetValue(ValueName(name), data, kind);
             return $"Registry value [{path}] \"{name}\" set to \"{value}\" (type: {type}).";
@@ -69,12 +72,16 @@ public sealed partial class RegistryService
         try
         {
             var location = RegistryLocation.Parse(path);
-            using (location.Open(path, writable: false)) { }
+            if (location.SubKey.Length == 0) throw new RegistryCommandException(HiveDeleteRefused);
+            using (var key = location.Open(path, writable: false))
+            {
+                if (key.Name.Equals(location.HiveName, StringComparison.OrdinalIgnoreCase)) throw new RegistryCommandException(HiveDeleteRefused);
+            }
             using var root = RegistryKey.OpenBaseKey(location.Hive, RegistryView.Default);
             root.DeleteSubKeyTree(location.SubKey);
             return $"Registry key [{path}] deleted.";
         }
-        catch (Exception e) when (IsRegistryError(e) || e is ArgumentException)
+        catch (Exception e) when (IsRegistryError(e))
         {
             return $"Error deleting registry key: Remove-Item: {e.Message}";
         }
@@ -187,13 +194,16 @@ public sealed partial class RegistryService
         _ => System.Convert.ToString(value, CultureInfo.InvariantCulture) ?? "",
     };
 
+    // Only "(default)" names the default value; callers reject the empty name with pwsh's texts.
     private static string ValueName(string name) => name.Equals("(default)", StringComparison.OrdinalIgnoreCase) ? "" : name;
 
     private static bool HasValue(RegistryKey key, string valueName) =>
         key.GetValueNames().Contains(valueName, StringComparer.OrdinalIgnoreCase);
 
     private static bool IsRegistryError(Exception e) =>
-        e is RegistryCommandException or SecurityException or UnauthorizedAccessException or IOException;
+        e is RegistryCommandException or SecurityException or UnauthorizedAccessException or IOException or ArgumentException;
+
+    private const string HiveDeleteRefused = "Cannot delete a registry hive's subtree.";
 
     [GeneratedRegex("^([+-]?[0-9]+|0[xX][0-9a-fA-F]+)$")]
     private static partial Regex NumberPattern();

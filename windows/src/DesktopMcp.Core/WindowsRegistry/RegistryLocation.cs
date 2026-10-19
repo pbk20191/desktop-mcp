@@ -25,6 +25,9 @@ internal sealed record RegistryLocation(RegistryHive Hive, string HiveName, stri
 
     public static RegistryLocation Parse(string path)
     {
+        // Win32 ends a key name at a NUL, so "<key>\<NUL>" would name <key> itself (and "HKCU:\<NUL>" the hive).
+        if (path.Any(c => c < ' '))
+            throw new RegistryCommandException($"Cannot find path '{path}' because it does not exist.");
         var normalized = path.Replace('/', '\\');
         foreach (var prefix in new[] { @"Microsoft.PowerShell.Core\Registry::", "Registry::" })
         {
@@ -56,11 +59,14 @@ internal sealed record RegistryLocation(RegistryHive Hive, string HiveName, stri
         }
     }
 
-    /// <summary>upstream's "if (-not (Test-Path ...)) { New-Item ... -Force }": the key, created when missing.</summary>
+    /// <summary>
+    /// upstream's "if (-not (Test-Path ...)) { New-Item ... -Force }": the key, created when missing. An existing key
+    /// is opened for writing first, so a denied key fails with the SecurityException text Set-ItemProperty prints.
+    /// </summary>
     public RegistryKey CreateOrOpen()
     {
         var root = RegistryKey.OpenBaseKey(Hive, RegistryView.Default);
         if (SubKey.Length == 0) return root;
-        using (root) return root.CreateSubKey(SubKey, writable: true);
+        using (root) return root.OpenSubKey(SubKey, writable: true) ?? root.CreateSubKey(SubKey, writable: true);
     }
 }
