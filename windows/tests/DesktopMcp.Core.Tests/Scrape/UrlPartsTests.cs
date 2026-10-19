@@ -20,6 +20,9 @@ public class UrlPartsTests
     [InlineData("http://x?y@z", "http", "x")]
     [InlineData("http://x#a@b", "http", "x")]
     [InlineData("http://H%41/", "http", "h%41")]
+    [InlineData(@"http:\\127.0.0.1/", "http", null)]
+    [InlineData(@"http:/\127.0.0.1/", "http", null)]
+    [InlineData(@"http://evil.com\@127.0.0.1/", "http", "127.0.0.1")]
     [InlineData("javascript:alert(1)", "javascript", null)]
     public void SchemeAndHostnameFollowUrlsplit(string url, string scheme, string? hostname)
     {

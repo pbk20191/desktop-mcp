@@ -25,12 +25,15 @@ public static class AddressPolicy
     private static readonly IpNetwork[] V6Other = Networks(
         "::1/128", "fe80::/10", "ff00::/8", "::/8", "100::/8", "200::/7", "400::/6", "800::/5", "1000::/4", "4000::/3", "6000::/3",
         "8000::/3", "a000::/3", "c000::/3", "e000::/4", "f000::/5", "f800::/6", "fe00::/9", "::/128");
+    // Stricter than upstream on purpose: CGNAT (cloud metadata such as 100.100.100.200, tailnet peers) and deprecated site-local.
+    private static readonly IpNetwork[] Stricter = Networks("100.64.0.0/10", "fec0::/10");
     private static readonly IpNetwork[] FakeIpRanges = Networks("198.18.0.0/15", "2001:2::/48");
 
-    /// <summary>Python's is_private, is_loopback, is_link_local, is_multicast, is_reserved or is_unspecified.</summary>
+    /// <summary>Python's is_private, is_loopback, is_link_local, is_multicast, is_reserved or is_unspecified, plus the Stricter ranges.</summary>
     public static bool IsBlocked(IPAddress address)
     {
         if (address.IsIPv4MappedToIPv6) address = address.MapToIPv4();
+        if (In(Stricter, address)) return true;
         return address.AddressFamily switch
         {
             AddressFamily.InterNetwork => (In(V4Private, address) && !In(V4PrivateExceptions, address)) || In(V4Other, address),

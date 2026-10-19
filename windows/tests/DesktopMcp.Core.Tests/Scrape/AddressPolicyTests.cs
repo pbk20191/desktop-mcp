@@ -29,17 +29,17 @@ public class AddressPolicyTests
     [InlineData("64:ff9b::808:808")]
     [InlineData("::ffff:127.0.0.1")]
     [InlineData("::ffff:10.0.0.1")]
+    [InlineData("100.64.0.1")]
+    [InlineData("fec0::1")]
     public void BlockedAddresses(string address) => Assert.True(AddressPolicy.IsBlocked(IPAddress.Parse(address)), address);
 
     [Theory]
     [InlineData("8.8.8.8")]
     [InlineData("1.1.1.1")]
-    [InlineData("100.64.0.1")]
     [InlineData("192.0.0.9")]
     [InlineData("2001:4860:4860::8888")]
     [InlineData("2001:20::1")]
     [InlineData("::ffff:8.8.8.8")]
-    [InlineData("fec0::1")]
     public void AllowedAddresses(string address) => Assert.False(AddressPolicy.IsBlocked(IPAddress.Parse(address)), address);
 
     /// <summary>
@@ -47,6 +47,8 @@ public class AddressPolicyTests
     /// is_link_local, is_multicast, is_reserved or is_unspecified) as computed by CPython 3.13.15, whose ipaddress
     /// tables match 3.14's. IPv4-mapped addresses (::ffff:0:0/96) follow their IPv4 address; IPv4-compatible (::/96),
     /// SIIT (::ffff:0:0:0/96) and NAT64 (64:ff9b::/96) addresses fall in the reserved ::/8 whatever they embed.
+    /// Deliberately stricter than Python: 100.64.0.0/10 and fec0::/10 (rows 100.64.0.0, 100.127.255.255, ::ffff:100.64.0.1,
+    /// fec0::1, feff::1) are blocked.
     /// </summary>
     [Theory]
     [InlineData("0.0.0.0", true)]
@@ -57,8 +59,8 @@ public class AddressPolicyTests
     [InlineData("10.255.255.255", true)]
     [InlineData("11.0.0.0", false)]
     [InlineData("100.63.255.255", false)]
-    [InlineData("100.64.0.0", false)]
-    [InlineData("100.127.255.255", false)]
+    [InlineData("100.64.0.0", true)]
+    [InlineData("100.127.255.255", true)]
     [InlineData("100.128.0.0", false)]
     [InlineData("126.255.255.255", false)]
     [InlineData("127.0.0.0", true)]
@@ -122,7 +124,7 @@ public class AddressPolicyTests
     [InlineData("::ffff:224.0.0.1", true)]
     [InlineData("::ffff:240.0.0.1", true)]
     [InlineData("::ffff:255.255.255.255", true)]
-    [InlineData("::ffff:100.64.0.1", false)]
+    [InlineData("::ffff:100.64.0.1", true)]
     [InlineData("::ffff:192.0.0.9", false)]
     [InlineData("::ffff:8.8.8.8", false)]
     [InlineData("::ffff:198.18.0.1", true)]
@@ -169,8 +171,8 @@ public class AddressPolicyTests
     [InlineData("fe00::1", true)]
     [InlineData("fe80::1", true)]
     [InlineData("febf::1", true)]
-    [InlineData("fec0::1", false)]
-    [InlineData("feff::1", false)]
+    [InlineData("fec0::1", true)]
+    [InlineData("feff::1", true)]
     [InlineData("ff00::1", true)]
     [InlineData("ff02::1", true)]
     [InlineData("ffff::1", true)]
