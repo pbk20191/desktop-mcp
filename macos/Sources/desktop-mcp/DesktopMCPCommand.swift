@@ -11,10 +11,11 @@ struct DesktopMCPCommand: AsyncParsableCommand {
         abstract: "MCP server for macOS desktop automation.",
         discussion: """
         Permissions are granted to the app that launches this binary (Claude, your terminal, ...) \
-        under System Settings > Privacy & Security > Accessibility and > Screen Recording.
+        under System Settings > Privacy & Security > Accessibility and > Screen Recording. \
+        Installed as a Launch Agent (`install`), desktop-mcp holds them itself.
         """,
         version: DesktopMCP.version,
-        subcommands: [Serve.self, Auth.self, Permissions.self],
+        subcommands: [Serve.self, Auth.self, Permissions.self, Install.self, Uninstall.self, Connect.self],
         defaultSubcommand: Serve.self
     )
 }
@@ -295,11 +296,12 @@ struct Auth: ParsableCommand {
         print("  \(executable) serve")
         let headers = ["Authorization": "Bearer \(key)"]
         if transport == .sse {
-            print("\n─── Claude Desktop config (SSE) ───")
+            print("\n─── Client config (SSE) ───")
             print(clientConfig(ClientConfig.Server(type: "sse", url: "\(scheme)://\(host):\(port)/sse", headers: headers)))
         } else {
-            print("\n─── Claude Desktop config (Streamable HTTP) ───")
+            print("\n─── Client config (Streamable HTTP) ───")
             print(clientConfig(ClientConfig.Server(type: "http", url: "\(scheme)://\(host):\(port)/mcp/", headers: headers)))
+            print(Install.claudeDesktopNote(executable: executable, url: "\(scheme)://\(host):\(port)/mcp/", authKey: key))
         }
     }
 
@@ -316,6 +318,7 @@ struct ClientConfig: Encodable {
         var args: [String]?
         var url: String?
         var headers: [String: String]?
+        var env: [String: String]?
     }
 
     var mcpServers: [String: Server]
@@ -377,7 +380,8 @@ struct Permissions: ParsableCommand {
     static func checkAccessibility(prompt: Bool) -> Bool {
         let granted = AX.isTrusted(prompt: prompt)
         if !granted {
-            log("Accessibility permission is not granted. Grant it to the app that launched desktop-mcp in "
+            log("Accessibility permission is not granted. Grant it to the app that launched desktop-mcp "
+                + "(or to desktop-mcp itself when it runs as a Launch Agent) in "
                 + "System Settings > Privacy & Security > Accessibility, then restart that app.")
         }
         return granted

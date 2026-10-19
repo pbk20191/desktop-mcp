@@ -29,12 +29,12 @@ With Claude Code: `claude mcp add desktop-mcp /absolute/path/macos/dist/desktop-
 
 ### Permissions
 
-Permissions are granted to **the app that launches the binary** (Claude Desktop, Terminal, VS Code, and so on).
+Permissions are granted to **the app that launches the binary** (Claude Desktop, Terminal, VS Code, and so on). To have desktop-mcp hold them itself, install it as a Launch Agent (see [Running as a Launch Agent](#running-as-a-launch-agent)): launchd makes it the responsible process, so System Settings lists "desktop-mcp" by name and the grant works for every client that connects over HTTP.
 
 - System Settings › Privacy & Security › **Accessibility**: required
 - System Settings › Privacy & Security › **Screen Recording**: needed only for `Snapshot(use_vision=true)`
 
-Run `desktop-mcp permissions` to check the current state and trigger the system prompts.
+Run `desktop-mcp permissions` to check the current state and trigger the system prompts. The grant is tied to the code signature: an ad-hoc signed binary is identified by its hash, so every rebuild needs a new grant. Sign with a stable identity to keep it (`CODESIGN_IDENTITY="My Codesign Cert" macos/scripts/build-release.sh`, using a code signing certificate made in Keychain Access, or a Developer ID).
 
 ## Tools
 
@@ -59,6 +59,9 @@ Run `desktop-mcp permissions` to check the current state and trigger the system 
 desktop-mcp [serve] [options]      # run the server (default command)
 desktop-mcp auth [options]         # generate an auth key (+ TLS cert) into ~/.desktop-mcp/config.toml
 desktop-mcp permissions            # check / request permissions
+desktop-mcp install [options]      # run the HTTP server as a launchd Launch Agent from login
+desktop-mcp uninstall              # stop it and remove the agent
+desktop-mcp connect [--url] [--auth-key]   # stdio bridge to the HTTP server, for Claude Desktop
 ```
 
 `serve` options. As in the original, a value given on the command line (or through its environment variable) wins, then `config.toml`, then the default.
@@ -85,6 +88,22 @@ desktop-mcp serve        # uses config.toml → http(s)://127.0.0.1:8000/mcp
 ```
 
 `auth` generates a key, saves it to `config.toml` and prints the client config JSON. `--with-tls` creates a locally trusted certificate with mkcert when installed, otherwise a self-signed one with the `openssl` that ships with macOS.
+
+### Running as a Launch Agent
+
+```bash
+desktop-mcp install                                   # streamable-http on 127.0.0.1:8000 (or the next free port)
+desktop-mcp install --transport sse --port 9000       # or choose; --force reinstalls
+desktop-mcp uninstall
+```
+
+As in the original, `install` writes `~/Library/LaunchAgents/com.desktop-mcp.server.plist` (`RunAtLoad`, `KeepAlive`) pointing at this binary with `serve --transport … --host … --port …`, loads it with `launchctl bootstrap`, and prints the client config to connect with. Logs go to `~/.desktop-mcp/server.log` and `server.error.log`. Other `serve` settings (auth key from `auth`, TLS, allowlist, excluded tools) still come from `config.toml`; stdio cannot be installed as a service. Because launchd is the parent, the agent asks for Accessibility on its first start under its own name (see [Permissions](#permissions)). Install from the binary's permanent location, for example `~/.local/bin/desktop-mcp install`, since the plist records that path.
+
+Claude Code connects directly (`claude mcp add --transport http desktop-mcp http://127.0.0.1:8000/mcp/ --header "Authorization: Bearer <key>"`). Claude Desktop's `claude_desktop_config.json` accepts stdio servers only and skips an HTTP entry as invalid, so give it `desktop-mcp connect` as a stdio server: the bridge reads the agent's address from its plist and the auth key from `config.toml`, posts each stdin line to `/mcp` and writes the replies back one per line, and asks for no permissions of its own. `--url` and `--auth-key` point it at another server. `install` prints the snippet:
+
+```json
+{ "mcpServers": { "desktop-mcp": { "command": "/Users/you/.local/bin/desktop-mcp", "args": ["connect"] } } }
+```
 
 Endpoints:
 
@@ -118,7 +137,8 @@ As in the original, anonymous usage events go to the original project's (CursorT
 
 ## Differences from the original
 
-- **launchd installation (`install` / `uninstall`) is not ported.**
+- **`install` finds the binary by its own path**, not by searching `$PATH` for `macos-mcp` or `uvx`, and prints the client config and the matching `claude mcp add` line afterwards.
+- **`connect` is a built-in stdio-to-HTTP bridge**, replacing the `mcp-remote` (Node) bridge the original's README suggests for Claude Desktop.
 - **`Type` doesn't depend on the input source.** The original sent US-layout key codes, so typing English while the Korean input source was active produced Hangul jamo. This port injects every character as Unicode, and while typing it temporarily switches to an ASCII layout and restores the previous input source afterwards.
 - **`Click` with `clicks=2` sends a real double-click** (click state 1 followed by 2).
 - **`Scrape` parses HTML with the system parser** (libxml2 through Foundation's `XMLDocument`), so broken markup is repaired the way libxml2 does it rather than the way Python's `html.parser` does, and HTML 4 entities are decoded while HTML5-only names (such as `&check;`) are left as written. The contents of `<script>` and `<style>` are dropped; the original's markdownify `strip` option kept their text.
