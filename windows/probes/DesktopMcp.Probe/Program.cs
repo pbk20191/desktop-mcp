@@ -2,11 +2,12 @@ using System.Diagnostics;
 using DesktopMcp.Desktop.Dispatching;
 using DesktopMcp.Probe;
 
-// AOT probes for P0. Usage: desktop-mcp-probe dispatcher
+// AOT probes for P0. Usage: desktop-mcp-probe dispatcher | imaging [out.png]
 var command = args.Length > 0 ? args[0] : "dispatcher";
 var ok = command switch
 {
     "dispatcher" => await ProbeDispatcherAsync(),
+    "imaging" => await ProbeImagingAsync(args.Length > 1 ? args[1] : "probe-imaging.png"),
     _ => Fail($"unknown probe '{command}'"),
 };
 return ok ? 0 : 1;
@@ -22,6 +23,27 @@ static async Task<bool> ProbeDispatcherAsync()
     Console.WriteLine($"dispatcher: started+invoked in {clock.ElapsedMilliseconds} ms, onThread={onThread}, ticks={ticks}");
     var hookOk = await HookProbe.RunAsync(dispatcher);
     return onThread && ticks >= 3 && hookOk;
+}
+
+static async Task<bool> ProbeImagingAsync(string path)
+{
+    DesktopMcp.Desktop.AppRuntime.EnsureInitialized();
+    const int width = 1920, height = 1080;
+    var bgra = new byte[width * height * 4];
+    for (var y = 0; y < height; y++)
+    for (var x = 0; x < width; x++)
+    {
+        var i = (y * width + x) * 4;
+        bgra[i] = (byte)x; bgra[i + 1] = (byte)y; bgra[i + 2] = 0x40; bgra[i + 3] = 0xFF;
+    }
+    var annotations = Enumerable.Range(0, 40)
+        .Select(n => new DesktopMcp.Desktop.Imaging.Annotation(new(40 + n % 8 * 230, 60 + n / 8 * 200, 200 + n % 8 * 230, 200 + n / 8 * 200), n.ToString()))
+        .ToArray();
+    var clock = Stopwatch.StartNew();
+    var png = await new DesktopMcp.Desktop.Imaging.Win2DRenderer().RenderPngAsync(new(width, height, bgra), 0.75, annotations);
+    File.WriteAllBytes(path, png);
+    Console.WriteLine($"imaging: {png.Length / 1024} KB PNG in {clock.ElapsedMilliseconds} ms -> {Path.GetFullPath(path)}");
+    return png.Length > 0;
 }
 
 static bool Fail(string message) { Console.Error.WriteLine(message); return false; }

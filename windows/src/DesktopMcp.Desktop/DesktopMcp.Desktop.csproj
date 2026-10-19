@@ -2,7 +2,13 @@
   <PropertyGroup>
     <RootNamespace>DesktopMcp.Desktop</RootNamespace>
     <DisableRuntimeMarshalling>true</DisableRuntimeMarshalling>
+    <!-- Compiles the SDK's Release/Runtime version constants (used by AppRuntime) into this assembly. -->
+    <WindowsAppSdkIncludeVersionInfo>true</WindowsAppSdkIncludeVersionInfo>
   </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" />
+    <PackageReference Include="Microsoft.Graphics.Win2D" />
+  </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\DesktopMcp.Core\DesktopMcp.Core.csproj" />
     <InternalsVisibleTo Include="DesktopMcp.Desktop.Tests" />
