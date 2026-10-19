@@ -105,6 +105,8 @@ public final class HTTPApp: Sendable {
         public var sessionByteBudget: Int = 64 * 1024 * 1024
         /// Live sessions at most; one more evicts the least recently used idle one.
         public var maxSessions: Int = 64
+        /// Logs session lifecycle: created, ended (and why), `GET` stream opened and closed.
+        public var debug = false
 
         public init(authKey: String? = nil, ipAllowlist: [IPNetwork]? = nil, oauth: OAuthService? = nil) {
             self.authKey = authKey
@@ -135,7 +137,7 @@ public final class HTTPApp: Sendable {
 
     /// Test hook: ends every session as eviction would.
     func evictAllSessions() async {
-        await sessions.endAll()
+        await sessions.endAll(reason: .idle)
     }
 
     /// Test hook: the server of a live session, to send it server-initiated messages.
@@ -228,7 +230,8 @@ public final class HTTPApp: Sendable {
                                            extraHeaders: ["Allow": "POST"]))
             }
             // Sessions are opt-in: only an `initialize` that accepts SSE gets one.
-            if Self.isInitialize(request.body), request.header("accept")?.contains("text/event-stream") == true {
+            // Accept first: a JSON-only client's body is then parsed once, by the transport.
+            if request.header("accept")?.contains("text/event-stream") == true, Self.isInitialize(request.body) {
                 return await mcpSessionCreate(request)
             }
             return await mcpPost(request)
@@ -276,10 +279,11 @@ public final class HTTPApp: Sendable {
         return (try? JSONDecoder().decode(Probe.self, from: body))?.method == "initialize"
     }
 
-    /// The request as a session's transport sees it: without `Last-Event-ID` (resumability is
-    /// not offered, and the SDK would take the client's first `GET` for a resume of a finished
-    /// stream instead of the standalone one), and with a fresh `RequestHandle` naming the tool
-    /// call it may start, replacing any value the client sent.
+    /// The request as a session's transport sees it: without the client's `Last-Event-ID`
+    /// (resumability is not offered to clients, and the SDK would take a client's first `GET`
+    /// for a resume of a finished stream instead of the standalone one; `SessionStore` adds its
+    /// own to re-attach a re-opened `GET`), and with a fresh `RequestHandle` naming the tool call
+    /// it may start, replacing any value the client sent.
     static func sessionRequest(_ request: HTTPRequest, handle: String) -> MCP.HTTPRequest {
         var headers = request.headers
         headers["last-event-id"] = nil
@@ -296,7 +300,7 @@ public final class HTTPApp: Sendable {
         else { return Self.convert(response) }
         if Task.isCancelled {
             // The client left before it could learn the session id: nobody can use the session.
-            await sessions.end(id)
+            await sessions.end(id, reason: .abandoned)
             return Self.clientClosedRequest
         }
         return Self.convert(response, ended: requestEnded(sessionID: id, handle: handle))

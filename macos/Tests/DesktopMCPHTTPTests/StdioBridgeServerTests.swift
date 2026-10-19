@@ -203,11 +203,15 @@ final class StdioBridgeServerTests: XCTestCase {
         let firstServer = await app.sessionServer(id: first)
         try await notifyUntilForwarded(server: XCTUnwrap(firstServer), collected: collected, count: 1)
 
+        // Notifications still on their way from the first session land before the baseline,
+        // so only one from the second session can satisfy the count below.
+        try await Task.sleep(for: .milliseconds(300))
+        let baseline = await forwardedNotifications(collected)
         await app.evictAllSessions()
         pipe.fileHandleForWriting.write(Data(Self.ping(id: 2).utf8 + [0x0A]))
         let second = try await session(of: bridge, other: first)
         let secondServer = await app.sessionServer(id: second)
-        try await notifyUntilForwarded(server: XCTUnwrap(secondServer), collected: collected, count: 2)
+        try await notifyUntilForwarded(server: XCTUnwrap(secondServer), collected: collected, count: baseline + 1)
 
         try pipe.fileHandleForWriting.close()
         await running.value
@@ -274,16 +278,18 @@ final class StdioBridgeServerTests: XCTestCase {
     /// Server-initiated messages travel on the GET stream, which the bridge opens on its own
     /// once it has a session id; nothing is replayed, so repeat until one comes through.
     func notifyUntilForwarded(server: MCP.Server, collected: Collected, count: Int) async throws {
-        func forwarded() async -> Int {
-            await collected.lines.filter { (try? JSON.parse($0)["method"]?.stringValue) == "notifications/tools/list_changed" }.count
-        }
         let deadline = Date().addingTimeInterval(2)
-        while await forwarded() < count, Date() < deadline {
+        while await forwardedNotifications(collected) < count, Date() < deadline {
             try await server.notify(ToolListChangedNotification.message())
             try await Task.sleep(for: .milliseconds(100))
         }
-        let seen = await forwarded()
+        let seen = await forwardedNotifications(collected)
         XCTAssertGreaterThanOrEqual(seen, count)
+    }
+
+    /// The `list_changed` notifications the bridge has written so far.
+    func forwardedNotifications(_ collected: Collected) async -> Int {
+        await collected.lines.filter { (try? JSON.parse($0)["method"]?.stringValue) == "notifications/tools/list_changed" }.count
     }
 
     actor Collected {

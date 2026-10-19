@@ -200,6 +200,7 @@ struct Serve: AsyncParsableCommand {
                                           clientID: oauth.clientID, clientSecret: oauth.clientSecret)
         }
         settings.sessionIdleTimeout = plan.sessionTimeout
+        settings.debug = debug
         let app = HTTPApp(registry: registry, settings: settings)
         let tls = plan.tls.map { NIOHTTPServer.TLSFiles(certificate: $0.certificate, privateKey: $0.privateKey) }
         let listening = try await NIOHTTPServer.bind(host: plan.host, port: plan.port, tls: tls)

@@ -373,6 +373,24 @@ final class HTTPAppTests: XCTestCase {
         XCTAssertEqual(ping.status, 404)
     }
 
+    func testTheSweepEndsASessionOverBudgetFromGetTrafficAlone() async throws {
+        let app = try await app { $0.sessionByteBudget = 20_000 }
+        defer { Task { await app.shutdown() } }
+        let id = try await session(app)
+        let get = await app.handle(inSession(id, "", method: "GET"))
+        XCTAssertEqual(get.status, 200)
+        // Server-initiated messages only: no request ends, so only the sweep can notice.
+        let sessionServer = await app.sessionServer(id: id)
+        let server = try XCTUnwrap(sessionServer)
+        for _ in 0..<400 { try await server.notify(ToolListChangedNotification.message()) }
+        var count = await app.sessions.count
+        XCTAssertEqual(count, 1)
+        // Not idle by the clock (the timeout is 30 minutes): ended for the budget.
+        await app.sessions.sweep(now: Date())
+        count = await app.sessions.count
+        XCTAssertEqual(count, 0)
+    }
+
     func testSessionCapEvictsIdleLRUAndRefusesWhenBusy() async throws {
         let app = try await app { $0.maxSessions = 2 }
         defer { Task { await app.shutdown() } }
@@ -410,7 +428,7 @@ final class HTTPAppTests: XCTestCase {
         // The socket layer consumes the body in a task and cancels it when the peer closes.
         guard case .stream(let droppedBody) = dropped.body else { return XCTFail("not a stream") }
         let reader = Task { for await _ in droppedBody {} }
-        let keptPayloads = Task { try await sseData(kept) }
+        let keptPayloads = Task { try await sseData(kept, timeout: 10) }
         try await Task.sleep(for: .milliseconds(200))
         let cancelled = Date()
         reader.cancel()
@@ -596,14 +614,37 @@ final class HTTPAppTests: XCTestCase {
     }
 }
 
-/// The non-empty `data` payloads of a `.stream` body, read until the stream ends.
-func sseData(_ response: HTTPResponse) async throws -> [Value] {
+struct StreamTimeout: Error, CustomStringConvertible {
+    let seconds: TimeInterval
+    var description: String { "the stream did not end within \(seconds) s" }
+}
+
+/// The non-empty `data` payloads of a `.stream` body, read until the stream ends. A stream
+/// still open after `timeout` stops being read (which cancels it) and fails the test.
+func sseData(_ response: HTTPResponse, timeout: TimeInterval = 10,
+             file: StaticString = #filePath, line: UInt = #line) async throws -> [Value] {
     guard case .stream(let stream) = response.body else {
-        XCTFail("not a stream: \(response.status) \(response.bodyText ?? "")")
+        XCTFail("not a stream: \(response.status) \(response.bodyText ?? "")", file: file, line: line)
         return []
     }
-    var text = ""
-    for await chunk in stream { text += chunk }
+    let text = try await withThrowingTaskGroup(of: String?.self) { group in
+        group.addTask {
+            var text = ""
+            for await chunk in stream { text += chunk }
+            return text
+        }
+        group.addTask {
+            try await Task.sleep(for: .seconds(timeout))
+            return nil
+        }
+        let first = try await group.next() ?? nil
+        group.cancelAll()
+        return first
+    }
+    guard let text else {
+        XCTFail(StreamTimeout(seconds: timeout).description, file: file, line: line)
+        throw StreamTimeout(seconds: timeout)
+    }
     return try SSE.dataPayloads(text).map { try JSON.parse($0) }
 }
 
