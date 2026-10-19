@@ -51,6 +51,8 @@ Tools split into two groups, which matters for headless use:
 ## Principles shared by all ports
 
 - No runtime dependencies. Build-time packages compiled into the binary are fine.
+  The Windows port is an exception: it requires the Windows App SDK runtime (user decision, for
+  Win2D).
 - One root task per process; servers, telemetry and signal handling are its children, and the
   process exits by returning, never by calling `exit()`.
 - System frameworks over hand-rolled parsers and protocol code where the platform has them.

@@ -11,7 +11,8 @@ Ship `windows/`, a port of CursorTouch/Windows-MCP that reaches full parity with
 tools, the `serve`/`install`/`uninstall`/`auth` CLI, the `config.toml` format, the stdio,
 Streamable HTTP and legacy HTTP+SSE transports, bearer auth, IP allowlist, CORS, TLS, OAuth 2.0 +
 PKCE, the desktop-control feature and telemetry. It ships as one NativeAOT `desktop-mcp.exe` per
-architecture (win-x64, win-arm64) that needs no runtime, Python, PowerShell 5.1 or external tools.
+architecture (win-x64, win-arm64). It needs the Windows App SDK 2.5 runtime, but no Python,
+PowerShell 5.1 or other external tools.
 
 Parity means the tool **contract** (names, parameters, schemas, descriptions, annotations) matches
 upstream exactly. Tool **output text** and **behaviour** match upstream except where this document
@@ -25,16 +26,17 @@ environment variables `DESKTOP_MCP_*` in place of `WINDOWS_MCP_*`. `ANONYMIZED_T
 
 | Topic | Decision | Why |
 |---|---|---|
-| Language | C# on .NET 10 (LTS), NativeAOT | Schannel TLS and IOCP sockets come from the platform; probes showed every needed area works under AOT with zero trim/AOT warnings. |
+| Language | C# on .NET 10 (LTS), NativeAOT | Schannel TLS and IOCP sockets come from the platform; probes showed every needed area works under AOT with zero trim/AOT warnings. The Release `desktop-mcp.exe` is 9.8 MB (win-x64) and 10.1 MB (win-arm64) with Win2D and the Windows App SDK; it was 8.4 MB and 8.6 MB before the Desktop project referenced them. |
 | Win32/COM bindings | CsWin32 with `comInterop.useComSourceGenerators` (`[GeneratedComInterface]`) | AOT-safe; generates every UIA interface we need. `Interop.UIAutomationClient` relies on built-in COM interop, which NativeAOT does not support. |
-| WinRT | CsWinRT through the `net10.0-windows10.0.19041.0` TFM | Toasts, `DispatcherQueue`, `Windows.Graphics.Capture`. |
+| WinRT | CsWinRT through the `net10.0-windows10.0.22621.0` TFM | Toasts, `DispatcherQueue`, `Windows.Graphics.Capture`. |
 | MCP protocol | Official MCP C# SDK (`ModelContextProtocol`, `.AspNetCore`) | Protocol versions, sampling and cancellation come from the SDK. Accepted cost: the wire serialisation is the SDK's (field order, escaping) and the legacy SSE message path is `/message`. |
 | HTTP | Kestrel via `WebApplication.CreateSlimBuilder` | AOT-supported; HTTP/1.1 + HTTP/2 over Schannel with ALPN. HttpListener is ruled out (urlacl and `netsh http add sslcert` need admin). |
 | Tool contract | Per-port: `spec/macos/tools.json`, `spec/windows/tools.json` | The upstream servers expose different tool sets. |
-| Abstraction level | Prefer WinRT and libraries over raw Win32 where an AOT-friendly option exists | Screen capture uses Windows.Graphics.Capture; imaging and drawing use ImageSharp. UIA, input injection, hooks, display enumeration and the clipboard stay on thin CsWin32 wrappers because no AOT-friendly higher-level option exists. |
+| Abstraction level | Prefer WinRT and libraries over raw Win32 where an AOT-friendly option exists | Screen capture uses Windows.Graphics.Capture; imaging and drawing use Win2D (`Microsoft.Graphics.Win2D` 1.4.0). ImageSharp was dropped: 4.x refuses a Release build without a Six Labors license key, and the key-free 3.1.x / 2.1.x line fails restore with known-vulnerability errors (NU1902/NU1903). UIA, input injection, hooks, display enumeration and the clipboard stay on thin CsWin32 wrappers because no AOT-friendly higher-level option exists. |
+| Windows App SDK runtime | Windows App SDK 2.5.1 (`Microsoft.WindowsAppSDK`), framework-dependent and unpackaged; the user's machine must have the 2.5 runtime installed | Win2D is part of the WinUI 3 family and needs it (user decision, 2026-10-19). `AppRuntime.EnsureInitialized()` starts the runtime through the bootstrapper; the SDK's auto-initializer is off. If the runtime is missing, it throws with an install hint. |
 | Threads | One dedicated thread, driven by a system `DispatcherQueue` | See §5. |
 | Architectures | win-x64 and win-arm64 | NativeAOT cross-compiles both from an x64 host. |
-| Minimum OS | Windows 10 2004 (build 19041) | Needed for `WDA_EXCLUDEFROMCAPTURE`; matches the TFM. |
+| Minimum OS | Windows 10 2004 (build 19041) | Needed for `WDA_EXCLUDEFROMCAPTURE`. The TFM is `net10.0-windows10.0.22621.0` with `SupportedOSPlatformVersion` 10.0.19041.0, because `IsBorderRequired` exists only in the 22621 projection. |
 
 ## 3. Repository layout
 
@@ -45,8 +47,11 @@ desktop-mcp/
     windows/tools.json        # upstream's 21 tools, see §4
   windows/
     global.json               # pins the .NET 10 SDK
-    Directory.Build.props     # TFM, PublishAot, Nullable, TreatWarningsAsErrors (IL2xxx/IL3xxx included)
+    Directory.Build.props     # TFM, default RuntimeIdentifier (win-<arch>), Windows App SDK properties,
+                              # PublishAot, Nullable, TreatWarningsAsErrors (IL2xxx/IL3xxx included)
     DesktopMcp.slnx
+    probes/
+      DesktopMcp.Probe/       # AOT probe exe (dispatcher, imaging, capture); not shipped
     src/
       DesktopMcp/             # the exe: CLI, composition root, app.manifest (PerMonitorV2 DPI)
       DesktopMcp.Core/        # platform-light logic: Config, ServePlan, Security, OAuth, Analytics,
@@ -54,7 +59,7 @@ desktop-mcp/
                               # Processes, text formatting (tables, tree renderer)
       DesktopMcp.Desktop/     # the only project that references CsWin32: Uia, Tree, Input, Capture,
                               # Imaging, Displays, VirtualDesktops, Control, Overlay, Toast,
-                              # Clipboard, Apps, Dispatcher
+                              # Clipboard, Apps, Dispatcher, AppRuntime.cs (Windows App SDK startup)
       DesktopMcp.Server/      # MCP SDK wiring: 21 McpServerTool subclasses, control gate filter,
                               # session registry, Kestrel pipeline, transports
     tests/
@@ -64,6 +69,9 @@ desktop-mcp/
     scripts/build-release.ps1     # -> windows/dist/win-x64/desktop-mcp.exe, windows/dist/win-arm64/desktop-mcp.exe
     README.md
 ```
+
+P0 uses hand-declared `LibraryImport`s in `Desktop/Interop/Native.cs` (DispatcherQueue, monitors,
+WinRT activation). CsWin32 arrives with UIA in P2.
 
 Boundary rule: BSTR, VARIANT, HRESULT, HWND and COM pointers never leave `DesktopMcp.Desktop`.
 Its public surface is plain C# records (`UiNode`, `WindowInfo`, `DisplayInfo`, `Rect`, `Point`) and
@@ -77,8 +85,9 @@ contract" paragraph are updated to describe per-port contracts.
 
 `spec/windows/tools.json` holds the 21 tools exactly as upstream declares them: names, `title`,
 `description` strings verbatim, `inputSchema`, `outputSchema` and `annotations`. It is generated
-once from the upstream source at the baseline commit and then checked against a real upstream
-`tools/list` response. Two FastMCP artefacts are dropped: `_meta.fastmcp` on each tool and the
+once from the upstream source at the baseline commit. The input and output schemas are hand-derived
+from upstream's Python signatures (the file's `$comment` says so); the user declined a check against
+a live upstream server, so `tools/list` from a real upstream has not been compared. Two FastMCP artefacts are dropped: `_meta.fastmcp` on each tool and the
 `x-fastmcp-wrap-result` key in output schemas.
 
 The spec file is embedded in `DesktopMcp.Server` as a resource. Each tool class looks up its own
@@ -113,7 +122,9 @@ PowerShell children cannot outlive it.
 ### The dispatcher thread
 
 There is exactly one dedicated thread, created by
-`CreateDispatcherQueueController(DQTYPE_THREAD_DEDICATED, DQTAT_COM_NONE)`. The system owns the
+`CreateDispatcherQueueController(DQTYPE_THREAD_DEDICATED, DQTAT_COM_STA)`. `DQTAT_COM_NONE` returns
+`E_INVALIDARG` with a dedicated thread; ASTA and STA both work. STA is used because ASTA blocks
+reentrancy that Win32 window and hook code relies on. The system owns the
 thread and its message loop; we post work with `DispatcherQueue.TryEnqueue`, and a small
 `DispatcherQueueSynchronizationContext` makes `await` continuations started there resume there.
 On shutdown, `ShutdownQueueAsync()` drains the queue after hooks are removed and windows destroyed.
@@ -129,9 +140,9 @@ Rule: work on this thread is short and never blocks. UIA, capture, file, process
 are forbidden there, because a slow hook callback delays all input on the machine and a callback
 that exceeds `LowLevelHooksTimeout` makes Windows silently remove the hook.
 
-`IDesktopDispatcher` hides the mechanism. If the P0 probe shows that `DispatcherQueue` cannot be
-created or projected under NativeAOT, or that LL hook callbacks are not delivered on its thread, a
-`MsgWaitForMultipleObjectsEx` loop with its own work queue implements the same interface.
+`IDesktopDispatcher` hides the mechanism. The P0 probe showed that `DispatcherQueue` can be created
+and projected under NativeAOT and that LL hook callbacks are delivered on its thread (§12), so the
+fallback, a `MsgWaitForMultipleObjectsEx` loop with its own work queue, was not needed.
 
 ### Everything else runs on the thread pool
 
@@ -225,22 +236,24 @@ by the AI and releases them on preemption, cancellation or shutdown.
 
 ### Capture and imaging (`Desktop/Capture`, `Desktop/Imaging`)
 
-- **Capture**: Windows.Graphics.Capture. One `GraphicsCaptureItem` per monitor
-  (`IGraphicsCaptureItemInterop.CreateForMonitor`), a free-threaded frame pool on a D3D11 device,
-  one frame converted to a `SoftwareBitmap`. A full virtual-desktop capture composites the monitors
-  it covers. `IsBorderRequired = false` where the OS allows it (Windows 11); on Windows 10 a capture
-  border may flash. Windows marked `WDA_EXCLUDEFROMCAPTURE`, including our overlays, are excluded by
-  the system.
-- **Imaging**: SixLabors ImageSharp, ImageSharp.Drawing and Fonts. Scaling
-  (`scale = min(DESKTOP_MCP_SCREENSHOT_SCALE clamped to [0.1, 1], 1920/w, 1080/h)`, Lanczos),
-  annotation (2 px boxes and filled index labels in Arial 12 loaded from the system font folder,
-  the cursor marker, reference grid lines) and PNG encoding. Box colours come from a fixed palette
-  indexed by label, not random. ImageSharp's Six Labors Split License grants Apache 2.0 terms to
-  open-source projects, which covers this MIT project.
+- **Capture**: Windows.Graphics.Capture. One `GraphicsCaptureItem` per monitor, a free-threaded
+  frame pool, one frame read into a byte array. The frame pool's `IDirect3DDevice` is Win2D's shared
+  device (`CanvasDevice.GetSharedDevice()`), and frames are read with
+  `CanvasBitmap.CreateFromDirect3D11Surface(...).GetPixelBytes()`, so there is no hand-written D3D11
+  code. The capture item comes from `GraphicsCaptureItem.TryCreateFromDisplayId` when that method
+  exists at runtime, otherwise from `IGraphicsCaptureItemInterop.CreateForMonitor`; both paths work
+  under AOT. A full virtual-desktop capture composites the monitors it covers.
+  `IsBorderRequired = false` where the OS allows it (Windows 11); on Windows 10 a capture border may
+  flash. `GraphicsCaptureAccess.RequestAccessAsync(Borderless)` is not called yet. Windows marked
+  `WDA_EXCLUDEFROMCAPTURE`, including our overlays, are excluded by the system.
+- **Imaging**: Win2D. Scaling
+  (`scale = min(DESKTOP_MCP_SCREENSHOT_SCALE clamped to [0.1, 1], 1920/w, 1080/h)`,
+  `HighQualityCubic`), annotation (2 px boxes and filled index labels in Arial 12, the cursor
+  marker, reference grid lines) and PNG encoding. Box colours come from a fixed palette indexed by
+  label, not random. `IImageRenderer.RenderPngAsync` is asynchronous.
 - `DESKTOP_MCP_SCREENSHOT_BACKEND` is accepted and ignored; the README says so.
-- `IScreenCapture` and `IImageRenderer` hide both choices. If either fails the P0 probe (AOT
-  compatibility or warnings), GDI capture or Direct2D/DirectWrite drawing implements the same
-  interface.
+- `IScreenCapture` and `IImageRenderer` hide both choices. Both passed the P0 probe, so no fallback
+  was needed.
 
 ### Displays
 
@@ -260,7 +273,7 @@ upstream; the implementation is split so the policy logic is pure and testable.
 | `InputMonitor` | dispatcher thread | LL hooks and Raw Input. Reports physical input only (ignores `LLMHF_INJECTED`/`LLKHF_INJECTED` and our `dwExtraInfo` signature). Swallows input while suppression is active. |
 | `ControlStateMachine` | pure C#, `TimeProvider` injected | Turns events into state and effects. States: `disabled`, `unavailable`, `user`, `ready`, `ai`. |
 | `ControlGate` | SDK call-tool filter | Policy classification, the desktop lock, the 15 s lease, checkpoints, rejection results. |
-| `ControlOverlay` | dispatcher thread | Indicator: blue border on every monitor, the notice ("AI is controlling this computer" / "Move the mouse a significant distance" / "or press Ctrl + Alt + Shift + Backspace to take over"), and a ring that follows the cursor. Click-through, `WDA_EXCLUDEFROMCAPTURE`. Drawn with ImageSharp into a BGRA buffer and shown with `UpdateLayeredWindow`. Also shows the #FF4500 capture flash for 3.5 s (`DESKTOP_MCP_DISABLE_FLASH` turns it off). |
+| `ControlOverlay` | dispatcher thread | Indicator: blue border on every monitor, the notice ("AI is controlling this computer" / "Move the mouse a significant distance" / "or press Ctrl + Alt + Shift + Backspace to take over"), and a ring that follows the cursor. Click-through, `WDA_EXCLUDEFROMCAPTURE`. Drawn with Win2D into a bitmap and shown with `UpdateLayeredWindow`, or with Win2D composition (decided in P4). Also shows the #FF4500 capture flash for 3.5 s (`DESKTOP_MCP_DISABLE_FLASH` turns it off). |
 | `ControlNotifier` | thread pool | Sends `notifications/message` (level `notice`, logger `desktop-mcp.control`, data `{"event": "USER_CONTROL" or "AI_CONTROL_AVAILABLE", "status": {...}}`) to live sessions. |
 
 Rules:
@@ -437,6 +450,9 @@ xUnit runs under the JIT, so AOT-only failures are caught by the smoke step.
 
 - **Naming**: `desktop-mcp`, `~/.desktop-mcp`, `DESKTOP_MCP_*`. No Python, uv, PowerShell 5.1,
   mkcert or openssl needed.
+- **Installation**: the Windows App SDK 2.5 runtime must be installed. If it is missing, startup
+  fails with an error that says where to get it. `Microsoft.Graphics.Canvas.dll` and
+  `Microsoft.WindowsAppRuntime.Bootstrap.dll` ship next to `desktop-mcp.exe`.
 - **Output cleanups**: no stray indentation in Snapshot/Screenshot text; labels shown in the UI
   tree text; a plain text result instead of a JSON-encoded array when there is no image; Scroll
   without `loc` reports `Scrolled ... at current cursor position (x,y).` instead of an empty
@@ -459,21 +475,25 @@ work first.
 
 | Phase | Scope | Outcome |
 |---|---|---|
-| P0 Foundations and probes | Move `spec/tools.json` to `spec/macos/` and fix the macOS test path; write `spec/windows/tools.json`; solution skeleton and build settings; AOT probes for `DispatcherQueue` + LL hooks, Windows.Graphics.Capture, ImageSharp; spec-driven `McpServerTool` base class and ContractTests | An empty server answers `tools/list` |
+| P0 Foundations and probes | Move `spec/tools.json` to `spec/macos/` and fix the macOS test path; write `spec/windows/tools.json`; solution skeleton and build settings; AOT probes for `DispatcherQueue` + LL hooks, Windows.Graphics.Capture, Win2D imaging; spec-driven `McpServerTool` base class and ContractTests | An empty server answers `tools/list` |
 | P1 Server core and headless tools | CLI, config, ServePlan, stdio; Wait, PowerShell, FileSystem, Clipboard, Process, Registry, Notification, Scrape without sampling | A useful server without desktop access |
 | P2 Desktop read | Dispatcher, UIA wrapper, Tree, Snapshot without DOM, capture, imaging, Screenshot, DisplayInventory, virtual desktops | The agent can see the screen |
 | P3 Desktop act | Input, InputLedger, Click, Type, Scroll, Move, Shortcut, MultiSelect, MultiEdit, App, WaitFor | Upstream's core workflows |
 | P4 Desktop control | InputMonitor, state machine, overlay, capture flash, gate, notifier, ControlStatus | Protection against fighting the user |
 | P5 HTTP | Kestrel, Streamable HTTP and SSE, middleware, TLS, OAuth, `/health`, Scrape sampling, telemetry | Remote use |
-| P6 Finish | Browser DOM (Chrome, Edge, Firefox), install, uninstall, auth, release script for x64 and arm64, Windows README, root README update | `windows-v0.1.0` |
+| P6 Finish | Browser DOM (Chrome, Edge, Firefox), install, uninstall, auth, release script for x64 and arm64 (trims the publish output to the exe plus the two Windows App SDK DLLs, see §12), Windows README, root README update | `windows-v0.1.0` |
 
 ## 12. Risks
 
-| Risk | Mitigation |
+P0 probe results were measured on Windows build 10.0.26220 (Insider).
+
+| Risk | Status / mitigation |
 |---|---|
-| `DispatcherQueue` creation/projection or LL hook delivery fails under AOT | P0 probe; `IDesktopDispatcher` fallback to a `MsgWaitForMultipleObjectsEx` loop |
-| Windows.Graphics.Capture needs D3D11/WinRT interop that misbehaves under AOT, or its border cannot be hidden on Windows 10 | P0 probe; GDI fallback behind `IScreenCapture` |
-| ImageSharp produces trim/AOT warnings or adds too much size | P0 probe; Direct2D/DirectWrite fallback behind `IImageRenderer` |
+| `DispatcherQueue` creation/projection or LL hook delivery fails under AOT | Measured in P0: the DispatcherQueue thread is created and projected under AOT; startup plus the first invoke takes about 10 ms; timer ticks run on the dispatcher; a `WH_MOUSE_LL` hook installed on it received 2 of 2 injected signed moves, flagged injected, on the dispatcher thread. The `MsgWaitForMultipleObjectsEx` fallback behind `IDesktopDispatcher` was not needed. |
+| Windows.Graphics.Capture needs D3D11/WinRT interop that misbehaves under AOT, or its border cannot be hidden on Windows 10 | Measured in P0: the primary monitor (2560x1600, physical, PerMonitorV2) was captured in 146-157 ms under AOT. `IsBorderRequired = false` was accepted without error. Whether a border was visible is not yet confirmed by the user; recheck in P2 with the user watching. The GDI fallback behind `IScreenCapture` was not needed. |
+| The imaging library produces trim/AOT warnings or adds too much size | Measured in P0 with Win2D: a 1920x1080 frame with 40 annotations at scale 0.75 gives a 45 KB PNG in 102-149 ms; the probe exe grew by about 461 KB; 0 warnings. ImageSharp was dropped for licensing and vulnerability reasons (§2). |
+| The Windows App SDK metapackage copies about 113 MB per RID of unused files (DirectML, onnxruntime, AI.MachineLearning, WebView2) into publish output | P6 trims the output to the exe plus `Microsoft.Graphics.Canvas.dll` (1.7 MB) and `Microsoft.WindowsAppRuntime.Bootstrap.dll` (0.4 MB), either by referencing component packages or by filtering at packaging time. |
+| The Windows App SDK 2.5 runtime is not installed on the user's machine | `AppRuntime.EnsureInitialized()` throws with an install hint; documented as an installation requirement (§10). |
 | The undocumented virtual-desktop interface changes in a new Windows build | Only desktop names depend on it; fall back to registry names, then `Desktop N` |
 | The MCP SDK's serialisation or legacy SSE support changes | Pin the SDK version; ContractTests and HTTP tests catch drift |
 | LL hooks swallow input and lock the user out | Heartbeat-renewed suppression deadline, `LowLevelHooksTimeout`, integration tests |
