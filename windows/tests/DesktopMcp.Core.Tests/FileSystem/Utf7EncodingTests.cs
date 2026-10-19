@@ -52,4 +52,21 @@ public sealed class Utf7EncodingTests
     [InlineData("a\u0009b\u000d\u000a", "6109620d0a")]
     [InlineData("\u263a+", "2b4a6a6f414b772d")]
     public void EncodesLikePython(string text, string hex) => Assert.Equal(hex, Convert.ToHexStringLower(Utf7.GetBytes(text)));
+
+    [Theory]
+    [InlineData("a☺")]
+    [InlineData("☺a")]
+    [InlineData("☺")]
+    [InlineData("+")]
+    public void MaxByteCountBoundsTheWorstCase(string unit)
+    {
+        // Alternating direct and shifted characters: "a+Jjo-" is 6 bytes for 2 characters (Python: 30 bytes for 10).
+        var text = string.Concat(Enumerable.Repeat(unit, 50));
+        Assert.True(Utf7.GetByteCount(text) <= Utf7.GetMaxByteCount(text.Length));
+    }
+
+    [Theory]
+    [InlineData("unicode-1-1-utf-7")]
+    [InlineData("unicode_1_1_utf_7")]
+    public void PythonAliasesNameUtf7(string name) => Assert.Equal("2b4a6a6f2d", Convert.ToHexStringLower(TextEncodings.Get(name).Encoding.GetBytes("☺")));
 }

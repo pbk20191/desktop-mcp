@@ -25,11 +25,22 @@ internal sealed class TempDirectory : IDisposable
     {
         try
         {
-            foreach (var file in Directory.EnumerateFiles(Path, "*", SearchOption.AllDirectories))
-                File.SetAttributes(file, FileAttributes.Normal);
+            Clear(Path);
             Directory.Delete(Path, recursive: true);
         }
         catch (IOException) { }
         catch (UnauthorizedAccessException) { }
+    }
+
+    // Removes links and junctions without entering them (a junction loop would never end, and a recursive
+    // Directory.Delete over a junction throws access denied when not elevated) and clears read-only files.
+    private static void Clear(string directory)
+    {
+        foreach (var entry in new DirectoryInfo(directory).EnumerateFileSystemInfos())
+        {
+            if (entry.Attributes.HasFlag(FileAttributes.ReparsePoint)) entry.Delete();
+            else if (entry is DirectoryInfo subdirectory) Clear(subdirectory.FullName);
+            else entry.Attributes = FileAttributes.Normal;
+        }
     }
 }

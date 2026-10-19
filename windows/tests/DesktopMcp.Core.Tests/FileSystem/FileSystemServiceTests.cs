@@ -145,6 +145,56 @@ public sealed class FileSystemServiceTests : IDisposable
         Assert.False(Directory.Exists(P("a", "c", "d", "c", "d")));
     }
 
+    // A directory junction (mklink /J needs no privilege, unlike a symbolic link).
+    private static void Junction(string link, string target)
+    {
+        using var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("cmd.exe", ["/d", "/c", "mklink", "/J", link, target])
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        })!;
+        process.StandardOutput.ReadToEnd();
+        process.WaitForExit();
+        Assert.True(Directory.Exists(link), process.StandardError.ReadToEnd());
+    }
+
+    [Fact]
+    public void CopyADirectoryWithAJunctionLoopIsAnErrorAndCreatesNothing()
+    {
+        Write(@"a\x.txt", "x");
+        Directory.CreateDirectory(P("a", "s"));
+        Junction(P("a", "s", "loop"), P("a"));
+        Assert.Equal($"Error copying: Directory loop: {P("a", "s", "loop")} leads back to {P("a")}",
+            _fs.CopyPath(P("a"), P("b"), false, CancellationToken.None));
+        Assert.False(Directory.Exists(P("b")));
+    }
+
+    [Fact]
+    public void CopyFollowsAJunctionThatIsNotALoop()
+    {
+        Write(@"c\y.txt", "y");
+        Write(@"a\x.txt", "x");
+        Junction(P("a", "toC"), P("c"));
+        Junction(P("a", "toC2"), P("c"));
+        Assert.Equal($"Copied directory: {P("a")} -> {P("b")}", _fs.CopyPath(P("a"), P("b"), false, CancellationToken.None));
+        Assert.Equal("y", File.ReadAllText(P("b", "toC", "y.txt")));
+        Assert.Equal("y", File.ReadAllText(P("b", "toC2", "y.txt")));
+        Assert.Null(new DirectoryInfo(P("b", "toC")).LinkTarget);
+    }
+
+    [Fact]
+    public void CopyADeepTreeKeepsEveryLevelAndTheDirectoryTimes()
+    {
+        var deep = Path.Combine(Enumerable.Repeat("d", 40).ToArray());
+        Write(Path.Combine("a", deep, "z.txt"), "z");
+        var stamp = new DateTime(2020, 1, 2, 3, 4, 5, DateTimeKind.Utc);
+        Directory.SetLastWriteTimeUtc(P("a", "d"), stamp);
+        Assert.Equal($"Copied directory: {P("a")} -> {P("b")}", _fs.CopyPath(P("a"), P("b"), false, CancellationToken.None));
+        Assert.Equal("z", File.ReadAllText(P(["b", deep, "z.txt"])));
+        Assert.Equal(stamp, Directory.GetLastWriteTimeUtc(P("b", "d")));
+    }
+
     [Fact]
     public void CopyADirectoryOntoItselfWithOverwriteKeepsTheSource()
     {

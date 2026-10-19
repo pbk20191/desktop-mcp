@@ -15,7 +15,8 @@ internal sealed class Utf7Encoding : Encoding
 
     public override string WebName => "utf-7";
 
-    public override int GetMaxByteCount(int charCount) => checked((charCount * 8 + 2) / 3 + 2);
+    // CPython allocates 8 bytes per character; alternating direct and shifted characters need 3 per character.
+    public override int GetMaxByteCount(int charCount) => checked(charCount * 8 + 2);
 
     public override int GetMaxCharCount(int byteCount) => byteCount + 1;
 

@@ -28,7 +28,7 @@ internal static class TextEncodings
             "utf-32-be" or "utf-32be" => (new UTF32Encoding(true, false), false),
             "latin-1" or "latin1" or "latin" or "l1" or "iso-8859-1" or "iso8859-1" => (Encoding.Latin1, false),
             "ascii" or "us-ascii" => (Encoding.ASCII, false),
-            "utf-7" or "utf7" or "u7" => (new Utf7Encoding(), false),
+            "utf-7" or "utf7" or "u7" or "unicode-1-1-utf-7" => (new Utf7Encoding(), false),
             "mbcs" or "ansi" or "dbcs" => (Encoding.GetEncoding((int)CoreNative.GetACP()), false),
             "oem" => (Encoding.GetEncoding((int)CoreNative.GetOEMCP()), false),
             // .NET knows "unicode" (UTF-16); Python does not.

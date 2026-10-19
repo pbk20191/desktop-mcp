@@ -83,12 +83,11 @@ public sealed class FileSystemService(string defaultDirectory, Func<bool> isElev
                 File.Copy(src, target, overwrite: true);
                 return $"Copied file: {src} -> {dst}";
             }
-            if (Exists(dst))
-            {
-                if (OverlapReason(src, dst) is { } reason) return $"Error copying: {reason}";
-                Directory.Delete(dst, recursive: true);
-            }
-            CopyDirectory(src, dst, cancellationToken);
+            if (Exists(dst) && OverlapReason(src, dst) is { } reason) return $"Error copying: {reason}";
+            // The source is listed before the destination is touched, so a directory loop leaves both as they were.
+            var tree = ListTree(src, cancellationToken);
+            if (Exists(dst)) Directory.Delete(dst, recursive: true);
+            CopyTree(src, tree, dst, cancellationToken);
             return $"Copied directory: {src} -> {dst}";
         }
         catch (Exception e) when (IsPermissionError(e))
@@ -371,15 +370,48 @@ public sealed class FileSystemService(string defaultDirectory, Func<bool> isElev
         return null;
     }
 
-    // A source directory as listed before anything is created; a file has no children.
-    private sealed record TreeEntry(string Path, List<TreeEntry>? Children);
+    // One entry of a source tree, listed before anything is created. Relative is the path below the tree's root.
+    private sealed record TreeEntry(string Source, string Relative, bool IsDirectory);
 
-    private static List<TreeEntry> ListTree(string directory, CancellationToken cancellationToken) =>
-        Directory.EnumerateFileSystemEntries(directory).ToList().Select(entry =>
+    // The final paths of a directory and its ancestors in the walk, innermost first.
+    private sealed record Ancestors(string FinalPath, Ancestors? Parent)
+    {
+        public bool Contains(string finalPath)
+        {
+            for (var chain = this; chain is not null; chain = chain.Parent)
+                if (SamePath(chain.FinalPath, finalPath)) return true;
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Every entry below <paramref name="root"/>, parents before children, walked with an explicit stack. Links to
+    /// directories are followed as copytree follows them. A directory whose final path is one of its own ancestors
+    /// is a loop and an error (upstream ends in an OSError or RecursionError); two links to the same directory are not.
+    /// </summary>
+    private static List<TreeEntry> ListTree(string root, CancellationToken cancellationToken)
+    {
+        var entries = new List<TreeEntry>();
+        var pending = new Stack<(string Directory, string Relative, Ancestors Ancestors)>();
+        pending.Push((root, "", new Ancestors(PathResolver.Resolve(root), null)));
+        while (pending.TryPop(out var item))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return new TreeEntry(entry, Directory.Exists(entry) ? ListTree(entry, cancellationToken) : null);
-        }).ToList();
+            var subdirectories = new List<(string, string, Ancestors)>();
+            foreach (var child in Directory.EnumerateFileSystemEntries(item.Directory).ToList())
+            {
+                var relative = Path.Join(item.Relative, Path.GetFileName(child));
+                var isDirectory = Directory.Exists(child);
+                entries.Add(new TreeEntry(child, relative, isDirectory));
+                if (!isDirectory) continue;
+                var finalPath = PathResolver.Resolve(child);
+                if (item.Ancestors.Contains(finalPath)) throw new IOException($"Directory loop: {child} leads back to {finalPath}");
+                subdirectories.Add((child, relative, new Ancestors(finalPath, item.Ancestors)));
+            }
+            for (var i = subdirectories.Count - 1; i >= 0; i--) pending.Push(subdirectories[i]);
+        }
+        return entries;
+    }
 
     /// <summary>
     /// shutil.copytree. copytree lists each directory before it creates the copy; listing the whole source tree first
@@ -394,10 +426,13 @@ public sealed class FileSystemService(string defaultDirectory, Func<bool> isElev
         foreach (var entry in entries)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var target = Path.Combine(destination, Path.GetFileName(entry.Path));
-            if (entry.Children is { } children) CopyTree(entry.Path, children, target, cancellationToken);
-            else File.Copy(entry.Path, target);
+            var target = Path.Combine(destination, entry.Relative);
+            if (entry.IsDirectory) Directory.CreateDirectory(target);
+            else File.Copy(entry.Source, target);
         }
+        // copystat on every directory once its contents are in place.
+        foreach (var entry in entries.Where(e => e.IsDirectory))
+            Directory.SetLastWriteTimeUtc(Path.Combine(destination, entry.Relative), Directory.GetLastWriteTimeUtc(entry.Source));
         Directory.SetLastWriteTimeUtc(destination, Directory.GetLastWriteTimeUtc(source));
     }
 
