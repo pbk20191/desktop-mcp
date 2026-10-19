@@ -47,7 +47,7 @@ if ($Runtimes -contains 'win-x64' -and [Runtime.InteropServices.RuntimeInformati
     # UI Automation through CsWin32's [GeneratedComInterface] interfaces, which only NativeAOT can prove (P2 Task 1).
     & (Join-Path $probeOut 'desktop-mcp-probe.exe') uia
     if ($LASTEXITCODE -ne 0) { throw "AOT UIA check failed: desktop-mcp-probe uia exited with $LASTEXITCODE" }
-    Write-Host 'AOT UIA check OK: the NativeAOT probe walked the foreground window through UI Automation'
+    Write-Host 'AOT UIA check OK: the NativeAOT probe read the desktop''s cached children through UI Automation'
 }
 else {
     Write-Host 'AOT activation and UIA checks skipped: they need win-x64 in -Runtimes and an x64 host'
