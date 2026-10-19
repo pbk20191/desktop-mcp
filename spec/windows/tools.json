@@ -1,5 +1,5 @@
 {
-  "$comment": "Tool contract of the Windows port: names, parameters and descriptions must match this file. Taken from CursorTouch/Windows-MCP (FastMCP artefacts _meta and x-fastmcp-wrap-result removed) and checked by the port's ContractTests.",
+  "$comment": "Tool contract of the Windows port: names, parameters and descriptions must match this file. Taken from CursorTouch/Windows-MCP (FastMCP artefacts _meta and x-fastmcp-wrap-result removed) and checked by the port's ContractTests. Input and output schemas are hand-derived and were not checked against a running upstream server.",
   "upstream": {
     "repository": "https://github.com/CursorTouch/Windows-MCP",
     "commit": "128f2960c79b74bd2630f4dbc9d4f664f4ce89b3",
