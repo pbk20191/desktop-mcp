@@ -1,5 +1,5 @@
 import Foundation
-import DesktopMCPCore
+@testable import DesktopMCPCore
 import DesktopMCPHTTP
 import MCP
 import XCTest
@@ -7,12 +7,12 @@ import XCTest
 /// End to end over real sockets: NIOTransportServices listener, HTTP/1.1, optional TLS.
 final class NIOHTTPServerTests: XCTestCase {
     func start(authKey: String? = nil, allowlist: [String]? = nil,
-               tls: NIOHTTPServer.TLSFiles? = nil) async throws -> (Int, Task<Void, Error>) {
+               tls: NIOHTTPServer.TLSFiles? = nil) async throws -> (Int, Task<Void, Error>, HTTPApp) {
         let settings = HTTPApp.Settings(authKey: authKey, ipAllowlist: try allowlist.map(IPNetwork.parseAllowlist))
         let app = HTTPApp(registry: await DesktopMCP.makeRegistry(), settings: settings)
         let listening = try await NIOHTTPServer.bind(host: "127.0.0.1", port: 0, tls: tls)
         let task = Task { try await NIOHTTPServer.serve(listening, app: app) }
-        return (try XCTUnwrap(listening.port), task)
+        return (try XCTUnwrap(listening.port), task, app)
     }
 
     func request(_ url: String, method: String = "POST", body: String? = nil, headers: [String: String] = [:]) -> URLRequest {
@@ -24,7 +24,7 @@ final class NIOHTTPServerTests: XCTestCase {
     }
 
     func testStreamableHTTPOverSockets() async throws {
-        let (port, task) = try await start(authKey: "k")
+        let (port, task, _) = try await start(authKey: "k")
         defer { task.cancel() }
         let url = "http://127.0.0.1:\(port)/mcp"
         let body = #"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#
@@ -39,8 +39,8 @@ final class NIOHTTPServerTests: XCTestCase {
     }
 
     func testSDKClientOverHTTP() async throws {
-        let (port, task) = try await start(authKey: "k")
-        defer { task.cancel() }
+        let (port, task, app) = try await start(authKey: "k")
+        defer { task.cancel(); Task { await app.shutdown() } }
         let transport = HTTPClientTransport(
             endpoint: URL(string: "http://127.0.0.1:\(port)/mcp")!, streaming: false,
             requestModifier: { request in
@@ -62,8 +62,77 @@ final class NIOHTTPServerTests: XCTestCase {
         XCTAssertEqual(text, "Error executing tool Click: Location must be a list of exactly 2 integers [x, y]")
     }
 
+    // MARK: Sessions
+
+    func testSDKClientGetsASessionAndTheStandaloneGetStream() async throws {
+        let (port, task, app) = try await start(authKey: "k")
+        defer { task.cancel(); Task { await app.shutdown() } }
+        let transport = HTTPClientTransport(
+            endpoint: URL(string: "http://127.0.0.1:\(port)/mcp")!, streaming: true,
+            requestModifier: { request in
+                var request = request
+                request.setValue("Bearer k", forHTTPHeaderField: "Authorization")
+                return request
+            })
+        let received = Locked(0)
+        let client = Client(name: "t", version: "0")
+        await client.onNotification(ToolListChangedNotification.self) { _ in received.withLock { $0 += 1 } }
+        _ = try await client.connect(transport: transport)
+        defer { Task { await client.disconnect() } }
+
+        let count = await app.sessions.count
+        XCTAssertEqual(count, 1)
+        let sessionID = await transport.sessionID
+        let id = try XCTUnwrap(sessionID)
+        let sessionServer = await app.sessionServer(id: id)
+        let server = try XCTUnwrap(sessionServer)
+        // Server-initiated messages travel on the GET stream, which the client opens on its
+        // own shortly after initialising; nothing is replayed, so repeat until it is open.
+        let deadline = Date().addingTimeInterval(2)
+        while received.current == 0, Date() < deadline {
+            try await server.notify(ToolListChangedNotification.message())
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertGreaterThan(received.current, 0)
+    }
+
+    func testSDKClientSurvivesEvictionThroughTheReconnectingWrapper() async throws {
+        let (port, task, app) = try await start(authKey: "k")
+        defer { task.cancel(); Task { await app.shutdown() } }
+        let client = ReconnectingClient(endpoint: URL(string: "http://127.0.0.1:\(port)/mcp")!, authKey: "k")
+        try await client.connect()
+        defer { Task { await client.disconnect() } }
+
+        let first = try await client.callTool(name: "Wait", arguments: ["duration": 0])
+        XCTAssertNotEqual(first.isError, true)
+        await app.evictAllSessions()
+        let second = try await client.callTool(name: "Wait", arguments: ["duration": 0])
+        XCTAssertNotEqual(second.isError, true)
+        let seen = await client.sessionsSeen
+        XCTAssertEqual(seen, 2)
+    }
+
+    func testStatelessClientsStillWorkOverSockets() async throws {
+        let (port, task, app) = try await start()
+        defer { task.cancel(); Task { await app.shutdown() } }
+        let url = "http://127.0.0.1:\(port)/mcp"
+        let headers = ["Content-Type": "application/json", "Accept": "application/json"]
+        // A client that never accepts SSE gets plain JSON and no session, initialize included.
+        let initialize = #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}"#
+        let (data, response) = try await URLSession.shared.data(for: request(url, body: initialize, headers: headers))
+        let http = try XCTUnwrap(response as? HTTPURLResponse)
+        XCTAssertEqual(http.statusCode, 200)
+        XCTAssertNil(http.value(forHTTPHeaderField: "Mcp-Session-Id"))
+        XCTAssertEqual(try JSON.parse(data)["result"]?["serverInfo"]?["name"], "desktop-mcp")
+        let call = #"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"Wait","arguments":{"duration":0}}}"#
+        let (waited, _) = try await URLSession.shared.data(for: request(url, body: call, headers: headers))
+        XCTAssertEqual(try JSON.parse(waited)["result"]?["isError"], false)
+        let count = await app.sessions.count
+        XCTAssertEqual(count, 0)
+    }
+
     func testStoppingTheServerClosesTheListenerAndItsEventLoops() async throws {
-        let (port, task) = try await start()
+        let (port, task, _) = try await start()
         let url = "http://127.0.0.1:\(port)/mcp"
         let headers = ["Content-Type": "application/json", "Accept": "application/json"]
         let (_, before) = try await URLSession.shared.data(for: request(url, body: #"{"jsonrpc":"2.0","id":1,"method":"ping"}"#, headers: headers))
@@ -83,7 +152,7 @@ final class NIOHTTPServerTests: XCTestCase {
     }
 
     func testStoppingTheServerWithARequestInFlightReturnsPromptly() async throws {
-        let (port, task) = try await start()
+        let (port, task, _) = try await start()
         // A client waiting on a long tool call: its handler is blocked on the call.
         let body = #"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"Wait","arguments":{"duration":30}}}"#
         let wait = request("http://127.0.0.1:\(port)/mcp", body: body,
@@ -105,7 +174,7 @@ final class NIOHTTPServerTests: XCTestCase {
         let body = #"{"jsonrpc":"2.0","id":1,"method":"ping"}"#
         let headers = ["Content-Type": "application/json", "Accept": "application/json"]
         for (allowlist, expected) in [(["127.0.0.1"], 200), (["10.0.0.0/8"], 403)] {
-            let (port, task) = try await start(allowlist: allowlist)
+            let (port, task, _) = try await start(allowlist: allowlist)
             defer { task.cancel() }
             let (data, response) = try await URLSession.shared.data(for: request("http://127.0.0.1:\(port)/mcp", body: body, headers: headers))
             XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, expected, String(decoding: data, as: UTF8.self))
@@ -133,7 +202,7 @@ final class NIOHTTPServerTests: XCTestCase {
     func testTLSFromPEMFiles() async throws {
         let (tls, cleanup) = try selfSignedCertificate()
         defer { cleanup() }
-        let (port, task) = try await start(tls: tls)
+        let (port, task, _) = try await start(tls: tls)
         defer { task.cancel() }
         let session = URLSession(configuration: .ephemeral, delegate: TrustEverything(), delegateQueue: nil)
         let (data, response) = try await session.data(for: request(
@@ -146,7 +215,7 @@ final class NIOHTTPServerTests: XCTestCase {
     func testHTTP2IsNegotiatedOverTLS() async throws {
         let (tls, cleanup) = try selfSignedCertificate()
         defer { cleanup() }
-        let (port, task) = try await start(authKey: "k", tls: tls)
+        let (port, task, _) = try await start(authKey: "k", tls: tls)
         defer { task.cancel() }
         let session = URLSession(configuration: .ephemeral, delegate: TrustEverything(), delegateQueue: nil)
         let url = "https://127.0.0.1:\(port)/mcp"
