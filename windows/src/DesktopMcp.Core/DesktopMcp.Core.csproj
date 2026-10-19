@@ -3,6 +3,9 @@
     <RootNamespace>DesktopMcp.Core</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="Tomlyn" />
+  </ItemGroup>
+  <ItemGroup>
     <InternalsVisibleTo Include="DesktopMcp.Core.Tests" />
   </ItemGroup>
 </Project>

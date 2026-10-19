@@ -10,6 +10,9 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <Version>0.1.0</Version>
     <Authors>desktop-mcp contributors</Authors>
+    <!-- Tomlyn: no reflection fallback in any build (Tomlyn's targets only switch it off for PublishAot), so the JIT
+         tests run the same source-generated path as the NativeAOT exe. -->
+    <TomlynIsReflectionEnabledByDefault>false</TomlynIsReflectionEnabledByDefault>
     <!-- Win2D ships a per-architecture native DLL and warns (WIN2D0001) on AnyCPU builds; default to the RID of the dotnet/MSBuild process (not the OS, which may be emulating it). -->
     <DefaultProcessRid>win-$([System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString().ToLowerInvariant())</DefaultProcessRid>
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">$(DefaultProcessRid)</RuntimeIdentifier>
