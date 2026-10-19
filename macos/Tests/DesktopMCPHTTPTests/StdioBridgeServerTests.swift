@@ -1,6 +1,7 @@
 import Foundation
 import DesktopMCPCore
 import DesktopMCPHTTP
+import MCP
 import XCTest
 
 /// The `connect` bridge against a real streamable-http server over sockets.
@@ -23,7 +24,7 @@ final class StdioBridgeServerTests: XCTestCase {
 
         let initialize = await bridge.forward(#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}"#)
         XCTAssertEqual(initialize.count, 1)
-        let reply = try JSONValue.parse(initialize[0])
+        let reply = try JSON.parse(initialize[0])
         XCTAssertEqual(reply["id"]?.intValue, 1)
         XCTAssertEqual(reply["result"]?["serverInfo"]?["name"]?.stringValue, "desktop-mcp")
         XCTAssertFalse(initialize[0].contains("\n"))
@@ -33,7 +34,7 @@ final class StdioBridgeServerTests: XCTestCase {
 
         let tools = await bridge.forward(#"{"jsonrpc":"2.0","id":"two","method":"tools/list"}"#)
         XCTAssertEqual(tools.count, 1)
-        XCTAssertEqual(try JSONValue.parse(tools[0])["result"]?["tools"]?.arrayValue?.count, 12)
+        XCTAssertEqual(try JSON.parse(tools[0])["result"]?["tools"]?.arrayValue?.count, 12)
     }
 
     func testHTTPFailuresBecomeJSONRPCErrorsForTheSameId() async throws {
@@ -42,7 +43,7 @@ final class StdioBridgeServerTests: XCTestCase {
         let wrongKey = bridge(port: port, authKey: "nope")
         let lines = await wrongKey.forward(#"{"jsonrpc":"2.0","id":7,"method":"ping"}"#)
         XCTAssertEqual(lines.count, 1)
-        let reply = try JSONValue.parse(lines[0])
+        let reply = try JSON.parse(lines[0])
         XCTAssertEqual(reply["id"]?.intValue, 7)
         XCTAssertEqual(reply["error"]?["code"]?.intValue, -32000)
         XCTAssertTrue(reply["error"]?["message"]?.stringValue?.contains("401") == true, lines[0])
@@ -54,7 +55,7 @@ final class StdioBridgeServerTests: XCTestCase {
         task.cancel()
         try? await task.value
         let gone = await wrongKey.forward(#"{"jsonrpc":"2.0","id":8,"method":"ping"}"#)
-        XCTAssertEqual(try JSONValue.parse(gone[0])["error"]?["code"]?.intValue, -32000)
+        XCTAssertEqual(try JSON.parse(gone[0])["error"]?["code"]?.intValue, -32000)
     }
 
     func testRunForwardsEveryLineUntilInputCloses() async throws {
@@ -71,7 +72,7 @@ final class StdioBridgeServerTests: XCTestCase {
         await running.value
         let lines = await collected.lines
         XCTAssertEqual(lines.count, 2)
-        XCTAssertEqual(Set(lines.compactMap { try? JSONValue.parse($0)["id"]?.intValue }), [1, 2])
+        XCTAssertEqual(Set(lines.compactMap { try? JSON.parse($0)["id"]?.intValue }), [1, 2])
     }
 
     actor Collected {

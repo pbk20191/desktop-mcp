@@ -35,7 +35,7 @@ final class NIOHTTPServerTests: XCTestCase {
         let headers = ["Content-Type": "application/json", "Authorization": "Bearer k", "Accept": "application/json"]
         let (data, response) = try await URLSession.shared.data(for: request(url, body: body, headers: headers))
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
-        XCTAssertEqual(try JSONValue.parse(data)["result"]?["tools"]?.arrayValue?.count, 12)
+        XCTAssertEqual(try JSON.parse(data)["result"]?["tools"]?.arrayValue?.count, 12)
     }
 
     func testSDKClientOverHTTP() async throws {
@@ -140,7 +140,7 @@ final class NIOHTTPServerTests: XCTestCase {
             "https://127.0.0.1:\(port)/mcp", body: #"{"jsonrpc":"2.0","id":1,"method":"ping"}"#,
             headers: ["Content-Type": "application/json", "Accept": "application/json"]))
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
-        XCTAssertEqual(try JSONValue.parse(data)["id"], 1)
+        XCTAssertEqual(try JSON.parse(data)["id"], 1)
     }
 
     func testHTTP2IsNegotiatedOverTLS() async throws {
@@ -157,19 +157,19 @@ final class NIOHTTPServerTests: XCTestCase {
         let (data, response) = try await session.data(
             for: request(url, body: #"{"jsonrpc":"2.0","id":7,"method":"ping"}"#, headers: headers), delegate: metrics)
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
-        XCTAssertEqual(try JSONValue.parse(data)["id"], 7)
+        XCTAssertEqual(try JSON.parse(data)["id"], 7)
         XCTAssertEqual(metrics.protocols.current, ["h2"])
 
         // Several requests at once share one HTTP/2 connection as separate streams.
         let pings = (1...20).map { request(url, body: #"{"jsonrpc":"2.0","id":\#($0),"method":"ping"}"#, headers: headers) }
-        let ids = try await withThrowingTaskGroup(of: JSONValue?.self) { group in
+        let ids = try await withThrowingTaskGroup(of: Value?.self) { group in
             for ping in pings {
                 group.addTask {
                     let (data, _) = try await session.data(for: ping)
-                    return try JSONValue.parse(data)["id"]
+                    return try JSON.parse(data)["id"]
                 }
             }
-            return try await group.reduce(into: [JSONValue?]()) { $0.append($1) }
+            return try await group.reduce(into: [Value?]()) { $0.append($1) }
         }
         XCTAssertEqual(Set(ids.compactMap { $0?.intValue }), Set(1...20))
 

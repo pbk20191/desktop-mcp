@@ -24,7 +24,7 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertEqual(requests[0].url?.absoluteString, "https://us.i.posthog.com/batch/")
         XCTAssertEqual(requests[0].httpMethod, "POST")
 
-        let bodies = try requests.map { try JSONValue.parse($0.httpBody!) }
+        let bodies = try requests.map { try JSON.parse($0.httpBody!) }
         let byEvent = Dictionary(uniqueKeysWithValues: bodies.map { ($0["batch"]!.arrayValue![0]["event"]!.stringValue!, $0) })
         let executed = try XCTUnwrap(byEvent["tool_executed"])
         XCTAssertEqual(executed["api_key"]?.stringValue, PostHogAnalytics.apiKey)

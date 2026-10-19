@@ -1,33 +1,35 @@
+import MCP
 import XCTest
 @testable import DesktopMCPCore
 
 final class FormattingTests: XCTestCase {
     func testJSONRoundTripKeepsTypesAndUTF8() throws {
         let text = #"{"a":1,"b":true,"c":"한글\n\"q\"","d":[1.5,null],"e":{}}"#
-        let value = try JSONValue.parse(text)
+        let value = try JSON.parse(text)
         XCTAssertEqual(value["a"], 1)
         XCTAssertEqual(value["b"], true)
         XCTAssertEqual(value["c"], "한글\n\"q\"")
-        XCTAssertEqual(value.serialized(), text)
+        XCTAssertEqual(JSONCoding.encodeString(value), text)
     }
 
-    func testJSONNumbersKeepIntegersExactAndCompareNumerically() throws {
-        let value = try JSONValue.parse(#"{"big":9007199254740993,"one":1.0,"half":0.5,"neg":-3}"#)
-        XCTAssertEqual(value["big"], .integer(9_007_199_254_740_993))
-        XCTAssertEqual(value["big"]?.serialized(), "9007199254740993")
-        XCTAssertEqual(value["one"], 1)
-        XCTAssertEqual(value["one"]?.intValue, 1)
-        XCTAssertEqual(value["half"]?.intValue, nil)
-        XCTAssertEqual(value["half"]?.doubleValue, 0.5)
-        XCTAssertEqual(value["neg"]?.intValue, -3)
-        XCTAssertEqual(JSONValue.integer(2), JSONValue.number(2.0))
-        XCTAssertNotEqual(JSONValue.integer(2), JSONValue.number(2.5))
-        XCTAssertEqual(JSONValue.number(.nan).serialized(), "null")
-        XCTAssertEqual(JSONValue.array([1, "a", nil, true, 2.5, ["k": [:]]]).serialized(), #"[1,"a",null,true,2.5,{"k":{}}]"#)
-        // Round trip through Codable containers.
-        struct Box: Codable, Equatable { var any: JSONValue; var list: [JSONValue] }
-        let box = Box(any: ["x": [1, 2.5, "s"]], list: [nil, false])
-        XCTAssertEqual(try JSONCoding.decode(Box.self, from: JSONCoding.encode(box)), box)
+    func testOrderedJSONRendersNumbersLikePython() throws {
+        var metadata = OrderedJSON()
+        metadata["big"] = .int(9_007_199_254_740_993)
+        metadata["neg"] = .int(-3)
+        metadata["one"] = .double(1.0)
+        metadata["half"] = .double(0.5)
+        metadata["nan"] = .double(.nan)
+        metadata["list"] = [1, "a", nil, true, 2.5, ["k": [:]]]
+        XCTAssertEqual(
+            metadata.serialized(),
+            #"{"big": 9007199254740993, "neg": -3, "one": 1, "half": 0.5, "nan": null, "list": [1, "a", null, true, 2.5, {"k": {}}]}"#)
+    }
+
+    func testOrderedJSONSortsNestedKeysAndRendersDataAsDataURL() {
+        var metadata = OrderedJSON()
+        metadata["o"] = ["b": 1, "a": 2]
+        metadata["d"] = .data(mimeType: "text/plain", Data("hi".utf8))
+        XCTAssertEqual(metadata.serialized(), #"{"o": {"a": 2, "b": 1}, "d": "data:text/plain;base64,aGk="}"#)
     }
 
     func testOrderedMetadataMatchesPythonJsonDumpsLayout() {

@@ -163,12 +163,12 @@ The package builds in Swift 6 language mode with strict concurrency checking: ev
 
 `serve` is one root task: a task group whose children are telemetry delivery (each send a child task of its own), the server (stdio or HTTP) and a watcher for SIGINT/SIGTERM. A signal cancels the server child, which closes the listener and shuts its event loop group down (HTTP) or stops reading stdin (stdio); queued telemetry then gets up to three seconds to land, and the process exits by returning from `run()`. There is no `exit()` call in the code.
 
-Everything on the wire is `Codable` and goes through Foundation's `JSONEncoder`/`JSONDecoder` (`JSONCoding`: sorted keys, slashes and non-ASCII unescaped, ISO 8601 dates). Incoming messages decode into `JSONRPCMessage`, which classifies them (request, notification, response, invalid) and types the parameters of the methods the server implements; results are plain `Encodable` structs. `JSONValue` is kept for the parts whose shape the protocol leaves open (tool arguments, input schemas, request ids) and keeps integers exact, so ids above 2^53 round-trip.
+Everything on the wire is `Codable` and goes through Foundation's `JSONEncoder`/`JSONDecoder` (`JSONCoding`: sorted keys, slashes and non-ASCII unescaped, ISO 8601 dates). Incoming messages decode into `JSONRPCMessage`, which classifies them (request, notification, response, invalid) and types the parameters of the methods the server implements; results are plain `Encodable` structs. `MCP.Value` is used for the parts whose shape the protocol leaves open (tool arguments, input schemas, request ids) and keeps integers exact, so ids above 2^53 round-trip.
 
 Source layout:
 
 - `macos/Sources/DesktopMCPCore` (no third-party dependencies)
-  - `JSONRPC.swift`, `JSONValue.swift`: the Codable message types, the dynamic JSON value, and the shared coder configuration
+  - `JSONRPC.swift`, `JSONCoding.swift`: the Codable message types, the dynamic JSON value, and the shared coder configuration
   - `MCPServer.swift`: JSON-RPC dispatch (`MCPServer`) and per-client sessions (`MCPSession`: per-request tasks, cancellation)
   - `HTTPApp.swift`, `OAuth.swift`, `Security.swift`: HTTP middleware (CORS, allowlist, auth), routes and OAuth, independent of the socket layer
   - `Config.swift`, `ServePlan.swift`: `config.toml` (a small TOML-subset parser) and option merging

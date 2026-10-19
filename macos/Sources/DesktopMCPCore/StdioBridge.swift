@@ -1,4 +1,5 @@
 import Foundation
+import MCP
 
 /// `connect`: a stdio MCP endpoint that forwards every message to the streamable-http server
 /// and writes what comes back, one JSON-RPC message per line. For clients that can only spawn
@@ -113,22 +114,22 @@ public struct StdioBridge: Sendable {
                 log(message)  // a notification or response: nobody is waiting for an answer
                 return []
             }
-            let reply: JSONValue = ["jsonrpc": "2.0", "id": id, "error": ["code": -32000, "message": .string(message)]]
-            return [reply.serialized()]
+            let reply: Value = ["jsonrpc": "2.0", "id": id, "error": ["code": -32000, "message": .string(message)]]
+            return [JSONCoding.encodeString(reply)]
         }
     }
 
     /// The id when `text` is a single request (has a method and a non-null id).
-    static func requestID(in text: String) -> JSONValue? {
-        guard let message = try? JSONValue.parse(text), message["method"] != nil,
-              let id = message["id"], !id.isNull else { return nil }
+    static func requestID(in text: String) -> Value? {
+        guard let message = try? JSONCoding.decode(Value.self, from: text), let object = message.objectValue, object["method"] != nil,
+              let id = object["id"], !id.isNull else { return nil }
         return id
     }
 
     /// stdio framing is one message per line, so a payload must not contain raw newlines.
     static func singleLine(_ payload: String) -> String {
         guard payload.contains("\n") || payload.contains("\r") else { return payload }
-        if let value = try? JSONValue.parse(payload) { return value.serialized() }
+        if let value = try? JSONCoding.decode(Value.self, from: payload) { return JSONCoding.encodeString(value) }
         return payload.replacingOccurrences(of: "\r", with: "").replacingOccurrences(of: "\n", with: " ")
     }
 
