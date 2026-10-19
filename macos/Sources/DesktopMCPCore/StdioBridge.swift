@@ -110,7 +110,8 @@ public struct StdioBridge: Sendable {
     }
 
     /// Keeps one `GET` listener on the current session: a new one when the session id first
-    /// appears or changes, none once the bridge is closing.
+    /// appears or changes, none once the bridge is closing. A recovery has started the new
+    /// session's listener already (`State.recover`), which makes this a no-op for its id.
     func followSession(output: @escaping @Sendable (String) async -> Void) async {
         await state.follow { sessionID in
             Task { await listen(sessionID: sessionID, output: output) }
@@ -152,10 +153,15 @@ public struct StdioBridge: Sendable {
     ///
     /// When the server has forgotten the session (404), the first `initialize` this bridge
     /// forwarded is sent again for a new one, its reply dropped (the stdio client has had its
-    /// own), and the message is sent once more; a second 404 is reported like any failure.
-    public func forward(_ line: String, output: @Sendable (String) async -> Void) async {
+    /// own), and the message is sent once more; a second 404 is reported like any failure. The
+    /// new session's `GET` listener starts as soon as its id is known, handing what it reads to
+    /// `output`, so it does not wait for a long call to end. When the replay fails (the server
+    /// refused a new session), the next message tries again before it is sent; until a session
+    /// is regained messages go without one. One attempt per message.
+    public func forward(_ line: String, output: @escaping @Sendable (String) async -> Void) async {
         let body = line.trimmingCharacters(in: .whitespaces)
-        if HTTPApp.isInitialize(Data(body.utf8)) { await state.rememberInitialize(body) }
+        let isInitialize = HTTPApp.isInitialize(Data(body.utf8))
+        if isInitialize { await state.rememberInitialize(body) }
         let id = Self.requestID(in: body)
         var answered = false
         func emit(_ payload: String) async {
@@ -163,11 +169,21 @@ public struct StdioBridge: Sendable {
             if let id, !answered, Self.isResponse(reply, to: id) { answered = true }
             await output(reply)
         }
+        let replay: @Sendable (String) async -> String? = { await replayInitialize($0) }
+        let start: @Sendable (String) -> Task<Void, Never> = { sessionID in
+            Task { await listen(sessionID: sessionID, output: output) }
+        }
         do {
             var sent = await state.sessionID
+            var recovered = false
+            // A client's own `initialize` starts a session by itself.
+            if sent == nil, !isInitialize, await state.needsSession {
+                recovered = true
+                sent = await state.recover(from: nil, replay: replay, listen: start)
+            }
             var (bytes, http) = try await post(body, sessionID: sent)
-            if http.statusCode == 404, let stale = sent,
-               let fresh = await state.recover(from: stale, replay: { await replayInitialize($0) }) {
+            if http.statusCode == 404, !recovered, let stale = sent,
+               let fresh = await state.recover(from: stale, replay: replay, listen: start) {
                 sent = fresh
                 (bytes, http) = try await post(body, sessionID: fresh)
             }
@@ -307,6 +323,9 @@ public struct StdioBridge: Sendable {
         /// Recoveries attempted (test hook).
         private(set) var replays = 0
         private var recovering: Task<String?, Never>?
+        /// A replay failed: the bridge has no session although it had one, and since a
+        /// session-less request is never answered 404, the next request must recover first.
+        private(set) var needsSession = false
         /// Set at EOF: no new listener from then on.
         private var closed = false
 
@@ -317,13 +336,19 @@ public struct StdioBridge: Sendable {
         /// Takes the id a response carried, unless the session has moved on since the request
         /// was sent (a slow response from a session a recovery has replaced).
         func remember(_ id: String, replacing sent: String?) {
-            if sessionID == sent { sessionID = id }
+            if sessionID == sent {
+                sessionID = id
+                needsSession = false
+            }
         }
 
-        /// A new session id after the server answered 404 for `stale`, or nil when there is
-        /// nothing to replay or the server would not start a session. Requests that hit the
-        /// 404 together share one replay; one that comes after it takes the id it produced.
-        func recover(from stale: String, replay: @escaping @Sendable (String) async -> String?) async -> String? {
+        /// A new session id after the server answered 404 for `stale` (nil: after a failed
+        /// replay), or nil when there is nothing to replay or the server would not start a
+        /// session. The new session's listener is started with `listen` at once, before the
+        /// caller resends its request. Requests that recover together share one replay; one
+        /// that comes after it takes the id it produced.
+        func recover(from stale: String?, replay: @escaping @Sendable (String) async -> String?,
+                     listen: @Sendable (String) -> Task<Void, Never>) async -> String? {
             if let sessionID, sessionID != stale { return sessionID }
             if let recovering { return await recovering.value }
             guard let initializeLine else { return nil }
@@ -334,7 +359,13 @@ public struct StdioBridge: Sendable {
             recovering = task
             let fresh = await task.value
             recovering = nil
-            if let fresh { sessionID = fresh }
+            if let fresh {
+                sessionID = fresh
+                needsSession = false
+                follow(listen)
+            } else {
+                needsSession = true
+            }
             return fresh
         }
 

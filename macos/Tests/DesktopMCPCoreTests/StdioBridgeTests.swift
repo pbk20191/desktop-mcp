@@ -102,7 +102,9 @@ final class StdioBridgeTests: XCTestCase {
 
     func testA404OnTheRetryIsReported() async throws {
         let requests = Locked(0)
-        StubHTTP.respond { _ in
+        StubHTTP.respond { request in
+            // The new session's GET listener, started by the recovery: no stream offered.
+            if request.httpMethod == "GET" { return (405, [:], []) }
             let count = requests.withLock { $0 += 1; return $0 }
             // initialize, ping (404), replayed initialize, resent ping (404 again).
             if count % 2 == 1 {

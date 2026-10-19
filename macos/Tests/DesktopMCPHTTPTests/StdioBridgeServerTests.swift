@@ -190,6 +190,77 @@ final class StdioBridgeServerTests: XCTestCase {
         XCTAssertEqual(replays, 1)
     }
 
+    /// The recovering request is a 3 s call: the new session's GET must not wait for it.
+    func testTheGetOpensDuringARecoveringRequest() async throws {
+        let (port, task, app) = try await startApp()
+        defer { task.cancel(); Task { await app.shutdown() } }
+        let bridge = bridge(port: port, authKey: nil)
+        _ = await forward(Self.initializeLine, through: bridge)
+        let first = await bridge.state.sessionID
+        await app.evictAllSessions()
+
+        let collector = LineCollector()
+        let call = Self.wait(id: 6, seconds: 3)
+        let forwarding = Task { await bridge.forward(call) { await collector.append($0) } }
+        try await Task.sleep(for: .milliseconds(500))
+        let second = try await session(of: bridge, other: first)
+        let sessionServer = await app.sessionServer(id: second)
+        let server = try XCTUnwrap(sessionServer)
+        // Nothing is replayed to a fresh GET: repeat until one comes through (well within 3 s).
+        func notified() async -> Bool {
+            await collector.all().contains { (try? JSON.parse($0)["method"]?.stringValue) == "notifications/tools/list_changed" }
+        }
+        let deadline = Date().addingTimeInterval(1.5)
+        while await !notified(), Date() < deadline {
+            try await server.notify(ToolListChangedNotification.message())
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        await forwarding.value
+        let lines = await collector.all()
+        let notification = lines.firstIndex { (try? JSON.parse($0)["method"]?.stringValue) == "notifications/tools/list_changed" }
+        let reply = lines.firstIndex { (try? JSON.parse($0)["id"]?.intValue) == 6 }
+        XCTAssertNotNil(notification, "\(lines)")
+        XCTAssertNotNil(reply, "\(lines)")
+        if let notification, let reply { XCTAssertLessThan(notification, reply, "\(lines)") }
+        await bridge.state.close()
+    }
+
+    func testAFailedReplayIsRetriedOnTheNextRequest() async throws {
+        // One session at most: while another client's session is busy, the replay is refused.
+        var settings = HTTPApp.Settings()
+        settings.maxSessions = 1
+        let (port, task, app) = try await startApp(settings: settings)
+        defer { task.cancel(); Task { await app.shutdown() } }
+        let bridge = bridge(port: port, authKey: nil)
+        _ = await forward(Self.initializeLine, through: bridge)
+        await app.evictAllSessions()
+
+        let other = self.bridge(port: port, authKey: nil)
+        _ = await forward(Self.initializeLine, through: other)
+        let call = Self.wait(id: 9, seconds: 2)
+        let busy = Task { await other.forward(call) { _ in } }
+        try await Task.sleep(for: .milliseconds(500))
+
+        let refused = await forward(Self.ping(id: 3), through: bridge)
+        XCTAssertEqual(refused.count, 1, "\(refused)")
+        XCTAssertEqual(try JSON.parse(refused[0])["error"]?["code"]?.intValue, -32000, refused[0])
+        var sessionID = await bridge.state.sessionID
+        XCTAssertNil(sessionID)
+
+        // The other session goes idle, so the cap can make room for the bridge's again.
+        await busy.value
+        let lines = await forward(Self.ping(id: 4), through: bridge)
+        XCTAssertEqual(lines.count, 1, "\(lines)")
+        XCTAssertNotNil(try JSON.parse(lines[0])["result"], lines[0])
+        sessionID = await bridge.state.sessionID
+        XCTAssertNotNil(sessionID)
+        let listening = await bridge.state.listener != nil
+        XCTAssertTrue(listening)
+        let replays = await bridge.state.replays
+        XCTAssertEqual(replays, 2)
+        await bridge.state.close()
+    }
+
     func testBridgeForwardsServerNotificationsFromTheGetStream() async throws {
         let (port, task, app) = try await startApp()
         defer { task.cancel() }
