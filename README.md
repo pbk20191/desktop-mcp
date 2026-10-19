@@ -55,7 +55,8 @@ Tools split into two groups, which matters for headless use:
   decision), and ships as one exe that bootstraps it itself.
 - One root task per process; servers, telemetry and signal handling are its children, and the
   process exits by returning, never by calling `exit()`.
-- System frameworks over hand-rolled parsers and protocol code where the platform has them.
+- System frameworks over hand-rolled parsers where the platform has them, and the official MCP Swift SDK
+  for the MCP protocol itself.
 - Telemetry stays on by default with the upstream project key, and `ANONYMIZED_TELEMETRY=false`
   turns it off, exactly as upstream.
 

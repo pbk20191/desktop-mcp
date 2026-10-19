@@ -1,4 +1,172 @@
 import Foundation
+import MCP
+
+/// Raised by a tool handler to report a failure back to the client as an error result.
+public struct ToolError: Error, CustomStringConvertible, Sendable {
+    public let message: String
+    /// What telemetry may see. Defaults to the message; pass a fixed label when the message
+    /// quotes an argument (a URL, a hostname), which must stay on this machine.
+    public let telemetry: String
+
+    public init(_ message: String, telemetry: String? = nil) {
+        self.message = message
+        self.telemetry = telemetry ?? message
+    }
+
+    public var description: String { message }
+}
+
+public struct ToolAnnotations: Encodable, Sendable {
+    public var title: String
+    public var readOnly: Bool
+    public var destructive: Bool
+    public var idempotent: Bool
+    public var openWorld: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case title
+        case readOnly = "readOnlyHint"
+        case destructive = "destructiveHint"
+        case idempotent = "idempotentHint"
+        case openWorld = "openWorldHint"
+    }
+}
+
+extension ToolAnnotations {
+    var sdk: MCP.Tool.Annotations {
+        MCP.Tool.Annotations(title: title, readOnlyHint: readOnly, destructiveHint: destructive,
+                             idempotentHint: idempotent, openWorldHint: openWorld)
+    }
+}
+
+public struct Tool: Sendable {
+    public var name: String
+    public var description: String
+    public var inputSchema: Value
+    public var annotations: ToolAnnotations
+    public var handler: @Sendable (ToolArguments) async throws -> [MCP.Tool.Content]
+}
+
+extension MCP.Tool.Content {
+    /// Plain text. The SDK deprecated its own shorthand for `.text(text:annotations:_meta:)`.
+    public static func text(_ text: String) -> MCP.Tool.Content {
+        .text(text: text, annotations: nil, _meta: nil)
+    }
+
+    /// Base64-encodes `data`, the form the wire needs.
+    public static func image(data: Data, mimeType: String) -> MCP.Tool.Content {
+        .image(data: data.base64EncodedString(), mimeType: mimeType, annotations: nil, _meta: nil)
+    }
+}
+
+/// Typed access to a tool call's `arguments` object, with the validation the Python server
+/// got from pydantic.
+public struct ToolArguments: Sendable {
+    public let raw: [String: Value]
+
+    public init(_ raw: [String: Value]) { self.raw = raw }
+
+    private func present(_ name: String) -> Value? {
+        guard let value = raw[name], !value.isNull else { return nil }
+        return value
+    }
+
+    /// The argument as text. `Value` decodes any string that parses as a `data:` URL into
+    /// `.data`, so such an argument is turned back into a URL here: a tool asked for a string.
+    private func text(_ value: Value) -> String? {
+        switch value {
+        case .string(let s):
+            return s
+        case .data(let mimeType, let data):
+            return Self.dataURL(mimeType: mimeType, data)
+        default:
+            return nil
+        }
+    }
+
+    /// The SDK keeps only the media type and the decoded bytes, so the client's exact text is
+    /// gone. Bytes that are UTF-8 come back in the plain `data:<type>,<text>` form, which is the
+    /// text the client sent unless it used base64 or percent-escapes; anything else is base64.
+    /// Lossy for base64 or percent-escaped data URLs, which no current tool accepts anyway
+    /// (Scrape rejects non-http schemes).
+    static func dataURL(mimeType: String?, _ data: Data) -> String {
+        guard let text = String(data: data, encoding: .utf8) else {
+            return data.dataURLEncoded(mimeType: mimeType)
+        }
+        return "data:\(mimeType ?? "text/plain"),\(text)"
+    }
+
+    private func integer(_ value: Value) -> Int? {
+        switch value {
+        case .int(let n): return n
+        case .double(let n): return n == n.rounded() ? Int(exactly: n) : nil
+        default: return nil
+        }
+    }
+
+    private func number(_ value: Value) -> Double? {
+        switch value {
+        case .int(let n): return Double(n)
+        case .double(let n): return n
+        default: return nil
+        }
+    }
+
+    public func string(_ name: String) throws -> String? {
+        guard let value = present(name) else { return nil }
+        guard let s = text(value) else { throw ToolError("'\(name)' must be a string") }
+        return s
+    }
+
+    public func requiredString(_ name: String) throws -> String {
+        guard let s = try string(name) else { throw ToolError("Missing required argument '\(name)'") }
+        return s
+    }
+
+    public func int(_ name: String) throws -> Int? {
+        guard let value = present(name) else { return nil }
+        if let n = integer(value) { return n }
+        if let s = value.stringValue, let n = Int(s) { return n }
+        throw ToolError("'\(name)' must be an integer")
+    }
+
+    public func double(_ name: String) throws -> Double? {
+        guard let value = present(name) else { return nil }
+        if let n = number(value) { return n }
+        if let s = value.stringValue, let n = Double(s) { return n }
+        throw ToolError("'\(name)' must be a number")
+    }
+
+    public func bool(_ name: String) throws -> Bool? {
+        guard let value = present(name) else { return nil }
+        if let b = value.boolValue { return b }
+        if let s = value.stringValue?.lowercased(), ["true", "false"].contains(s) { return s == "true" }
+        throw ToolError("'\(name)' must be a boolean")
+    }
+
+    public func choice(_ name: String, in allowed: [String], default fallback: String) throws -> String {
+        guard let s = try string(name) else { return fallback }
+        guard allowed.contains(s) else {
+            throw ToolError("'\(name)' must be one of: \(allowed.joined(separator: ", "))")
+        }
+        return s
+    }
+
+    public func intList(_ name: String) throws -> [Int]? {
+        guard let value = present(name) else { return nil }
+        guard let items = value.arrayValue else { throw ToolError("'\(name)' must be a list of integers") }
+        return try items.map { item in
+            guard let n = integer(item) else { throw ToolError("'\(name)' must be a list of integers") }
+            return n
+        }
+    }
+}
+
+/// Receives the outcome of every tool call (the PostHog analytics in the original).
+public protocol ToolCallObserver: Sendable {
+    func toolSucceeded(_ tool: String, durationMs: Int, client: Client.Info?) async
+    func toolFailed(_ tool: String, error: String, durationMs: Int, client: Client.Info?) async
+}
 
 public enum DesktopMCP {
     public static let version = "0.1.0"
@@ -7,51 +175,51 @@ public enum DesktopMCP {
     enabling operation of the desktop on the user's behalf.
     """
 
-    /// A server with every tool registered except those named in `excluding`.
-    public static func makeServer(desktop: Desktop = Desktop(), excluding excluded: [String] = []) async -> MCPServer {
-        let server = MCPServer(name: "desktop-mcp", version: version, instructions: instructions)
+    /// A registry with every tool registered except those named in `excluding`.
+    public static func makeRegistry(desktop: Desktop = Desktop(), excluding excluded: [String] = []) async -> ToolRegistry {
+        let registry = ToolRegistry(name: "desktop-mcp", version: version, instructions: instructions)
         for tool in tools(desktop) {
-            await server.register(tool)
+            await registry.register(tool)
         }
-        for name in excluded where !(await server.remove(tool: name)) {
+        for name in excluded where !(await registry.remove(tool: name)) {
             log("Could not exclude tool '\(name)' — not found")
         }
-        return server
+        return registry
     }
 
     // MARK: Schema helpers
 
-    static func schema(_ properties: [String: JSONValue], required: [String] = []) -> JSONValue {
-        var schema: [String: JSONValue] = ["type": "object", "properties": .object(properties)]
+    static func schema(_ properties: [String: Value], required: [String] = []) -> Value {
+        var schema: [String: Value] = ["type": "object", "properties": .object(properties)]
         if !required.isEmpty { schema["required"] = .array(required.map { .string($0) }) }
         return .object(schema)
     }
 
-    static func string(_ description: String? = nil, default value: String? = nil, enum options: [String]? = nil) -> JSONValue {
-        var p: [String: JSONValue] = ["type": "string"]
+    static func string(_ description: String? = nil, default value: String? = nil, enum options: [String]? = nil) -> Value {
+        var p: [String: Value] = ["type": "string"]
         if let options { p["enum"] = .array(options.map { .string($0) }) }
         if let value { p["default"] = .string(value) }
         if let description { p["description"] = .string(description) }
         return .object(p)
     }
 
-    static func nullableString(enum options: [String]? = nil) -> JSONValue {
-        var p: [String: JSONValue] = ["type": ["string", "null"], "default": nil]
+    static func nullableString(enum options: [String]? = nil) -> Value {
+        var p: [String: Value] = ["type": ["string", "null"], "default": nil]
         if let options { p["enum"] = .array(options.map { .string($0) } + [.null]) }
         return .object(p)
     }
 
-    static func integer(default value: Int? = nil) -> JSONValue {
-        var p: [String: JSONValue] = ["type": "integer"]
-        if let value { p["default"] = .integer(Int64(value)) }
+    static func integer(default value: Int? = nil) -> Value {
+        var p: [String: Value] = ["type": "integer"]
+        if let value { p["default"] = .int(value) }
         return .object(p)
     }
 
-    static func boolean(default value: Bool) -> JSONValue {
+    static func boolean(default value: Bool) -> Value {
         ["type": "boolean", "default": .bool(value)]
     }
 
-    static func intPair(nullable: Bool) -> JSONValue {
+    static func intPair(nullable: Bool) -> Value {
         if nullable {
             return ["anyOf": [["type": "array", "items": ["type": "integer"]], ["type": "null"]], "default": nil]
         }
@@ -264,4 +432,9 @@ public enum DesktopMCP {
                 }),
         ]
     }
+}
+
+/// Diagnostics go to stderr: stdout is the stdio transport.
+public func log(_ message: String) {
+    FileHandle.standardError.write(Data(("[desktop-mcp] " + message + "\n").utf8))
 }

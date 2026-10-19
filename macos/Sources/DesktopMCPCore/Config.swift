@@ -26,10 +26,12 @@ public struct DesktopMCPConfig: Equatable, Sendable {
     public var security = Security()
     public var tools = Tools()
     public var sourcePath: String?
+    /// Non-fatal notes from `load` (a stored value that was mapped rather than rejected).
+    public var warnings: [String] = []
 
     public init() {}
 
-    public static let transports: Set<String> = ["stdio", "sse", "streamable-http"]
+    public static let transports: Set<String> = ["stdio", "streamable-http"]
     /// `~/.desktop-mcp`, honouring $HOME as Python's `expanduser` does.
     public static var directory: URL {
         let home = ProcessInfo.processInfo.environment["HOME"].flatMap(\.nilIfEmpty) ?? NSHomeDirectory()
@@ -64,7 +66,12 @@ public struct DesktopMCPConfig: Equatable, Sendable {
         let base = url.deletingLastPathComponent()
 
         if let value = server["transport"] {
-            let transport = value.text
+            var transport = value.text
+            if transport == "sse" {
+                // Written by an older version; the server now only speaks streamable-http.
+                transport = "streamable-http"
+                config.warnings.append(ServePlan.legacyTransportWarning)
+            }
             guard transports.contains(transport) else {
                 throw ConfigError("server.transport must be one of \(transports.sorted()), got '\(transport)'")
             }

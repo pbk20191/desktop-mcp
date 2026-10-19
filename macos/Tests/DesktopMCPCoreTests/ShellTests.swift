@@ -58,6 +58,31 @@ final class ShellTests: XCTestCase {
         XCTAssertEqual(result.status, 0)
     }
 
+    func testOsascriptLanguageIsChosenByTheFirstLine() {
+        XCTAssertEqual(Shell.osascriptArguments("return 1"), ["-e", "return 1"])
+        XCTAssertEqual(Shell.osascriptArguments("#!/usr/bin/osascript\nreturn 1"), ["-e", "return 1"])
+        XCTAssertEqual(Shell.osascriptArguments("#!/usr/bin/osascript -l JavaScript\n1 + 1"),
+                       ["-l", "JavaScript", "-e", "1 + 1"])
+        XCTAssertEqual(Shell.osascriptArguments("#!/usr/bin/env osascript -l javascript\n1 + 1"),
+                       ["-l", "JavaScript", "-e", "1 + 1"])
+        // A comment stays in the source: it is valid JavaScript, and offsets in errors stay right.
+        XCTAssertEqual(Shell.osascriptArguments("// language: JavaScript\n1 + 1"),
+                       ["-l", "JavaScript", "-e", "// language: JavaScript\n1 + 1"])
+        XCTAssertEqual(Shell.osascriptArguments("-- language: JavaScript\nreturn 1"), ["-e", "-- language: JavaScript\nreturn 1"])
+    }
+
+    func testOsascriptRunsJavaScriptWhenAsked() async {
+        let shebang = await Shell.execute("#!/usr/bin/osascript -l JavaScript\n[1, 2, 3].map(x => x * 2)", mode: "osascript", timeout: 10)
+        XCTAssertEqual(shebang.output, "2, 4, 6")
+        XCTAssertEqual(shebang.status, 0)
+        let comment = await Shell.execute("// language: JavaScript\nJSON.stringify({a: 1})", mode: "osascript", timeout: 10)
+        XCTAssertEqual(comment.output, "{\"a\":1}")
+        XCTAssertEqual(comment.status, 0)
+        let failure = await Shell.execute("// language: JavaScript\nthrow new Error(\"js boom\")", mode: "osascript", timeout: 10)
+        XCTAssertEqual(failure.output, "execution error: Error: Error: js boom (-2700)")
+        XCTAssertEqual(failure.status, 1)
+    }
+
     func testTimeoutIsClampedByCap() {
         unsetenv(Shell.maxTimeoutEnv)
         XCTAssertEqual(Shell.clampTimeout(10), 10)

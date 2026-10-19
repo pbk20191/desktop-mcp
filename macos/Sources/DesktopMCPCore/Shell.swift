@@ -18,9 +18,12 @@ public enum Shell {
         return cap > 0 ? min(timeout, cap) : timeout
     }
 
-    /// The Shell tool: `/bin/bash -c` or `osascript -e`, stdout and stderr combined.
+    /// The Shell tool: `/bin/bash -c` or `osascript -e` (AppleScript, or JXA when the first line
+    /// asks for it), stdout and stderr combined. Both are child processes, as in the original:
+    /// one per call, so calls run concurrently, a timeout kills the whole process group, and a
+    /// crash in a script engine takes down nothing but that call.
     public static func execute(_ command: String, mode: String, timeout requested: Int) async -> Result {
-        let argv = mode == "osascript" ? ["/usr/bin/osascript", "-e", command] : ["/bin/bash", "-c", command]
+        let argv = mode == "osascript" ? ["/usr/bin/osascript"] + osascriptArguments(command) : ["/bin/bash", "-c", command]
         let timeout = clampTimeout(requested)
         do {
             let run = try await self.run(argv, timeout: Double(timeout))
@@ -40,6 +43,21 @@ public enum Shell {
         } catch {
             return Result(output: "\(error)", status: -1)
         }
+    }
+
+    /// osascript's arguments for a script given as text. The language comes from the first line:
+    /// a shebang naming JavaScript (`#!/usr/bin/osascript -l JavaScript`) or a `// language:
+    /// JavaScript` comment selects JXA; anything else is AppleScript. A shebang line is dropped,
+    /// since `-e` would hand it to the interpreter; the comment stays, being valid JavaScript.
+    static func osascriptArguments(_ source: String) -> [String] {
+        let firstLine = source.prefix { $0 != "\n" && $0 != "\r\n" }
+        let lowered = firstLine.lowercased()
+        let javaScript = lowered.contains("javascript") && (lowered.hasPrefix("#!") || (lowered.hasPrefix("//") && lowered.contains("lang")))
+        var body = source
+        if firstLine.hasPrefix("#!") {
+            body = firstLine.endIndex < source.endIndex ? String(source[source.index(after: firstLine.endIndex)...]) : ""
+        }
+        return (javaScript ? ["-l", "JavaScript"] : []) + ["-e", body]
     }
 
     /// Both streams: `stdout or stderr` would hide errors behind partial success output.

@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import MCP
 
 /// A minimal OAuth 2.0 authorization server for MCP clients, as in the original:
 /// RFC 8414 metadata, authorization code + PKCE (S256 only), one pre-provisioned confidential
@@ -185,12 +186,12 @@ public actor OAuthService {
     static func formOrJSON(_ request: HTTPRequest) -> [String: String]? {
         let contentType = (request.header("content-type") ?? "").lowercased()
         if contentType.contains("application/json") {
-            guard let object = try? JSONCoding.decode([String: JSONValue].self, from: request.body) else { return nil }
+            guard let object = try? JSONCoding.decode([String: Value].self, from: request.body) else { return nil }
             return object.compactMapValues { value in
                 switch value {
                 case .string(let s): return s
-                case .integer(let i): return String(i)
-                case .number(let n): return OrderedJSON.formatNumber(n)
+                case .int(let i): return String(i)
+                case .double(let n): return OrderedJSON.formatNumber(n)
                 case .bool(let b): return b ? "true" : "false"
                 default: return nil
                 }

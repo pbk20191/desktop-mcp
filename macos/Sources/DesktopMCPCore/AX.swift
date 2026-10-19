@@ -1,5 +1,6 @@
 import ApplicationServices
 import Foundation
+import MCP
 
 /// AXUIElement is an immutable CF reference that HIServices lets any thread message.
 extension AXUIElement: @unchecked @retroactive Sendable {}
@@ -172,7 +173,7 @@ public enum AX {
     }
 
     /// A JSON form of an attribute value for snapshot metadata.
-    public static func json(_ value: AnyObject?) -> JSONValue {
+    public static func json(_ value: AnyObject?) -> Value {
         switch value {
         case nil: return .null
         case let s as String: return .string(s)
@@ -180,7 +181,7 @@ public enum AX {
         case let u as URL: return .string(u.absoluteString)
         case let n as NSNumber:
             if CFGetTypeID(n) == CFBooleanGetTypeID() { return .bool(n.boolValue) }
-            return CFNumberIsFloatType(n) ? .number(n.doubleValue) : .integer(n.int64Value)
+            return CFNumberIsFloatType(n) ? .double(n.doubleValue) : .int(n.intValue)
         default: return .string(describe(value))
         }
     }

@@ -1,4 +1,5 @@
 import Foundation
+import MCP
 import Security
 
 /// Anonymous usage telemetry sent to the original project's PostHog, as the Python server does.
@@ -95,14 +96,14 @@ public actor PostHogAnalytics: ToolCallObserver {
         return cachedUserID!
     }
 
-    public func toolSucceeded(_ tool: String, durationMs: Int, client: ClientInfo?) {
+    public func toolSucceeded(_ tool: String, durationMs: Int, client: Client.Info?) {
         var properties = EventProperties(toolName: tool, durationMs: durationMs, client: client)
         properties.success = true
         capture("tool_executed", properties)
         if verbose { log("[Analytics] \(tool): SUCCESS (\(durationMs)ms)") }
     }
 
-    public func toolFailed(_ tool: String, error: String, durationMs: Int, client: ClientInfo?) {
+    public func toolFailed(_ tool: String, error: String, durationMs: Int, client: Client.Info?) {
         var properties = EventProperties(toolName: tool, durationMs: durationMs, client: client)
         properties.exception = error
         properties.traceback = error
@@ -178,7 +179,7 @@ struct EventProperties: Encodable {
     var lib = "desktop-mcp-swift"
     var libVersion = DesktopMCP.version
 
-    init(toolName: String, durationMs: Int, client: ClientInfo?) {
+    init(toolName: String, durationMs: Int, client: Client.Info?) {
         self.toolName = toolName
         self.durationMs = durationMs
         clientName = client?.name

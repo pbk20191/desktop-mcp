@@ -1,5 +1,6 @@
 #!/bin/bash
-# Builds a universal (arm64 + x86_64), ad-hoc signed release binary at macos/dist/desktop-mcp.
+# Builds a universal (arm64 + x86_64) release binary at macos/dist/desktop-mcp, signed ad hoc or
+# with $CODESIGN_IDENTITY.
 # The Swift package manifest lives at the repository root; this script runs from there.
 #
 # Toolchain: Xcode 16 (Swift 6.0/6.1) produces a single file that runs on macOS 13 and later.
@@ -54,8 +55,11 @@ if otool -L "$DIST/desktop-mcp" | grep -q "@rpath/$SPAN_LIB"; then
     codesign --force --sign - "$DIST/$SPAN_LIB"
 fi
 
-# Ad-hoc signature: required to run on Apple silicon, and keeps the binary's identity stable.
-codesign --force --sign - --identifier com.desktop-mcp.server "$DIST/desktop-mcp"
+# Signed ad hoc by default (required on Apple silicon). TCC remembers permissions by code
+# signature, and an ad-hoc signature is just the binary's hash, so set CODESIGN_IDENTITY to a
+# stable identity (a code signing certificate from Keychain Access, or a Developer ID) to keep
+# Accessibility / Screen Recording grants across rebuilds.
+codesign --force --sign "${CODESIGN_IDENTITY:--}" --identifier com.desktop-mcp.server "$DIST/desktop-mcp"
 lipo -info "$DIST/desktop-mcp"
 vtool -show-build "$DIST/desktop-mcp" | grep -E 'minos' | sort -u
 ls -lh "$DIST/"

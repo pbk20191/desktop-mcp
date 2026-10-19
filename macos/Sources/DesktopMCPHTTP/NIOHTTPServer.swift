@@ -10,7 +10,7 @@ import NIOTransportServices
 /// HTTP/1.1; TLS connections negotiate HTTP/2 or HTTP/1.1 through ALPN. An HTTP/2 stream is
 /// presented to the request code exactly like an HTTP/1.1 connection, so one handler serves
 /// both. Each connection (and each HTTP/2 stream) is handled in its own task; when a client
-/// disconnects or resets a stream, the work it was waiting for (a tool call, an SSE stream) is
+/// disconnects or resets a stream, the work it was waiting for (such as a tool call) is
 /// cancelled.
 ///
 /// `bind` creates an event loop group of its own for the listener; `serve` shuts it down when
@@ -72,15 +72,16 @@ public enum NIOHTTPServer {
                         return channel.eventLoop.makeCompletedFuture {
                             try channel.pipeline.syncOperations.addHandler(NIOSSLServerHandler(context: sslContext))
                         }.flatMap {
-                            channel.configureAsyncHTTPServerPipeline(
-                                http2Configuration: http2Configuration,
+                            // `configureAsyncHTTPServerPipeline` would install the pipelining
+                            // handler on the HTTP/1.1 path (see `http1Connection`).
+                            channel.configureHTTP2AsyncSecureUpgrade(
                                 http1ConnectionInitializer: http1Connection,
-                                http2ConnectionInitializer: { $0.eventLoop.makeSucceededVoidFuture() },
-                                http2StreamInitializer: http2Stream)
+                                http2ConnectionInitializer: http2Connection)
                         }.map { Connection(channel: channel, negotiated: $0) }
                     }
                     return channel.eventLoop.makeCompletedFuture {
-                        try channel.pipeline.syncOperations.configureHTTPServerPipeline(withErrorHandling: true)
+                        try channel.pipeline.syncOperations.configureHTTPServerPipeline(
+                            withPipeliningAssistance: false, withErrorHandling: true)
                         let wrapped = try RequestChannel(wrappingChannelSynchronously: channel)
                         return Connection(channel: channel,
                                           negotiated: channel.eventLoop.makeSucceededFuture(.http1_1(wrapped)))
@@ -100,12 +101,25 @@ public enum NIOHTTPServer {
         return configuration
     }
 
-    /// After ALPN chose HTTP/1.1: the codec is already in place, add the protocol error handler.
+    /// HTTP/1.1, plain or chosen by ALPN: codec and protocol error handler, without NIO's
+    /// pipelining assistance. `HTTPServerPipelineHandler` stops reading while a response is
+    /// pending, so a client's FIN during a streamed response (a tool call, the `GET` stream)
+    /// would never be read and the work behind it never cancelled. Requests on a connection are
+    /// already handled one at a time by `handle(_:app:)`.
     @Sendable static func http1Connection(_ channel: Channel) -> EventLoopFuture<RequestChannel> {
         channel.eventLoop.makeCompletedFuture {
-            try channel.pipeline.syncOperations.addHandler(HTTPServerProtocolErrorHandler())
+            try channel.pipeline.syncOperations.configureHTTPServerPipeline(
+                withPipeliningAssistance: false, withErrorHandling: true)
             return try RequestChannel(wrappingChannelSynchronously: channel)
         }
+    }
+
+    /// After ALPN chose HTTP/2: the HTTP/2 handler and its stream multiplexer.
+    @Sendable static func http2Connection(
+        _ channel: Channel
+    ) -> EventLoopFuture<(Void, NIOHTTP2Handler.AsyncStreamMultiplexer<RequestChannel>)> {
+        channel.configureAsyncHTTP2Pipeline(mode: .server, configuration: http2Configuration,
+                                            streamInitializer: http2Stream).map { ((), $0) }
     }
 
     /// Each HTTP/2 stream is translated to HTTP/1.1 parts; the codec also drops connection-specific
@@ -124,7 +138,7 @@ public enum NIOHTTPServer {
         let outcome: Result<Void, any Error>
         do {
             try await listening.channel.executeThenClose { inbound in
-                try await forEachConcurrently(inbound) { connection in await handle(connection, app: app) }
+                try await Concurrency.forEachConcurrently(inbound) { connection in await handle(connection, app: app) }
             }
             outcome = .success(())
         } catch {
@@ -132,46 +146,6 @@ public enum NIOHTTPServer {
         }
         try? await listening.group.shutdownGracefully()
         try outcome.get()
-    }
-
-    /// Runs `body` for every element of `source` as a child task of the caller, without waiting
-    /// for one element's work before taking the next, and without keeping finished children
-    /// around. Ends when `source` ends and all work is done; cancellation cancels the work.
-    ///
-    /// macOS 14 has `DiscardingTaskGroup` for this. A plain task group keeps a finished child
-    /// until `next()` is called, and the loop that reads `source` cannot also sit in `next()`,
-    /// so on macOS 13 reading `source` is done by children as well: one child owns the (non
-    /// Sendable) iterator and relays elements, one child at a time takes the next element, and
-    /// the body only ever awaits `next()`, which reaps whatever finished.
-    static func forEachConcurrently<Source: AsyncSequence & Sendable>(
-        _ source: Source, discardingGroup: Bool = true, _ body: @escaping @Sendable (Source.Element) async -> Void
-    ) async throws where Source.Element: Sendable {
-        if discardingGroup, #available(macOS 14.0, *) {
-            try await withThrowingDiscardingTaskGroup { group in
-                for try await element in source {
-                    group.addTask { await body(element) }
-                }
-            }
-            return
-        }
-        try await withThrowingTaskGroup(of: ServeEvent<Source.Element>.self) { group in
-            let (elements, relay) = AsyncStream.makeStream(of: Source.Element.self)
-            group.addTask {
-                defer { relay.finish() }
-                for try await element in source { relay.yield(element) }
-                return .handled
-            }
-            group.addTask { var next = elements.makeAsyncIterator(); return .took(await next.next()) }
-            while let event = try await group.next() {
-                switch event {
-                case .took(let element?):
-                    group.addTask { await body(element); return .handled }
-                    group.addTask { var next = elements.makeAsyncIterator(); return .took(await next.next()) }
-                case .took(nil), .handled:
-                    break
-                }
-            }
-        }
     }
 
     static func handle(_ connection: Connection, app: HTTPApp) async {
@@ -188,7 +162,7 @@ public enum NIOHTTPServer {
                 await handle(channel, app: app)
             case .http2((_, let multiplexer)):
                 // Each stream is a child of the connection's task.
-                try await forEachConcurrently(multiplexer.inbound) { stream in await handle(stream, app: app) }
+                try await Concurrency.forEachConcurrently(multiplexer.inbound) { stream in await handle(stream, app: app) }
             }
         } catch {
             // A failed TLS handshake or an unexpected ALPN result: the channel is already closed.
@@ -275,9 +249,19 @@ public enum NIOHTTPServer {
             // DATA frames until END_STREAM.
             try await outbound.write(.head(HTTPResponseHead(version: request.version, status: status, headers: headers)))
             let consumer = Task {
-                for await chunk in stream {
-                    try await outbound.write(.body(.byteBuffer(ByteBuffer(string: chunk))))
+                // A failed write (the client is gone) cancels this task and keeps iterating:
+                // the next `next()` sees the cancellation and terminates the stream, which
+                // stops the work behind it, even if the close callback has not run yet.
+                var failure: (any Error)?
+                for await chunk in stream where failure == nil {
+                    do {
+                        try await outbound.write(.body(.byteBuffer(ByteBuffer(string: chunk))))
+                    } catch {
+                        failure = error
+                        withUnsafeCurrentTask { $0?.cancel() }
+                    }
                 }
+                if let failure { throw failure }
             }
             // Cancelling the consumer terminates the stream, which stops the work behind it;
             // that happens when the client goes away and when the server is stopping.
@@ -292,12 +276,4 @@ public enum NIOHTTPServer {
             return keepAlive
         }
     }
-}
-
-/// What a child of `NIOHTTPServer.forEachConcurrently` reports back on macOS 13.
-enum ServeEvent<Element: Sendable>: Sendable {
-    /// The next element, or nil when the source has ended.
-    case took(Element?)
-    /// Work for one element finished (or the relay ended).
-    case handled
 }

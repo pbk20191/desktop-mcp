@@ -11,10 +11,11 @@ struct DesktopMCPCommand: AsyncParsableCommand {
         abstract: "MCP server for macOS desktop automation.",
         discussion: """
         Permissions are granted to the app that launches this binary (Claude, your terminal, ...) \
-        under System Settings > Privacy & Security > Accessibility and > Screen Recording.
+        under System Settings > Privacy & Security > Accessibility and > Screen Recording. \
+        Installed as a Launch Agent (`install`), desktop-mcp holds them itself.
         """,
         version: DesktopMCP.version,
-        subcommands: [Serve.self, Auth.self, Permissions.self],
+        subcommands: [Serve.self, Auth.self, Permissions.self, Install.self, Uninstall.self, Connect.self],
         defaultSubcommand: Serve.self
     )
 }
@@ -26,7 +27,7 @@ struct CLIError: Error, CustomStringConvertible {
 }
 
 enum TransportChoice: String, ExpressibleByArgument, CaseIterable {
-    case stdio, sse
+    case stdio
     case streamableHTTP = "streamable-http"
 }
 
@@ -37,13 +38,16 @@ struct Serve: AsyncParsableCommand {
         abstract: "Run the MCP server. The default command.",
         discussion: "Values not given here come from the config file (~/.desktop-mcp/config.toml), then defaults.")
 
-    @Option(help: "The transport layer used by the MCP server. (default: stdio)")
-    var transport: TransportChoice?
+    /// Raw text, not `TransportChoice`: a Launch Agent installed by an older version still runs
+    /// `serve --transport sse`, which `ServePlan.resolve` maps instead of the parser rejecting it
+    /// (a rejection would crash-loop the agent under KeepAlive).
+    @Option(help: "The transport layer used by the MCP server: stdio|streamable-http. (default: stdio)")
+    var transport: String?
 
-    @Option(help: "Host to bind the SSE/Streamable HTTP server. (default: localhost)")
+    @Option(help: "Host to bind the Streamable HTTP server. (default: localhost)")
     var host: String?
 
-    @Option(help: "Port to bind the SSE/Streamable HTTP server. (default: 8000)")
+    @Option(help: "Port to bind the Streamable HTTP server. (default: 8000)")
     var port: Int?
 
     @Flag(help: "Enable verbose logging for troubleshooting.")
@@ -90,8 +94,13 @@ struct Serve: AsyncParsableCommand {
                                discussion: "Or $\(Shell.maxTimeoutEnv); default 240."))
     var maxTimeout: Int?
 
+    @Option(name: .customLong("session-timeout"),
+            help: "Seconds a session may stay idle before it is dropped; 0 keeps sessions until the client ends them. (default: 1800)")
+    var sessionTimeout: Int?
+
     func validate() throws {
         if let maxTimeout, maxTimeout < 0 { throw ValidationError("--max-timeout must be 0 or greater.") }
+        if let sessionTimeout, sessionTimeout < 0 { throw ValidationError("--session-timeout must be 0 or greater.") }
         if let port, !(0...65535).contains(port) { throw ValidationError("--port must be between 0 and 65535.") }
     }
 
@@ -103,7 +112,7 @@ struct Serve: AsyncParsableCommand {
             throw CLIError(error)
         }
         var values = ServePlan.CommandLineValues()
-        values.transport = transport?.rawValue
+        values.transport = transport
         values.host = host
         values.port = port
         values.authKey = authKey
@@ -114,6 +123,7 @@ struct Serve: AsyncParsableCommand {
         values.oauthClientID = oauthClientID
         values.oauthClientSecret = oauthClientSecret
         values.excludeTools = excludeTools
+        values.sessionTimeout = sessionTimeout
         do {
             return try ServePlan.resolve(values, environment: ProcessInfo.processInfo.environment, config: fileConfig)
         } catch {
@@ -138,8 +148,8 @@ struct Serve: AsyncParsableCommand {
         let analytics = PostHogAnalytics.isEnabled() ? PostHogAnalytics(verbose: debug) : nil
         let debug = self.debug
         let stdio = plan.transport == "stdio"
-        let server = await DesktopMCP.makeServer(excluding: plan.excludedTools)
-        await server.setObserver(analytics)
+        let registry = await DesktopMCP.makeRegistry(excluding: plan.excludedTools)
+        await registry.setObserver(analytics)
 
         // This task is the root; everything else is a child of it: telemetry delivery, the server
         // (stdio or HTTP) and the signal watcher that stops it. The process exits by returning.
@@ -150,11 +160,11 @@ struct Serve: AsyncParsableCommand {
                 await withTaskGroup(of: Int32.self) { race in
                     race.addTask {
                         if stdio {
-                            await server.runStdio()
+                            await StdioServer.run(registry)
                             return 0
                         }
                         do {
-                            try await serveHTTP(server, plan: plan, debug: debug)
+                            try await serveHTTP(registry, plan: plan, debug: debug)
                             return 0
                         } catch is CancellationError {
                             return 0
@@ -182,28 +192,31 @@ struct Serve: AsyncParsableCommand {
         if code != 0 { throw ExitCode(code) }
     }
 
-    func serveHTTP(_ server: MCPServer, plan: ServePlan, debug: Bool) async throws {
-        let transport: HTTPTransport = plan.transport == "sse" ? .sse : .streamableHTTP
-        var settings = HTTPApp.Settings(transport: transport, authKey: plan.authKey,
+    func serveHTTP(_ registry: ToolRegistry, plan: ServePlan, debug: Bool) async throws {
+        var settings = HTTPApp.Settings(authKey: plan.authKey,
                                         ipAllowlist: plan.ipAllowlist.isEmpty ? nil : plan.ipAllowlist)
         if let oauth = plan.oauth {
             settings.oauth = OAuthService(issuer: "\(plan.scheme)://\(plan.host):\(plan.port)",
                                           clientID: oauth.clientID, clientSecret: oauth.clientSecret)
         }
-        let app = HTTPApp(server: server, settings: settings)
+        settings.sessionIdleTimeout = plan.sessionTimeout
+        settings.debug = debug
+        let app = HTTPApp(registry: registry, settings: settings)
         let tls = plan.tls.map { NIOHTTPServer.TLSFiles(certificate: $0.certificate, privateKey: $0.privateKey) }
         let listening = try await NIOHTTPServer.bind(host: plan.host, port: plan.port, tls: tls)
-        let path = transport == .sse ? "/sse" : "/mcp"
-        log("Serving \(plan.transport) on \(plan.scheme)://\(plan.host):\(listening.port ?? plan.port)\(path)"
+        log("Serving streamable-http on \(plan.scheme)://\(plan.host):\(listening.port ?? plan.port)/mcp"
             + (plan.tls != nil ? " (TLS; HTTP/2 or HTTP/1.1 via ALPN)" : "")
             + (plan.authKey != nil ? " (auth key required)" : "")
             + (plan.oauth != nil ? " (OAuth enabled)" : ""))
-        if transport == .sse {
-            log("Warning: the HTTP+SSE transport is deprecated since MCP 2025-03-26 and may be removed; "
-                + "switch clients to streamable-http (POST /mcp).")
-        }
         if debug { log("IP allowlist: \(plan.ipAllowlist.isEmpty ? "none" : plan.ipAllowlist.map(\.description).joined(separator: ", "))") }
-        try await NIOHTTPServer.serve(listening, app: app)
+        // Sessions outlive requests: end them (and their tool calls) however `serve` ends.
+        do {
+            try await NIOHTTPServer.serve(listening, app: app)
+        } catch {
+            await app.shutdown()
+            throw error
+        }
+        await app.shutdown()
     }
 }
 
@@ -235,7 +248,7 @@ struct Auth: ParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Generate an auth key (and optionally TLS certs) and save to ~/.desktop-mcp/config.toml.")
 
-    @Option(help: "Transport mode to configure. Saved to config.toml. (sse is deprecated since MCP 2025-03-26)")
+    @Option(help: "Transport mode to configure. Saved to config.toml.")
     var transport: TransportChoice = .streamableHTTP
 
     @Option(help: "Host to bind the server to.")
@@ -294,13 +307,9 @@ struct Auth: ParsableCommand {
         print("\n─── Start the server ───")
         print("  \(executable) serve")
         let headers = ["Authorization": "Bearer \(key)"]
-        if transport == .sse {
-            print("\n─── Claude Desktop config (SSE) ───")
-            print(clientConfig(ClientConfig.Server(type: "sse", url: "\(scheme)://\(host):\(port)/sse", headers: headers)))
-        } else {
-            print("\n─── Claude Desktop config (Streamable HTTP) ───")
-            print(clientConfig(ClientConfig.Server(type: "http", url: "\(scheme)://\(host):\(port)/mcp/", headers: headers)))
-        }
+        print("\n─── Client config (Streamable HTTP) ───")
+        print(clientConfig(ClientConfig.Server(type: "http", url: "\(scheme)://\(host):\(port)/mcp/", headers: headers)))
+        print(Install.claudeDesktopNote(executable: executable, url: "\(scheme)://\(host):\(port)/mcp/", authKey: key))
     }
 
     func clientConfig(_ server: ClientConfig.Server) -> String {
@@ -316,6 +325,7 @@ struct ClientConfig: Encodable {
         var args: [String]?
         var url: String?
         var headers: [String: String]?
+        var env: [String: String]?
     }
 
     var mcpServers: [String: Server]
@@ -377,7 +387,8 @@ struct Permissions: ParsableCommand {
     static func checkAccessibility(prompt: Bool) -> Bool {
         let granted = AX.isTrusted(prompt: prompt)
         if !granted {
-            log("Accessibility permission is not granted. Grant it to the app that launched desktop-mcp in "
+            log("Accessibility permission is not granted. Grant it to the app that launched desktop-mcp "
+                + "(or to desktop-mcp itself when it runs as a Launch Agent) in "
                 + "System Settings > Privacy & Security > Accessibility, then restart that app.")
         }
         return granted
