@@ -46,39 +46,101 @@ public struct StdioBridge: Sendable {
     let session: URLSession
     let state = State()
 
-    /// No inactivity timeout: a tool call can take minutes (Wait, Shell) and a session stream
-    /// can stay silent for hours; the server ends the response when the call does.
+    /// No inactivity or resource timeout: a tool call can take minutes (Wait, Shell), and the
+    /// session's `GET` stream stays open, mostly silent, for as long as the bridge runs; the
+    /// server ends a response when the call does.
     public init(target: Target, session: URLSession? = nil) {
         self.target = target
         self.session = session ?? {
             let configuration = URLSessionConfiguration.ephemeral
             configuration.timeoutIntervalForRequest = 0
-            configuration.timeoutIntervalForResource = 24 * 3600
+            configuration.timeoutIntervalForResource = 0
             return URLSession(configuration: configuration)
         }()
     }
 
     /// Reads stdin until it closes (or the task is cancelled), forwarding each line as it arrives
-    /// so a slow call does not hold up the next, and hands every reply line to `output`.
-    public func run(input: FileHandle, output: @escaping @Sendable (String) async -> Void) async {
-        await withTaskGroup(of: Void.self) { group in
-            func dispatch(_ bytes: [UInt8]) {
-                let line = String(decoding: bytes, as: UTF8.self)
-                guard !line.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-                group.addTask { await forward(line, output: output) }
-            }
-            var buffer: [UInt8] = []
-            for await chunk in Self.chunks(of: input) {
-                for byte in chunk {
-                    if byte == 0x0A {
-                        dispatch(buffer)
-                        buffer.removeAll(keepingCapacity: true)
-                    } else {
-                        buffer.append(byte)
+    /// so a slow call does not hold up the next, and hands every reply line to `output`, which
+    /// returns false once a line could not be written. While the bridge holds a session it also
+    /// listens on the session's `GET` stream and hands on what the server sends there.
+    ///
+    /// At EOF the `GET` listener is cancelled and the forwarded requests run to their end. A
+    /// failed write cancels everything: nobody is left to read what the rest would write.
+    public func run(input: FileHandle, output: @escaping @Sendable (String) async -> Bool) async {
+        let (failures, failed) = AsyncStream<Void>.makeStream()
+        let write: @Sendable (String) async -> Void = { line in
+            if !(await output(line)) { failed.yield() }
+        }
+        await withTaskGroup(of: Void.self) { outer in
+            outer.addTask {
+                await withTaskGroup(of: Void.self) { group in
+                    func dispatch(_ bytes: [UInt8]) {
+                        let line = String(decoding: bytes, as: UTF8.self)
+                        guard !line.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+                        group.addTask {
+                            await forward(line, output: write)
+                            await followSession(output: write)
+                        }
                     }
+                    var buffer: [UInt8] = []
+                    for await chunk in Self.chunks(of: input) {
+                        for byte in chunk {
+                            if byte == 0x0A {
+                                dispatch(buffer)
+                                buffer.removeAll(keepingCapacity: true)
+                            } else {
+                                buffer.append(byte)
+                            }
+                        }
+                    }
+                    if !buffer.isEmpty, !Task.isCancelled { dispatch(buffer) }
+                    // The group now waits for the forwarded requests, but not for the listener.
+                    await state.close()
                 }
             }
-            if !buffer.isEmpty, !Task.isCancelled { dispatch(buffer) }
+            outer.addTask {
+                for await _ in failures { return }
+            }
+            // Whichever ends first: the input and every request, or stdout.
+            await outer.next()
+            outer.cancelAll()
+        }
+        failed.finish()
+        await state.close()
+    }
+
+    /// Keeps one `GET` listener on the current session: a new one when the session id first
+    /// appears or changes, none once the bridge is closing.
+    func followSession(output: @escaping @Sendable (String) async -> Void) async {
+        await state.follow { sessionID in
+            Task { await listen(sessionID: sessionID, output: output) }
+        }
+    }
+
+    /// The session's standalone `GET` stream, where the server sends what it initiates
+    /// (`notifications/tools/list_changed`, say): every non-empty payload goes to `output`. A
+    /// stream that ends is re-opened a second later while the session id is unchanged; a 404
+    /// (the session is gone) or 405 (the server offers no stream) ends listening for good.
+    func listen(sessionID: String, output: @Sendable (String) async -> Void) async {
+        while !Task.isCancelled {
+            var request = URLRequest(url: target.url)
+            request.httpMethod = "GET"
+            request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+            request.setValue(sessionID, forHTTPHeaderField: "Mcp-Session-Id")
+            authorize(&request)
+            do {
+                let (bytes, response) = try await session.bytes(for: request)
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                if status == 404 || status == 405 { return }
+                // Anything else, a 409 while the server still holds the previous stream
+                // included, is retried below.
+                if (200..<300).contains(status) {
+                    try await Self.readEvents(bytes) { await output(Self.singleLine($0)) }
+                }
+            } catch {}
+            guard !Task.isCancelled else { return }
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled, await state.sessionID == sessionID else { return }
         }
     }
 
@@ -86,15 +148,13 @@ public struct StdioBridge: Sendable {
     /// complete: nothing for notifications and responses (HTTP 202), the reply for a request
     /// (after whatever the server sends first on its event stream), or a JSON-RPC error carrying
     /// the HTTP failure when the server could not be reached or refused the request.
+    ///
+    /// When the server has forgotten the session (404), the first `initialize` this bridge
+    /// forwarded is sent again for a new one, its reply dropped (the stdio client has had its
+    /// own), and the message is sent once more; a second 404 is reported like any failure.
     public func forward(_ line: String, output: @Sendable (String) async -> Void) async {
         let body = line.trimmingCharacters(in: .whitespaces)
-        var request = URLRequest(url: target.url)
-        request.httpMethod = "POST"
-        request.httpBody = Data(body.utf8)
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
-        if let key = target.authKey { request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
-        if let sessionID = await state.sessionID { request.setValue(sessionID, forHTTPHeaderField: "Mcp-Session-Id") }
+        if HTTPApp.isInitialize(Data(body.utf8)) { await state.rememberInitialize(body) }
         let id = Self.requestID(in: body)
         var answered = false
         func emit(_ payload: String) async {
@@ -103,9 +163,16 @@ public struct StdioBridge: Sendable {
             await output(reply)
         }
         do {
-            let (bytes, response) = try await session.bytes(for: request)
-            guard let http = response as? HTTPURLResponse else { throw Failure("not an HTTP response") }
-            if let sessionID = http.value(forHTTPHeaderField: "Mcp-Session-Id") { await state.remember(sessionID) }
+            var sent = await state.sessionID
+            var (bytes, http) = try await post(body, sessionID: sent)
+            if http.statusCode == 404, let stale = sent,
+               let fresh = await state.recover(from: stale, replay: { await replayInitialize($0) }) {
+                sent = fresh
+                (bytes, http) = try await post(body, sessionID: fresh)
+            }
+            if let sessionID = http.value(forHTTPHeaderField: "Mcp-Session-Id") {
+                await state.remember(sessionID, replacing: sent)
+            }
             guard (200..<300).contains(http.statusCode) else {
                 var head: [UInt8] = []
                 for try await byte in bytes {
@@ -118,18 +185,7 @@ public struct StdioBridge: Sendable {
             if http.statusCode == 202 { return }
             let isEventStream = (http.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased().hasPrefix("text/event-stream")
             if isEventStream {
-                // Lines end at "\n" only: `AsyncLineSequence` also ends them at CR, NEL, U+2028 and
-                // U+2029, which a JSON string may carry unescaped.
-                var parser = SSEParser()
-                var pendingLine: [UInt8] = []
-                for try await byte in bytes {
-                    pendingLine.append(byte)
-                    guard byte == 0x0A else { continue }
-                    for payload in parser.feed(pendingLine) { await emit(payload) }
-                    pendingLine.removeAll(keepingCapacity: true)
-                }
-                _ = parser.feed(pendingLine)
-                if let payload = parser.finish() { await emit(payload) }
+                try await Self.readEvents(bytes) { await emit($0) }
             } else {
                 var data: [UInt8] = []
                 for try await byte in bytes { data.append(byte) }
@@ -146,6 +202,52 @@ public struct StdioBridge: Sendable {
             let reply: Value = ["jsonrpc": "2.0", "id": id, "error": ["code": -32000, "message": .string(message)]]
             await output(JSONCoding.encodeString(reply))
         }
+    }
+
+    /// Posts one message: the response head, and the body as it arrives.
+    func post(_ body: String, sessionID: String?) async throws -> (URLSession.AsyncBytes, HTTPURLResponse) {
+        var request = URLRequest(url: target.url)
+        request.httpMethod = "POST"
+        request.httpBody = Data(body.utf8)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
+        authorize(&request)
+        if let sessionID { request.setValue(sessionID, forHTTPHeaderField: "Mcp-Session-Id") }
+        let (bytes, response) = try await session.bytes(for: request)
+        guard let http = response as? HTTPURLResponse else { throw Failure("not an HTTP response") }
+        return (bytes, http)
+    }
+
+    /// Sends the remembered `initialize` without a session id, so the server starts a new
+    /// session, and reads its reply to the end without forwarding it. The new session's id, or
+    /// nil when the server would not start one.
+    func replayInitialize(_ line: String) async -> String? {
+        guard let (bytes, http) = try? await post(line, sessionID: nil), (200..<300).contains(http.statusCode),
+              let id = http.value(forHTTPHeaderField: "Mcp-Session-Id") else { return nil }
+        do {
+            for try await _ in bytes {}
+        } catch {}
+        return id
+    }
+
+    func authorize(_ request: inout URLRequest) {
+        if let key = target.authKey { request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
+    }
+
+    /// Hands each event's `data` to `emit` as soon as the blank line ending it arrives. Lines end
+    /// at "\n" only: `AsyncLineSequence` also ends them at CR, NEL, U+2028 and U+2029, which a
+    /// JSON string may carry unescaped.
+    static func readEvents(_ bytes: URLSession.AsyncBytes, emit: (String) async -> Void) async throws {
+        var parser = SSEParser()
+        var pendingLine: [UInt8] = []
+        for try await byte in bytes {
+            pendingLine.append(byte)
+            guard byte == 0x0A else { continue }
+            for payload in parser.feed(pendingLine) { await emit(payload) }
+            pendingLine.removeAll(keepingCapacity: true)
+        }
+        _ = parser.feed(pendingLine)
+        if let payload = parser.finish() { await emit(payload) }
     }
 
     /// Whether `text` is the response (result or error) to the request with `id`.
@@ -191,8 +293,67 @@ public struct StdioBridge: Sendable {
     }
 
     actor State {
-        var sessionID: String?
-        func remember(_ id: String) { sessionID = id }
+        private(set) var sessionID: String?
+        /// The first `initialize` forwarded: what a recovery sends again.
+        private(set) var initializeLine: String?
+        /// The `GET` listener and the session it listens on.
+        private(set) var listener: Task<Void, Never>?
+        private var listenerSessionID: String?
+        /// Recoveries attempted (test hook).
+        private(set) var replays = 0
+        private var recovering: Task<String?, Never>?
+        /// Set at EOF: no new listener from then on.
+        private var closed = false
+
+        func rememberInitialize(_ line: String) {
+            if initializeLine == nil { initializeLine = line }
+        }
+
+        /// Takes the id a response carried, unless the session has moved on since the request
+        /// was sent (a slow response from a session a recovery has replaced).
+        func remember(_ id: String, replacing sent: String?) {
+            if sessionID == sent { sessionID = id }
+        }
+
+        /// A new session id after the server answered 404 for `stale`, or nil when there is
+        /// nothing to replay or the server would not start a session. Requests that hit the
+        /// 404 together share one replay; one that comes after it takes the id it produced.
+        func recover(from stale: String, replay: @escaping @Sendable (String) async -> String?) async -> String? {
+            if let sessionID, sessionID != stale { return sessionID }
+            if let recovering { return await recovering.value }
+            guard let initializeLine else { return nil }
+            sessionID = nil
+            stopListening()
+            replays += 1
+            let task = Task { await replay(initializeLine) }
+            recovering = task
+            let fresh = await task.value
+            recovering = nil
+            if let fresh { sessionID = fresh }
+            return fresh
+        }
+
+        /// Starts a listener with `start` when the session id differs from the one listened on.
+        func follow(_ start: @Sendable (String) -> Task<Void, Never>) {
+            guard !closed, sessionID != listenerSessionID else { return }
+            stopListening()
+            listenerSessionID = sessionID
+            if let sessionID { listener = start(sessionID) }
+        }
+
+        /// Cancels the listener and waits for it to end; no listener starts afterwards.
+        func close() async {
+            closed = true
+            let listener = listener
+            stopListening()
+            await listener?.value
+        }
+
+        private func stopListening() {
+            listener?.cancel()
+            listener = nil
+            listenerSessionID = nil
+        }
     }
 }
 

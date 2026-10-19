@@ -63,6 +63,55 @@ final class StdioBridgeTests: XCTestCase {
         XCTAssertEqual(try JSON.parse(lines[0])["result"]?["s"]?.stringValue, "a\u{2028}b\u{2029}c\u{85}d")
     }
 
+    func testNoInitializeMeansNoReplay() async throws {
+        let requests = Locked(0)
+        StubHTTP.respond { _ in
+            let count = requests.withLock { $0 += 1; return $0 }
+            // The first answer hands out a session id; the session is gone by the second.
+            if count == 1 {
+                return (200, ["Content-Type": "application/json", "Mcp-Session-Id": "a"],
+                        [(0, Data(#"{"jsonrpc":"2.0","id":1,"result":{}}"#.utf8))])
+            }
+            return (404, [:], [(0, Data("Not Found".utf8))])
+        }
+        let bridge = stubBridge()
+        await bridge.forward(Self.ping) { _ in }
+        let collector = LineCollector()
+        await bridge.forward(#"{"jsonrpc":"2.0","id":2,"method":"ping"}"#) { await collector.append($0) }
+        let lines = await collector.all()
+        XCTAssertEqual(lines.count, 1)
+        XCTAssertEqual(try JSON.parse(lines[0])["error"]?["code"]?.intValue, -32000, lines[0])
+        XCTAssertEqual(requests.current, 2)
+        let replays = await bridge.state.replays
+        XCTAssertEqual(replays, 0)
+    }
+
+    func testA404OnTheRetryIsReported() async throws {
+        let requests = Locked(0)
+        StubHTTP.respond { _ in
+            let count = requests.withLock { $0 += 1; return $0 }
+            // initialize, ping (404), replayed initialize, resent ping (404 again).
+            if count % 2 == 1 {
+                return (200, ["Content-Type": "application/json", "Mcp-Session-Id": "s\(count)"],
+                        [(0, Data(#"{"jsonrpc":"2.0","id":1,"result":{}}"#.utf8))])
+            }
+            return (404, [:], [(0, Data("Not Found".utf8))])
+        }
+        let bridge = stubBridge()
+        await bridge.forward(#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#) { _ in }
+        let collector = LineCollector()
+        await bridge.forward(#"{"jsonrpc":"2.0","id":2,"method":"ping"}"#) { await collector.append($0) }
+        let lines = await collector.all()
+        XCTAssertEqual(lines.count, 1)
+        let reply = try JSON.parse(lines[0])
+        XCTAssertEqual(reply["id"]?.intValue, 2)
+        XCTAssertEqual(reply["error"]?["code"]?.intValue, -32000, lines[0])
+        XCTAssertTrue(lines[0].contains("404"), lines[0])
+        XCTAssertEqual(requests.current, 4)
+        let replays = await bridge.state.replays
+        XCTAssertEqual(replays, 1)
+    }
+
     func testParserHandlesCRLFAndSplitBoundaries() {
         let stream = "event: message\r\ndata: {\"a\":\r\ndata: \"\u{E9}\"}\r\n\r\n: keep-alive\r\n\r\nid: 2\r\ndata: \r\n\r\ndata: x\r\n\r\ndata:y"
         var parser = SSEParser()

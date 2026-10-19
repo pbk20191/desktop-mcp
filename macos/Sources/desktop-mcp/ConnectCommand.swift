@@ -45,6 +45,7 @@ struct Connect: AsyncParsableCommand {
         }
         // A write to a closed stdout must surface as EPIPE, not kill the process.
         signal(SIGPIPE, SIG_IGN)
+        // False once stdout is gone: the bridge then cancels what it is still forwarding.
         await StdioBridge(target: target).run(input: .standardInput) { line in
             await StdoutWriter.shared.write(line + "\n")
         }
