@@ -23,7 +23,15 @@ internal static unsafe class Win32Clipboard
             var memory = (HGLOBAL)(nint)handle;
             var pointer = PInvoke.GlobalLock(memory);
             if (pointer is null) throw new Win32Exception(Marshal.GetLastPInvokeError());
-            try { return new string((char*)pointer); }
+            try
+            {
+                // Another application wrote this block: read no further than its size, up to the first NUL.
+                var size = PInvoke.GlobalSize(memory);
+                if (size == 0) throw new Win32Exception(Marshal.GetLastPInvokeError());
+                var text = new ReadOnlySpan<char>(pointer, (int)Math.Min(size / sizeof(char), int.MaxValue));
+                var end = text.IndexOf('\0');
+                return new string(end < 0 ? text : text[..end]);
+            }
             finally { PInvoke.GlobalUnlock(memory); }
         }
         finally
@@ -58,6 +66,20 @@ internal static unsafe class Win32Clipboard
                 PInvoke.GlobalFree(memory);
                 throw new Win32Exception(error);
             }
+        }
+        finally
+        {
+            PInvoke.CloseClipboard();
+        }
+    }
+
+    /// <summary>Empties the clipboard (tests and the probe restore an empty clipboard with this).</summary>
+    public static void Clear()
+    {
+        Open();
+        try
+        {
+            if (!PInvoke.EmptyClipboard()) throw new Win32Exception(Marshal.GetLastPInvokeError());
         }
         finally
         {

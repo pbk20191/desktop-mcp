@@ -3,8 +3,8 @@ using DesktopMcp.Desktop.ClipboardAccess;
 namespace DesktopMcp.Desktop.Tests;
 
 /// <summary>
-/// Side effect: changes the user's clipboard text and restores the previous text in <c>finally</c> (non-text content
-/// is lost). Category=Desktop, so the default run skips it.
+/// Side effect: changes the user's clipboard text and restores the previous text in <c>finally</c>, or empties the
+/// clipboard when it held no text (non-text content is lost). Category=Desktop, so the default run skips it.
 /// </summary>
 [Trait("Category", "Desktop")]
 public sealed class ClipboardTests
@@ -34,6 +34,7 @@ public sealed class ClipboardTests
         var text = "cross " + Guid.NewGuid();
         await Task.Run(() => Win32Clipboard.SetText(text));
         Assert.Equal(text, await _clipboard.GetTextAsync(CancellationToken.None));
+        Assert.Equal(ClipboardPath.WinRt, _clipboard.LastPath);
     });
 
     private static async Task PreservingClipboardAsync(Func<Task> test)
@@ -47,6 +48,7 @@ public sealed class ClipboardTests
         finally
         {
             if (saved is not null) await clipboard.SetTextAsync(saved, CancellationToken.None);
+            else await Task.Run(Win32Clipboard.Clear);
         }
     }
 }

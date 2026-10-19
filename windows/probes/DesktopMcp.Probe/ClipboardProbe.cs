@@ -5,7 +5,7 @@ namespace DesktopMcp.Probe;
 
 /// <summary>
 /// Clipboard paths under NativeAOT: WinRT on an STA thread, WinRT on the thread pool (MTA), Win32, and SystemClipboard.
-/// Changes the user's clipboard text and restores it in <c>finally</c>.
+/// Changes the user's clipboard text and restores it in <c>finally</c> (empties it when it held no text).
 /// </summary>
 internal static class ClipboardProbe
 {
@@ -28,6 +28,7 @@ internal static class ClipboardProbe
         finally
         {
             if (saved is not null) await clipboard.SetTextAsync(saved, CancellationToken.None);
+            else await Task.Run(Win32Clipboard.Clear);
         }
     }
 
