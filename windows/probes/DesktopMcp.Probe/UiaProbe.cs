@@ -9,25 +9,18 @@ namespace DesktopMcp.Probe;
 
 /// <summary>
 /// UI Automation through CsWin32's [GeneratedComInterface] interfaces under NativeAOT (P2 Task 1): creates the client
-/// on an MTA thread, reads the root element and its cached children with the traversal cache request (the check), then
-/// walks the foreground window best-effort (its failure is printed, never fatal). Read-only: it never sets focus or
-/// invokes a pattern.
+/// on the UiaWorker's MTA thread, reads the root element and its cached children with the traversal cache request (the
+/// check), then walks the foreground window best-effort (its failure is printed, never fatal). Read-only: it never sets
+/// focus or invokes a pattern.
 /// </summary>
 internal static class UiaProbe
 {
     public static async Task<bool> RunAsync()
     {
-        var result = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var thread = new Thread(() =>
-        {
-            try { result.SetResult(Run()); }
-            catch (Exception e) { result.SetException(e); }
-        }) { IsBackground = true, Name = "uia probe" };
-        thread.SetApartmentState(ApartmentState.MTA);
-        thread.Start();
+        using var worker = new UiaWorker<UiaSession>(UiaSession.Create);
         try
         {
-            return await result.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            return await worker.RunAsync((session, _) => Run(session), TimeSpan.FromSeconds(30), default);
         }
         catch (Exception e)
         {
@@ -36,10 +29,9 @@ internal static class UiaProbe
         }
     }
 
-    private static unsafe bool Run()
+    private static unsafe bool Run(UiaSession session)
     {
         var clock = Stopwatch.StartNew();
-        var session = UiaSession.Create();
         var root = session.Automation.GetRootElement();
         var rootName = Take(root.get_CurrentName());
         Console.WriteLine($"uia: client created and root read in {clock.ElapsedMilliseconds} ms, root='{rootName}', " +

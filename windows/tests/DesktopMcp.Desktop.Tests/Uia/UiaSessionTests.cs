@@ -4,30 +4,37 @@ using Windows.Win32;
 namespace DesktopMcp.Desktop.Tests.Uia;
 
 [Trait("Category", "Desktop")]
-public class UiaSessionTests
+public sealed class UiaSessionTests : IDisposable
 {
+    private readonly UiaWorker<UiaSession> _worker = new(UiaSession.Create);
+
+    public void Dispose() => _worker.Dispose();
+
     [Fact]
     public async Task CreatesTheClientOnAnMtaThreadAndReadsTheRoot()
     {
-        var (name, connection, transaction) = await OnMtaThread(() =>
+        var (name, connection, transaction, apartment) = await OnWorker(session =>
         {
-            var session = UiaSession.Create();
             var root = session.Automation.GetRootElement();
             var bstr = root.get_CurrentName();
-            try { return (bstr.ToString() ?? "", session.Automation.get_ConnectionTimeout(), session.Automation.get_TransactionTimeout()); }
+            try
+            {
+                return (bstr.ToString() ?? "", session.Automation.get_ConnectionTimeout(), session.Automation.get_TransactionTimeout(),
+                    Thread.CurrentThread.GetApartmentState());
+            }
             finally { PInvoke.SysFreeString(bstr); }
         });
         Assert.NotEqual("", name);
         Assert.Equal(UiaSession.ConnectionTimeoutMs, connection);
         Assert.Equal(UiaSession.TransactionTimeoutMs, transaction);
+        Assert.Equal(ApartmentState.MTA, apartment);
     }
 
     [Fact]
     public async Task CachesTheTraversalPropertiesForTheRootsChildren()
     {
-        var count = await OnMtaThread(() =>
+        var count = await OnWorker(session =>
         {
-            var session = UiaSession.Create();
             var children = session.Automation.GetRootElement().BuildUpdatedCache(session.ChildrenRequest).GetCachedChildren();
             var length = children?.get_Length() ?? 0;
             for (var i = 0; i < length; i++)
@@ -43,16 +50,5 @@ public class UiaSessionTests
         Assert.True(count > 0, "the desktop root has no top-level children");
     }
 
-    private static Task<T> OnMtaThread<T>(Func<T> work)
-    {
-        var result = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var thread = new Thread(() =>
-        {
-            try { result.SetResult(work()); }
-            catch (Exception e) { result.SetException(e); }
-        }) { IsBackground = true };
-        thread.SetApartmentState(ApartmentState.MTA);
-        thread.Start();
-        return result.Task.WaitAsync(TimeSpan.FromSeconds(30));
-    }
+    private Task<T> OnWorker<T>(Func<UiaSession, T> work) => _worker.RunAsync((session, _) => work(session), TimeSpan.FromSeconds(30), default);
 }
