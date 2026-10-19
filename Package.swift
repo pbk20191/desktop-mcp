@@ -15,7 +15,8 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-nio-transport-services", from: "1.21.0"),
         .package(url: "https://github.com/apple/swift-nio-ssl", from: "2.27.0"),
         .package(url: "https://github.com/apple/swift-nio-http2", from: "1.35.0"),
-        // Official MCP Swift SDK. 0.12.1 transitively pins swift-docc-plugin to branch: "main"; accepted.
+        // Official MCP Swift SDK. It declares swift-docc-plugin (branch: main) as a plugin-only dependency;
+        // SwiftPM 6.1 does not resolve it, so Package.resolved carries no such pin.
         .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.12.1"),
         // Already in the graph through the SDK; declared because `Transport` requires a `Logger`.
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),

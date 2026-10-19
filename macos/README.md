@@ -3,9 +3,9 @@
 A Swift port of [CursorTouch/MacOS-MCP](https://github.com/CursorTouch/MacOS-MCP). The tool names, parameters, output format, CLI, config file format and HTTP behaviour follow the original; the command is `desktop-mcp`, the config directory is `~/.desktop-mcp` and environment variables are prefixed `DESKTOP_MCP_` instead of `MACOS_MCP_`. Unlike the original, it needs **no Python, uv, or Homebrew packages**: it's one binary (plus one Swift runtime shim on macOS 13–15, see below).
 
 - Uses only the frameworks that ship with macOS (Accessibility, CoreGraphics, ScreenCaptureKit, AppKit, HIToolbox, Network).
-- The external dependencies (`swift-argument-parser`, SwiftNIO + NIOTransportServices + NIOSSL + NIOHTTP2) are used at build time and compiled into the binary.
-- Built on Swift Concurrency (async/await). Each request runs as its own task, so a long `Wait` or `Shell` call doesn't delay other requests. In-flight work is cancelled by `notifications/cancelled` (stdio, SSE) or by the HTTP client disconnecting, which also kills shell child processes.
-- Transports: **stdio**, **Streamable HTTP** (stateless) and the deprecated **HTTP+SSE** (protocol 2024-11-05, kept for older clients). HTTP runs on Network.framework through NIOTransportServices, with optional TLS from PEM files. TLS connections negotiate **HTTP/2** or HTTP/1.1 through ALPN; plain connections speak HTTP/1.1.
+- The external dependencies (`swift-argument-parser`, the official MCP Swift SDK `mcp-swift-sdk` and `swift-log`, which it needs, SwiftNIO + NIOTransportServices + NIOSSL + NIOHTTP2) are used at build time and compiled into the binary.
+- Built on Swift Concurrency (async/await). Each request runs as its own task, so a long `Wait` or `Shell` call doesn't delay other requests. In-flight work is cancelled by `notifications/cancelled` (stdio) or by the HTTP client disconnecting, which also kills shell child processes.
+- Transports: **stdio** and **Streamable HTTP** (stateless, JSON responses). The protocol layer is the MCP Swift SDK (`StdioTransport` and `StatelessHTTPServerTransport`). The legacy HTTP+SSE transport is gone. HTTP runs on Network.framework through NIOTransportServices, with optional TLS from PEM files. TLS connections negotiate **HTTP/2** or HTTP/1.1 through ALPN; plain connections speak HTTP/1.1.
 
 ## Installation
 
@@ -68,7 +68,7 @@ desktop-mcp connect [--url] [--auth-key]   # stdio bridge to the HTTP server, fo
 
 | Option | Environment variable | Description |
 |--------|----------------------|-------------|
-| `--transport stdio\|sse\|streamable-http` | | Default `stdio` |
+| `--transport stdio\|streamable-http` | | Default `stdio` |
 | `--host`, `--port` | | Default `localhost:8000` |
 | `--auth-key` | `DESKTOP_MCP_AUTH_KEY` | Require `Authorization: Bearer <key>` on every HTTP request |
 | `--oauth-client-id`, `--oauth-client-secret` | `DESKTOP_MCP_OAUTH_CLIENT_ID` / `_SECRET` | Built-in OAuth 2.0 server (PKCE S256, loopback redirect URIs only, dynamic registration disabled) |
@@ -93,7 +93,7 @@ desktop-mcp serve        # uses config.toml → http(s)://127.0.0.1:8000/mcp
 
 ```bash
 desktop-mcp install                                   # streamable-http on 127.0.0.1:8000 (or the next free port)
-desktop-mcp install --transport sse --port 9000       # or choose; --force reinstalls
+desktop-mcp install --transport streamable-http --port 9000   # or choose; --force reinstalls
 desktop-mcp uninstall
 ```
 
@@ -107,9 +107,10 @@ Claude Code connects directly (`claude mcp add --transport http desktop-mcp http
 
 Endpoints:
 
-- Streamable HTTP: `POST /mcp`. Stateless; responds with an SSE stream when `Accept` includes `text/event-stream`, otherwise with JSON.
-- SSE (deprecated): `GET /sse`, then `POST /messages/?session_id=…`. `serve` logs a deprecation warning when this transport is selected.
+- Streamable HTTP: `POST /mcp` (also `/mcp/`). Stateless, one server per request, and it always answers `application/json`. The request's `Accept` header must include `application/json`; otherwise (including a missing `Accept`) the answer is 406. A non-JSON `Content-Type` gets 415, a JSON-RPC batch gets 400, and `GET` or `DELETE` get 405 with `Allow: POST`.
+- `/sse` is gone (404). A stored `transport = "sse"` in `config.toml`, or a Launch Agent plist that still says `--transport sse`, is served as streamable-http with the warning `transport "sse" is no longer supported; serving streamable-http (POST /mcp) instead. Re-run `desktop-mcp install` or `desktop-mcp auth` to update the stored setting.` The `--transport` option of `install` and `auth` accepts only `stdio|streamable-http`.
 - With OAuth: `/.well-known/oauth-authorization-server`, `/oauth/authorize`, `/oauth/token` (and `/oauth/register`, which refuses).
+- JSON-RPC error messages carry the SDK's prefix: an unknown tool is `-32602` with the message `Invalid params: Unknown tool: <name>` (the exact original text is in `error.data.detail`).
 
 Example config file:
 
@@ -148,7 +149,7 @@ As in the original, anonymous usage events go to the original project's (CursorT
 - **Telemetry logs go to stderr only** (per-call lines with `--debug`). The original also `print`ed to stdout, which can corrupt the stdio protocol stream. Error text sent to telemetry is a fixed label, not the full message.
 - **Browser requests must come from a loopback origin.** The original answered every `Origin` with `*`, which lets any website drive an unauthenticated `localhost` server through the visitor's browser. This port returns 403 to requests whose `Origin` is not `localhost`, `127.0.0.1` or `[::1]`, as the MCP specification requires; non-browser clients send no `Origin` and are unaffected.
 - **`Scrape` re-checks every redirect** against the same private-address rules, and stops downloading after 8 MB. `Shell` output is capped at 10 MB.
-- **`auth` defaults to `streamable-http`.** The original defaulted to `sse`, which the MCP specification deprecated in protocol version 2025-03-26. The SSE transport is still available with `--transport sse` for clients that have not migrated.
+- **`auth` defaults to `streamable-http`.** The original defaulted to `sse`, which the MCP specification deprecated in protocol version 2025-03-26; this port does not offer SSE at all.
 - **HTTP/2 over TLS.** With `--ssl-certfile`/`--ssl-keyfile` the server offers `h2` and `http/1.1` through ALPN, so HTTP/2 clients multiplex their requests over one connection; the original (uvicorn) only speaks HTTP/1.1. Cleartext HTTP/2 (`h2c`) is not offered.
 - **`/health`** is exempt from auth and the allowlist as in the original, but, also as in the original, there is no route behind it (404).
 
@@ -163,13 +164,13 @@ The package builds in Swift 6 language mode with strict concurrency checking: ev
 
 `serve` is one root task: a task group whose children are telemetry delivery (each send a child task of its own), the server (stdio or HTTP) and a watcher for SIGINT/SIGTERM. A signal cancels the server child, which closes the listener and shuts its event loop group down (HTTP) or stops reading stdin (stdio); queued telemetry then gets up to three seconds to land, and the process exits by returning from `run()`. There is no `exit()` call in the code.
 
-Everything on the wire is `Codable` and goes through Foundation's `JSONEncoder`/`JSONDecoder` (`JSONCoding`: sorted keys, slashes and non-ASCII unescaped, ISO 8601 dates). Incoming messages decode into `JSONRPCMessage`, which classifies them (request, notification, response, invalid) and types the parameters of the methods the server implements; results are plain `Encodable` structs. `MCP.Value` is used for the parts whose shape the protocol leaves open (tool arguments, input schemas, request ids) and keeps integers exact, so ids above 2^53 round-trip.
+The MCP protocol itself (JSON-RPC framing, initialize, `tools/list`, `tools/call`, cancellation, the stdio and stateless HTTP transports) comes from the official MCP Swift SDK. The tools are registered as SDK handlers (`ToolRegistry.swift`, `StdioServer.swift`, `HTTPApp.swift`); `MCP.Value` carries the parts whose shape the protocol leaves open (tool arguments, input schemas) and keeps integers exact. Our own JSON goes through Foundation's `JSONEncoder`/`JSONDecoder` with the shared configuration in `JSONCoding` (sorted keys, slashes and non-ASCII unescaped, ISO 8601 dates).
 
 Source layout:
 
-- `macos/Sources/DesktopMCPCore` (no third-party dependencies)
-  - `JSONRPC.swift`, `JSONCoding.swift`: the Codable message types, the dynamic JSON value, and the shared coder configuration
-  - `MCPServer.swift`: JSON-RPC dispatch (`MCPServer`) and per-client sessions (`MCPSession`: per-request tasks, cancellation)
+- `macos/Sources/DesktopMCPCore` (depends on the MCP Swift SDK and swift-log only)
+  - `JSONCoding.swift`: the shared coder configuration and the ordered Snapshot-metadata renderer
+  - `ToolRegistry.swift`, `StdioServer.swift`: tool registration on the SDK `Server`, and the stdio transport
   - `HTTPApp.swift`, `OAuth.swift`, `Security.swift`: HTTP middleware (CORS, allowlist, auth), routes and OAuth, independent of the socket layer
   - `Config.swift`, `ServePlan.swift`: `config.toml` (a small TOML-subset parser) and option merging
   - `Analytics.swift`: PostHog telemetry
