@@ -94,7 +94,7 @@ public class VirtualDesktopServiceTests
 
         Assert.Equal(VirtualDesktopInfo.Default, active);
         Assert.Equal([VirtualDesktopInfo.Default], all);
-        Assert.Equal(1, source.Calls);
+        Assert.True(SpinWait.SpinUntil(() => source.Calls == 1, TimeSpan.FromSeconds(5))); // Task.Run has entered the fake
         Assert.True(service.CallAbandoned);
     }
 
@@ -105,6 +105,7 @@ public class VirtualDesktopServiceTests
         var service = Service(source, timeoutMs: 50);
         Assert.Equal(VirtualDesktopInfo.Default, service.GetDesktops().Active);
         Assert.True(service.CallAbandoned);
+        Assert.True(SpinWait.SpinUntil(() => source.Calls == 1, TimeSpan.FromSeconds(5))); // Task.Run has entered the fake
 
         var desktops = service.GetDesktops();
         var windows = service.OnCurrentDesktop([4, 5]);
@@ -120,6 +121,7 @@ public class VirtualDesktopServiceTests
         using var source = new BlockingSource();
         var service = Service(source, timeoutMs: 50);
         Assert.Equal(VirtualDesktopInfo.Default, service.GetDesktops().Active);
+        Assert.True(SpinWait.SpinUntil(() => source.Calls == 1, TimeSpan.FromSeconds(5))); // Task.Run has entered the fake
         Assert.Equal(VirtualDesktopInfo.Default, service.GetDesktops().Active);
         Assert.Equal(1, source.Calls);
 
@@ -199,6 +201,39 @@ public class VirtualDesktopServiceConcurrencyTests
         Assert.All(results, result => Assert.Equal(expected, result.Active));
         Assert.Equal(2, source.IdCalls);
         Assert.Equal(1, source.MaxRunning);
+    }
+
+    /// <summary>A slow but healthy shell: every DesktopIds call takes <paramref name="delay"/>.</summary>
+    private sealed class DelayedSource(TimeSpan delay) : IVirtualDesktopSource
+    {
+        private int _idCalls;
+
+        public int IdCalls => Volatile.Read(ref _idCalls);
+        public bool IsOnCurrentDesktop(long window) => true;
+        public Guid CurrentDesktopId() => Only;
+
+        public IReadOnlyList<Guid?> DesktopIds()
+        {
+            Interlocked.Increment(ref _idCalls);
+            Thread.Sleep(delay);
+            return [Only];
+        }
+    }
+
+    [Fact]
+    public async Task EachCallGetsItsOwnFullTimeoutAfterTheGate()
+    {
+        // Each call takes 60% of the timeout, so the second, queued behind the first, would miss a shared deadline.
+        var timeout = TimeSpan.FromMilliseconds(1000);
+        var source = new DelayedSource(timeout * 0.6);
+        var service = new VirtualDesktopService(source, _ => null, timeout);
+
+        var results = await Task.WhenAll(Task.Run(service.GetDesktops), Task.Run(service.GetDesktops));
+
+        var expected = new VirtualDesktopInfo("{033294DF-1CAC-47B0-A62E-D3E53B23F4BC}", "Desktop 1");
+        Assert.All(results, result => Assert.Equal(expected, result.Active));
+        Assert.Equal(2, source.IdCalls);
+        Assert.False(service.CallAbandoned);
     }
 
     [Fact]

@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.Marshalling;
 using DesktopMcp.Core.Snapshots;
@@ -39,8 +38,10 @@ internal interface IVirtualDesktopSource
 /// IVirtualDesktopManagerInternal lists desktops, named from the registry or "Desktop N" (spec §6). Every call goes to
 /// Explorer, so each is bounded by <see cref="CallTimeout"/> and fails open (spec §12: names only affect the report).
 /// <para>
-/// At most one shell call is in flight per service. A call waits for the previous one within its own deadline, so
-/// concurrent healthy callers (spec §5 runs ungated tools such as Snapshot concurrently) all get real results. Only while
+/// At most one shell call is in flight per service. A call waits up to <see cref="CallTimeout"/> for the previous one,
+/// then gets its own full <see cref="CallTimeout"/> once it starts, so concurrent healthy callers (spec §5 runs ungated
+/// tools such as Snapshot concurrently) all get real results, even from a slow Explorer. A caller's worst case is
+/// therefore about twice <see cref="CallTimeout"/> (2 x 2 s): the gate wait plus its own call. Only while
 /// a call is abandoned (its caller gave up at the deadline and it is still blocked in Explorer) does a new call return its
 /// fallback at once, without calling the shell or blocking another thread-pool thread.
 /// </para>
@@ -122,12 +123,12 @@ public sealed class VirtualDesktopService : IVirtualDesktops
         return key?.GetValue("Name") as string;
     }
 
-    // Preflight F3 as ruled in the Task 9 fix round: one call in flight at most; wait for the gate within the deadline;
-    // fall back at once only while a call is abandoned.
+    // Preflight F3 as ruled in the Task 9 fix rounds: one call in flight at most; wait for the gate up to the timeout
+    // (a timed-out wait starts no call); the call then gets its own full timeout; fall back at once only while a call
+    // is abandoned.
     private T Bounded<T>(Func<T> read, T fallback)
     {
         if (CallAbandoned) return fallback;
-        var start = Stopwatch.GetTimestamp();
         if (!_gate.Wait(_timeout)) return fallback;
         Task<T> task;
         try
@@ -148,10 +149,9 @@ public sealed class VirtualDesktopService : IVirtualDesktops
             },
             CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
 
-        var remaining = _timeout - Stopwatch.GetElapsedTime(start);
         try
         {
-            if (task.Wait(remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero)) return task.Result;
+            if (task.Wait(_timeout)) return task.Result;
         }
         catch (AggregateException)
         {
