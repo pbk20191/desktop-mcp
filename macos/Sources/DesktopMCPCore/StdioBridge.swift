@@ -163,6 +163,16 @@ public struct StdioBridge: Sendable {
 
 /// The subset of Server-Sent Events the MCP transports use.
 public enum SSE {
+    /// The `id` field of each `id:` line, in order.
+    public static func eventIDs(_ text: String) -> [String] {
+        text.split(whereSeparator: { $0 == "\n" || $0 == "\r\n" }).compactMap { line in
+            guard line.hasPrefix("id:") else { return nil }
+            var value = line.dropFirst(3)
+            if value.hasPrefix(" ") { value = value.dropFirst() }
+            return String(value)
+        }
+    }
+
     /// The `data` of each event, lines joined with "\n"; comments, ids and event names are
     /// dropped, and a trailing event without a blank line still counts.
     public static func dataPayloads(_ text: String) -> [String] {

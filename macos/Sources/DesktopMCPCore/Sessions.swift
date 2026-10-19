@@ -21,6 +21,13 @@ struct Session {
     /// Copied from the transport whenever a request ends; an over-budget session takes no new
     /// requests and ends once its last one finishes.
     var overBudget = false
+    /// Whether the standalone `GET` stream is being read.
+    var getOpen = false
+    /// The last SSE event id forwarded on the `GET` stream. SDK 0.12.1 never lets go of a
+    /// `GET` stream whose reader went away, so a plain second `GET` gets 409 for the rest of the
+    /// session; a `GET` that resumes from this id re-attaches the stream and replays what the
+    /// reader missed.
+    var lastGetEventID: String?
 }
 
 /// The live sessions, after the SDK's conformance server (`MCPConformance/Server/HTTPApp.swift`):
@@ -99,17 +106,42 @@ actor SessionStore {
     /// stays in flight until the caller reports its end through `requestEnded`.
     func handle(_ request: MCP.HTTPRequest, sessionID id: String) async -> MCP.HTTPResponse? {
         guard var session = sessions[id], !session.overBudget else { return nil }
+        var request = request
         let counted = request.method == "POST"
-        session.lastRequestAt = Date()
-        if counted { session.inFlight += 1 }
+        // Only a POST is activity: an open (or retried) GET must not keep a session alive.
+        if counted {
+            session.lastRequestAt = Date()
+            session.inFlight += 1
+        }
+        let reopening = request.method == "GET" && !session.getOpen
+        if reopening {
+            if let eventID = session.lastGetEventID {
+                request = MCP.HTTPRequest(method: request.method,
+                                          headers: request.headers.merging([HTTPHeaderName.lastEventID: eventID]) { $1 },
+                                          body: request.body, path: request.path)
+            }
+            session.getOpen = true
+        }
         sessions[id] = session
         let response = await session.transport.inner.handleRequest(request)
         if request.method == "DELETE", response.statusCode == 200 {
             await end(id)
         } else if counted, !Self.isStream(response) {
             await requestEnded(sessionID: id, handle: nil, cancelled: false)
+        } else if reopening, !Self.isStream(response) {
+            getStreamEnded(sessionID: id)
         }
         return response
+    }
+
+    /// The standalone `GET` stream's reader is gone (or the stream finished).
+    func getStreamEnded(sessionID id: String) {
+        sessions[id]?.getOpen = false
+    }
+
+    /// An SSE event id forwarded on the standalone `GET` stream.
+    func forwardedGetEvent(sessionID id: String, eventID: String) {
+        sessions[id]?.lastGetEventID = eventID
     }
 
     /// The response to a counted request has ended. `cancelled`: the client went away before
@@ -144,8 +176,19 @@ actor SessionStore {
     func sweep(now: Date) async {
         let timeout = settings.sessionIdleTimeout
         guard timeout > 0 else { return }
-        let idle = sessions.filter { $0.value.inFlight == 0 && now.timeIntervalSince($0.value.lastRequestAt) > timeout }
-        for id in idle.keys { await end(id) }
+        for id in Array(sessions.keys) { await endIfIdle(id, now: now) }
+    }
+
+    /// Ends the session if it is idle at this moment. Checked per session, right before it is
+    /// ended: each `end` suspends, and meanwhile a request may start a tool call on a session a
+    /// snapshot would still list as idle.
+    @discardableResult
+    func endIfIdle(_ id: String, now: Date) async -> Bool {
+        let timeout = settings.sessionIdleTimeout
+        guard timeout > 0, let session = sessions[id], session.inFlight == 0,
+              now.timeIntervalSince(session.lastRequestAt) > timeout else { return false }
+        await end(id)
+        return true
     }
 
     /// Stops the sweeper, ends every session and refuses new ones.

@@ -1,4 +1,5 @@
 import CryptoKit
+import struct MCP.ToolListChangedNotification
 import enum MCP.Value
 import XCTest
 @testable import DesktopMCPCore
@@ -273,6 +274,95 @@ final class HTTPAppTests: XCTestCase {
         XCTAssertEqual(ping.status, 404)
     }
 
+    func testAnOpenGetIsNotActivity() async throws {
+        let app = try await app { $0.sessionIdleTimeout = 0.2 }
+        defer { Task { await app.shutdown() } }
+        let id = try await session(app)
+        try await Task.sleep(for: .milliseconds(150))
+        let get = await app.handle(inSession(id, "", method: "GET"))
+        XCTAssertEqual(get.status, 200)
+        try await Task.sleep(for: .milliseconds(100))
+        // 250 ms since the last POST, 100 ms since the GET: idle.
+        await app.sessions.sweep(now: Date())
+        let ping = await app.handle(inSession(id, Self.ping))
+        XCTAssertEqual(ping.status, 404)
+    }
+
+    func testSweepSkipsASessionThatBecameBusy() async throws {
+        // The default timeout keeps the real sweeper out of the way; `now` is pushed past it.
+        let app = try await app()
+        defer { Task { await app.shutdown() } }
+        let id = try await session(app)
+        // Idle when a sweep took its snapshot, then a tool call started before the sweep got to it.
+        let wait = await app.handle(inSession(id, Self.call(2, "Wait", #"{"duration":30}"#)))
+        XCTAssertEqual(wait.status, 200)
+        let ended = await app.sessions.endIfIdle(id, now: Date().addingTimeInterval(3600))
+        XCTAssertFalse(ended)
+        let count = await app.sessions.count
+        XCTAssertEqual(count, 1)
+    }
+
+    func testTheSweeperEvictsOnItsOwn() async throws {
+        let app = try await app { $0.sessionIdleTimeout = 0.2 }
+        defer { Task { await app.shutdown() } }
+        let id = try await session(app)
+        try await Task.sleep(for: .milliseconds(600))
+        let ping = await app.handle(inSession(id, Self.ping))
+        XCTAssertEqual(ping.status, 404)
+    }
+
+    func testAReopenedGetResumesTheStandaloneStream() async throws {
+        let app = try await app()
+        defer { Task { await app.shutdown() } }
+        let id = try await session(app)
+        let first = await app.handle(inSession(id, "", method: "GET"))
+        guard case .stream(let firstBody) = first.body else { return XCTFail("not a stream") }
+        let reader = Task { for await _ in firstBody {} }
+        try await Task.sleep(for: .milliseconds(100))
+        reader.cancel()
+        try await Task.sleep(for: .milliseconds(100))
+
+        // The SDK still holds the first stream; without a resume this would be 409 for good.
+        let second = await app.handle(inSession(id, "", method: "GET", extra: [("Last-Event-ID", "bogus")]))
+        XCTAssertEqual(second.status, 200, second.bodyText ?? "")
+        XCTAssertEqual(second.header("content-type"), "text/event-stream")
+        guard case .stream(let secondBody) = second.body else { return XCTFail("not a stream") }
+        let server = await app.sessionServer(id: id)
+        try await XCTUnwrap(server).notify(ToolListChangedNotification.message())
+        let received = Task { () -> String? in
+            var text = ""
+            for await chunk in secondBody {
+                text += chunk
+                if let payload = SSE.dataPayloads(text).first(where: { $0.contains("list_changed") }) { return payload }
+            }
+            return nil
+        }
+        let timeout = Task { try await Task.sleep(for: .seconds(2)); received.cancel() }
+        let payload = await received.value
+        timeout.cancel()
+        XCTAssertEqual(try payload.map { try JSON.parse($0)["method"] }, "notifications/tools/list_changed")
+    }
+
+    func testCancelledWhileTheSessionAnswersEndsTheCall() async throws {
+        let observer = RecordingObserver()
+        let registry = await DesktopMCP.makeRegistry()
+        await registry.setObserver(observer)
+        let app = try await app(registry: registry)
+        defer { Task { await app.shutdown() } }
+        let id = try await session(app)
+        // The socket layer cancels the task running `handle` when the client goes away before
+        // the response is written.
+        let request = inSession(id, Self.call(2, "Wait", #"{"duration":30}"#))
+        let call = Task { await app.handle(request) }
+        call.cancel()
+        let response = await call.value
+        XCTAssertEqual(response.status, 499)
+        try await observer.waitFor(error: "Cancelled.", timeout: 2)
+        // The request no longer counts as in flight: the session can go idle.
+        let ended = await app.sessions.endIfIdle(id, now: Date().addingTimeInterval(3600))
+        XCTAssertTrue(ended)
+    }
+
     func testByteBudgetEndsTheSession() async throws {
         let app = try await app { $0.sessionByteBudget = 200 }
         defer { Task { await app.shutdown() } }
@@ -312,9 +402,11 @@ final class HTTPAppTests: XCTestCase {
         let app = try await app(registry: registry)
         defer { Task { await app.shutdown() } }
         let id = try await session(app)
-        let shell = #"{"command":"sleep 2; echo late"}"#
-        let dropped = await app.handle(inSession(id, Self.call(2, "Shell", shell)))
-        let kept = await app.handle(inSession(id, Self.call(3, "Shell", shell)))
+        // The dropped call is a Wait: its reply never reaches anyone, and Wait reports its
+        // cancellation to the observer as "Cancelled." (Shell's "Command cancelled" is a result
+        // the observer does not see).
+        let dropped = await app.handle(inSession(id, Self.call(2, "Wait", #"{"duration":30}"#)))
+        let kept = await app.handle(inSession(id, Self.call(3, "Shell", #"{"command":"sleep 2; echo late"}"#)))
         // The socket layer consumes the body in a task and cancels it when the peer closes.
         guard case .stream(let droppedBody) = dropped.body else { return XCTFail("not a stream") }
         let reader = Task { for await _ in droppedBody {} }
@@ -328,7 +420,9 @@ final class HTTPAppTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(20))
         }
         let events = await observer.events
-        XCTAssertEqual(events, ["ok Shell t"])
+        XCTAssertEqual(events, ["fail Wait t"])
+        let errors = await observer.errors
+        XCTAssertEqual(errors, ["Cancelled."])
         XCTAssertLessThan(Date().timeIntervalSince(cancelled), 1.5)
 
         let payloads = try await keptPayloads.value

@@ -294,6 +294,11 @@ public final class HTTPApp: Sendable {
         guard SessionStore.isStream(response),
               let id = response.headers.first(where: { $0.key.lowercased() == HTTPHeaderName.sessionID.lowercased() })?.value
         else { return Self.convert(response) }
+        if Task.isCancelled {
+            // The client left before it could learn the session id: nobody can use the session.
+            await sessions.end(id)
+            return Self.clientClosedRequest
+        }
         return Self.convert(response, ended: requestEnded(sessionID: id, handle: handle))
     }
 
@@ -303,8 +308,40 @@ public final class HTTPApp: Sendable {
             // What the SDK answers for a session it has ended; clients re-initialise on 404.
             return Self.convert(.error(statusCode: 404, .invalidRequest("Not Found: Session not found or expired")))
         }
+        guard SessionStore.isStream(response) else { return Self.convert(response) }
+        let sessions = sessions
         // Only POST streams are in flight; the standalone GET stream is not a request.
-        return Self.convert(response, ended: request.method == "POST" ? requestEnded(sessionID: sessionID, handle: handle) : nil)
+        let isGet = request.method == "GET"
+        let ended: @Sendable (Bool) async -> Void
+        let eventID: (@Sendable (String) async -> Void)?
+        if isGet {
+            ended = { _ in await sessions.getStreamEnded(sessionID: sessionID) }
+            eventID = { id in await sessions.forwardedGetEvent(sessionID: sessionID, eventID: id) }
+        } else {
+            ended = requestEnded(sessionID: sessionID, handle: handle)
+            eventID = nil
+        }
+        // The socket layer cancels this task when the client goes away before the response is
+        // written: the stream would never be read, so its end is reported here. (A client that
+        // leaves while the response head is being written is the socket layer's to notice.)
+        if Task.isCancelled {
+            if let eventID, case .stream(let events, _) = response {
+                // The SDK put its priming event on the stream before answering; its id is what
+                // the next GET resumes from (see `Session.lastGetEventID`).
+                var iterator = events.makeAsyncIterator()
+                if let chunk = try? await iterator.next(), let id = SSE.eventIDs(String(decoding: chunk, as: UTF8.self)).last {
+                    await eventID(id)
+                }
+            }
+            await ended(true)
+            return Self.clientClosedRequest
+        }
+        return Self.convert(response, ended: ended, eventID: eventID)
+    }
+
+    /// For a client that went away before its response could be written; nobody reads it.
+    static var clientClosedRequest: HTTPResponse {
+        convert(.error(statusCode: 499, .internalError("Client closed request")))
     }
 
     /// Reports the end of a `POST` response stream to its session. `cancelled`: the client
@@ -320,7 +357,9 @@ public final class HTTPApp: Sendable {
     /// finishes, `ended(false)` runs before the client sees the end, so a session ended for its
     /// byte budget is gone by the client's next request. When the socket layer stops reading
     /// (the client disconnected, the server is stopping), `ended(true)`. One of the two, once.
-    static func convert(_ response: MCP.HTTPResponse, ended: (@Sendable (_ cancelled: Bool) async -> Void)?) -> HTTPResponse {
+    /// `eventID` sees the `id:` of every event forwarded, before the client gets the event.
+    static func convert(_ response: MCP.HTTPResponse, ended: (@Sendable (_ cancelled: Bool) async -> Void)?,
+                        eventID: (@Sendable (String) async -> Void)? = nil) -> HTTPResponse {
         guard case .stream(let events, _) = response else { return convert(response) }
         let (stream, continuation) = AsyncStream<String>.makeStream()
         let reported = Locked(false)
@@ -333,7 +372,12 @@ public final class HTTPApp: Sendable {
         }
         let pump = Task {
             do {
-                for try await chunk in events { continuation.yield(String(decoding: chunk, as: UTF8.self)) }
+                for try await chunk in events {
+                    let text = String(decoding: chunk, as: UTF8.self)
+                    // The SDK yields one formatted event per chunk.
+                    if let eventID, let id = SSE.eventIDs(text).last { await eventID(id) }
+                    continuation.yield(text)
+                }
             } catch {
                 // The transport ended the stream with an error: the client sees it close.
             }
