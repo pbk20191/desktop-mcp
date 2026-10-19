@@ -49,6 +49,50 @@ public static class PyText
         return $"{sign}{text}e{(exponent < 0 ? '-' : '+')}{Math.Abs(exponent):00}";
     }
 
+    /// <summary>
+    /// Python's <c>repr(float)</c> (also <c>str(float)</c>): the shortest digits that round-trip, in exponent form when
+    /// the decimal exponent is below -4 or above 15 (<c>1e-05</c>, <c>1e+16</c>), else with at least one decimal (<c>100.0</c>).
+    /// </summary>
+    public static string FloatRepr(double value)
+    {
+        if (double.IsNaN(value)) return "nan";
+        if (double.IsInfinity(value)) return value > 0 ? "inf" : "-inf";
+        if (value == 0) return double.IsNegative(value) ? "-0.0" : "0.0";
+        // .NET's "R" is also the shortest round-trip form, only spelled differently ("1E-05", "1E+16", "0.0001").
+        var shortest = Math.Abs(value).ToString("R", CultureInfo.InvariantCulture);
+        var e = shortest.IndexOf('E');
+        var mantissa = e < 0 ? shortest : shortest[..e];
+        var exponent = e < 0 ? 0 : int.Parse(shortest[(e + 1)..], NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture);
+        var point = mantissa.IndexOf('.');
+        var allDigits = point < 0 ? mantissa : mantissa.Remove(point, 1);
+        var integerLength = point < 0 ? mantissa.Length : point;
+        var leadingZeros = allDigits.Length - allDigits.TrimStart('0').Length;
+        var digits = allDigits.TrimStart('0').TrimEnd('0');
+        // value == 0.<digits> * 10^decimalPoint
+        var decimalPoint = integerLength - leadingZeros + exponent;
+        string text;
+        if (decimalPoint is > 16 or < -3)
+        {
+            var power = decimalPoint - 1;
+            text = $"{digits[0]}{(digits.Length > 1 ? "." + digits[1..] : "")}e{(power < 0 ? '-' : '+')}{Math.Abs(power):00}";
+        }
+        else if (decimalPoint <= 0) text = "0." + new string('0', -decimalPoint) + digits;
+        else if (decimalPoint >= digits.Length) text = digits + new string('0', decimalPoint - digits.Length) + ".0";
+        else text = digits[..decimalPoint] + "." + digits[decimalPoint..];
+        return double.IsNegative(value) ? "-" + text : text;
+    }
+
+    /// <summary>Python's <c>round(x, digits)</c>: the exact binary value rounded half to even, as the nearest double.</summary>
+    public static double Round(double value, int digits) =>
+        double.IsFinite(value) ? double.Parse(Fixed(value, digits), CultureInfo.InvariantCulture) : value;
+
+    /// <summary>Python's <c>round(x)</c> with no digits: half to even on the exact value.</summary>
+    public static long RoundToInteger(double value) => (long)Math.Round(value, MidpointRounding.ToEven);
+
+    /// <summary>Python's <c>str.capitalize()</c> for the strings UIA returns: first character upper, the rest lower.</summary>
+    public static string Capitalize(string value) =>
+        value.Length == 0 ? value : char.ToUpperInvariant(value[0]) + value[1..].ToLowerInvariant();
+
     /// <summary>Python's <c>repr(str)</c> for the strings our messages quote.</summary>
     public static string Repr(string value)
     {
