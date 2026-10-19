@@ -158,6 +158,11 @@ public struct StdioBridge: Sendable {
     /// `output`, so it does not wait for a long call to end. When the replay fails (the server
     /// refused a new session), the next message tries again before it is sent; until a session
     /// is regained messages go without one. One attempt per message.
+    ///
+    /// A listener started by a recovery keeps writing to this call's `output` after the call
+    /// returns, so direct callers must `state.close()`. A request whose own 404 recovery fails
+    /// is reported as -32000, whereas a later request whose pre-send recovery fails is sent
+    /// without a session.
     public func forward(_ line: String, output: @escaping @Sendable (String) async -> Void) async {
         let body = line.trimmingCharacters(in: .whitespaces)
         let isInitialize = HTTPApp.isInitialize(Data(body.utf8))

@@ -387,6 +387,69 @@ final class HTTPAppTests: XCTestCase {
         XCTAssertEqual(count, 3)
     }
 
+    /// Opens a GET, reads the priming event and notification 1, optionally asks for one more
+    /// chunk (which makes the forwarder confirm notification 1), then cancels the reader.
+    private func leaveAfterFirstNotification(_ app: HTTPApp, id: String, askAgain: Bool) async throws {
+        let first = await app.handle(inSession(id, "", method: "GET"))
+        guard case .stream(let firstBody) = first.body else { throw XCTSkip("not a stream") }
+        let sessionServer = await app.sessionServer(id: id)
+        let server = try XCTUnwrap(sessionServer)
+        let (steps, stepContinuation) = AsyncStream<Void>.makeStream()
+        let reader = Task {
+            var iterator = firstBody.makeAsyncIterator()
+            _ = await iterator.next() // the priming event
+            stepContinuation.yield()
+            _ = await iterator.next() // notification 1
+            stepContinuation.yield()
+            if askAgain { _ = await iterator.next() } // waits until cancelled
+        }
+        var ticks = steps.makeAsyncIterator()
+        _ = await ticks.next()
+        try await server.notify(ToolListChangedNotification.message())
+        _ = await ticks.next()
+        try await Task.sleep(for: .milliseconds(150))
+        reader.cancel()
+        await reader.value
+        try await Task.sleep(for: .milliseconds(100))
+    }
+
+    /// How many list_changed events a new GET delivers in one second.
+    private func listChangedCount(_ app: HTTPApp, id: String) async -> Int {
+        let second = await app.handle(inSession(id, "", method: "GET"))
+        guard case .stream(let body) = second.body else { return -1 }
+        let text = Locked("")
+        let reader = Task { for await chunk in body { text.withLock { $0 += chunk } } }
+        try? await Task.sleep(for: .seconds(1))
+        reader.cancel()
+        return SSE.dataPayloads(text.withLock { $0 }).filter { $0.contains("list_changed") }.count
+    }
+
+    func testAnEventTheReaderConfirmedIsNotReplayed() async throws {
+        let app = try await app()
+        defer { Task { await app.shutdown() } }
+        let id = try await session(app)
+        try await leaveAfterFirstNotification(app, id: id, askAgain: true)
+        let sessionServer = await app.sessionServer(id: id)
+        let server = try XCTUnwrap(sessionServer)
+        for _ in 0..<2 { try await server.notify(ToolListChangedNotification.message()) }
+        // Notification 1 was confirmed by the extra request: only 2 and 3 are replayed.
+        let count = await listChangedCount(app, id: id)
+        XCTAssertEqual(count, 2)
+    }
+
+    func testAnEventReadButNotConfirmedIsReplayed() async throws {
+        let app = try await app()
+        defer { Task { await app.shutdown() } }
+        let id = try await session(app)
+        try await leaveAfterFirstNotification(app, id: id, askAgain: false)
+        let sessionServer = await app.sessionServer(id: id)
+        let server = try XCTUnwrap(sessionServer)
+        try await server.notify(ToolListChangedNotification.message())
+        // Notification 1 was read but never confirmed: it comes back, then the one after it.
+        let count = await listChangedCount(app, id: id)
+        XCTAssertEqual(count, 2)
+    }
+
     func testCancelledWhileTheSessionAnswersEndsTheCall() async throws {
         let observer = RecordingObserver()
         let registry = await DesktopMCP.makeRegistry()

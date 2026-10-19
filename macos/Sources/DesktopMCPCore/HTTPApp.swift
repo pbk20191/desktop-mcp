@@ -400,9 +400,12 @@ public final class HTTPApp: Sendable {
 /// data) is reported when taken: nothing is lost if it never arrives, and the first `GET` has
 /// no other id to resume from.
 actor SSEForwarder {
-    /// nil once finished. Read through a fresh iterator per chunk: an actor cannot keep a
-    /// (non-`Sendable`) iterator across calls on macOS 13, and an `AsyncThrowingStream`'s
-    /// iterators share its buffer, which ends when the stream itself is released.
+    /// nil once finished. Read through a fresh iterator per chunk. All iterators of one
+    /// `AsyncThrowingStream` share a single storage (Swift 5.5 to 6.1), so buffered elements,
+    /// termination and cancellation are shared and nothing is lost between them. An actor
+    /// cannot keep one iterator across calls without `next(isolation:)`, which needs macOS 15.
+    /// This is safe only because `AsyncStream(unfolding:)` calls its producer serially for its
+    /// single consumer: two concurrent `next()` calls on one stream would trap.
     private var events: AsyncThrowingStream<Data, any Error>?
     private let ended: (@Sendable (_ cancelled: Bool) async -> Void)?
     private let eventID: (@Sendable (String) async -> Void)?
