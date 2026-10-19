@@ -7,10 +7,17 @@ using DesktopMcp.Core.Text;
 
 namespace DesktopMcp.Core.Config;
 
-/// <summary>An IPv4 or IPv6 network for the IP allowlist (enforced by the HTTP pipeline in P5).</summary>
+/// <summary>An IPv4 or IPv6 network for the IP allowlist (enforced by the HTTP pipeline in P5) and the Scrape address rules.</summary>
 public sealed record IpNetwork(IPAddress Network, int PrefixLength)
 {
     public override string ToString() => $"{Network}/{PrefixLength}";
+
+    /// <summary>One network in the allowlist's syntax, host bits cleared; throws FormatException with Python's message.</summary>
+    public static IpNetwork Parse(string value) => TryParse(value, out var network, out var error) ? network : throw new FormatException(error);
+
+    /// <summary>Python's <c>address in network</c>: false across address families, and a scope ID is ignored.</summary>
+    public bool Contains(IPAddress address) =>
+        address.AddressFamily == Network.AddressFamily && Mask(address, PrefixLength).Equals(Network);
 
     /// <summary>upstream parse_ip_allowlist (infrastructure/security.py:210-236): blank entries are skipped, host bits
     /// are cleared, and every bad entry is reported at once.</summary>

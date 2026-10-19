@@ -1,3 +1,4 @@
+using System.Net;
 using DesktopMcp.Core.Config;
 using DesktopMcp.Core.Net;
 
@@ -34,6 +35,26 @@ public class IpNetworkTests
     [InlineData("10.1.2.3/32", "10.1.2.3/32")]
     public void AcceptsIpv4NetmaskAndHostmaskSuffixes(string entry, string expected) =>
         Assert.Equal(expected, Assert.Single(IpNetwork.ParseAllowlist([entry])).ToString());
+
+    [Theory]
+    [InlineData("10.0.0.0/8", "10.255.255.255", true)]
+    [InlineData("10.0.0.0/8", "11.0.0.0", false)]
+    [InlineData("0.0.0.0/0", "255.255.255.255", true)]
+    [InlineData("172.16.0.0/12", "172.31.0.1", true)]
+    [InlineData("172.16.0.0/12", "172.32.0.1", false)]
+    [InlineData("fe80::/10", "febf::1", true)]
+    [InlineData("fe80::/10", "fec0::1", false)]
+    [InlineData("fe80::/10", "fe80::1%12", true)]
+    [InlineData("::1/128", "::1", true)]
+    [InlineData("::/0", "10.0.0.1", false)]
+    [InlineData("10.0.0.0/8", "::ffff:10.0.0.1", false)]
+    public void ContainsLikePythonsInOperator(string network, string address, bool expected) =>
+        Assert.Equal(expected, IpNetwork.Parse(network).Contains(IPAddress.Parse(address)));
+
+    [Fact]
+    public void ParseRejectsABadNetwork() =>
+        Assert.Equal("'10.0.0.0/33' does not appear to be an IPv4 or IPv6 network",
+            Assert.Throws<FormatException>(() => IpNetwork.Parse("10.0.0.0/33")).Message);
 
     [Theory]
     [InlineData("10.0.0.0/255.0.255.0")]
