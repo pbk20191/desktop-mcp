@@ -4,7 +4,10 @@ using ModelContextProtocol.Server;
 
 namespace DesktopMcp.Server.Tools;
 
-/// <summary>upstream tools/filesystem.py:26-82: paths are resolved first, then the strict booleans, then the mode.</summary>
+/// <summary>
+/// upstream tools/filesystem.py:26-82: paths are resolved first, then the strict booleans, then the mode. A blank
+/// destination is missing (Decisions 11).
+/// </summary>
 public sealed class FileSystemTool(Tool protocolTool, FileSystemService fileSystem) : SpecTool(protocolTool)
 {
     protected override async ValueTask<CallToolResult> InvokeCoreAsync(
@@ -13,8 +16,9 @@ public sealed class FileSystemTool(Tool protocolTool, FileSystemService fileSyst
         var arguments = ToolArguments.From(request);
         var mode = arguments.RequiredString("mode");
         var path = fileSystem.ResolveArgument(arguments.RequiredString("path"));
+        // An empty or blank destination counts as missing: upstream would resolve it to the server's working directory.
         var destination = arguments.OptionalString("destination");
-        if (!string.IsNullOrEmpty(destination)) destination = fileSystem.ResolveArgument(destination);
+        destination = string.IsNullOrWhiteSpace(destination) ? null : fileSystem.ResolveArgument(destination);
         var content = arguments.OptionalString("content");
         var pattern = arguments.OptionalString("pattern");
         var offset = arguments.OptionalInteger("offset");

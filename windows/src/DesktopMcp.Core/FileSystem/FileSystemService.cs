@@ -76,13 +76,18 @@ public sealed class FileSystemService(string defaultDirectory, Func<bool> isElev
         {
             if (File.Exists(src))
             {
-                Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
                 // shutil.copy2 into an existing directory copies the file inside it.
                 var target = Directory.Exists(dst) ? Path.Combine(dst, Path.GetFileName(src)) : dst;
+                if (SamePath(src, target)) return $"Error copying: {PyText.Repr(src)} and {PyText.Repr(target)} are the same file";
+                Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
                 File.Copy(src, target, overwrite: true);
                 return $"Copied file: {src} -> {dst}";
             }
-            if (Exists(dst)) Directory.Delete(dst, recursive: true);
+            if (Exists(dst))
+            {
+                if (OverlapReason(src, dst) is { } reason) return $"Error copying: {reason}";
+                Directory.Delete(dst, recursive: true);
+            }
             CopyDirectory(src, dst, cancellationToken);
             return $"Copied directory: {src} -> {dst}";
         }
@@ -102,12 +107,14 @@ public sealed class FileSystemService(string defaultDirectory, Func<bool> isElev
         var dst = PathResolver.Resolve(destination);
         if (!Exists(src)) return $"Error: Source not found: {src}";
         if (Exists(dst) && !overwrite) return $"Error: Destination already exists: {dst}. Set overwrite=True to replace.";
+        // Decisions 11: moving a path onto itself changes nothing.
+        if (SamePath(src, dst)) return $"Moved: {src} -> {dst}";
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
-            // Decisions 11: never delete the destination when it is the source itself.
-            if (Exists(dst) && !string.Equals(src, dst, StringComparison.OrdinalIgnoreCase))
+            if (Exists(dst))
             {
+                if (OverlapReason(src, dst) is { } reason) return $"Error moving: {reason}";
                 if (Directory.Exists(dst)) Directory.Delete(dst, recursive: true);
                 else File.Delete(dst);
             }
@@ -340,15 +347,56 @@ public sealed class FileSystemService(string defaultDirectory, Func<bool> isElev
         return to <= from ? [] : items.Skip((int)from).Take((int)(to - from));
     }
 
-    private static void CopyDirectory(string source, string destination, CancellationToken cancellationToken)
+    private static bool SamePath(string a, string b) =>
+        string.Equals(Path.TrimEndingDirectorySeparator(a), Path.TrimEndingDirectorySeparator(b), StringComparison.OrdinalIgnoreCase);
+
+    // True when `path` is strictly below `ancestor`, compared on segment boundaries (C:\ab is not below C:\a).
+    private static bool IsBelow(string path, string ancestor)
     {
-        Directory.CreateDirectory(destination);
-        foreach (var entry in Directory.EnumerateFileSystemEntries(source))
+        var parent = Path.TrimEndingDirectorySeparator(ancestor);
+        return path.Length > parent.Length
+            && path.StartsWith(parent, StringComparison.OrdinalIgnoreCase)
+            && (Path.EndsInDirectorySeparator(parent) || path[parent.Length] == Path.DirectorySeparatorChar);
+    }
+
+    /// <summary>
+    /// Decisions 11: why deleting the existing destination would delete some of the source, or null when it would not.
+    /// Upstream deletes the destination first, so these cases lost the source.
+    /// </summary>
+    private static string? OverlapReason(string src, string dst)
+    {
+        if (SamePath(src, dst)) return $"Destination {dst} is the source itself; overwriting it would delete the source.";
+        if (IsBelow(src, dst)) return $"Destination {dst} contains the source {src}; overwriting it would delete the source.";
+        if (IsBelow(dst, src)) return $"Destination {dst} is inside the source {src}; overwriting it would delete part of the source.";
+        return null;
+    }
+
+    // A source directory as listed before anything is created; a file has no children.
+    private sealed record TreeEntry(string Path, List<TreeEntry>? Children);
+
+    private static List<TreeEntry> ListTree(string directory, CancellationToken cancellationToken) =>
+        Directory.EnumerateFileSystemEntries(directory).ToList().Select(entry =>
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var target = Path.Combine(destination, Path.GetFileName(entry));
-            if (Directory.Exists(entry)) CopyDirectory(entry, target, cancellationToken);
-            else File.Copy(entry, target);
+            return new TreeEntry(entry, Directory.Exists(entry) ? ListTree(entry, cancellationToken) : null);
+        }).ToList();
+
+    /// <summary>
+    /// shutil.copytree. copytree lists each directory before it creates the copy; listing the whole source tree first
+    /// goes further, so a destination inside the source is copied once and never into itself, at any depth.
+    /// </summary>
+    private static void CopyDirectory(string source, string destination, CancellationToken cancellationToken) =>
+        CopyTree(source, ListTree(source, cancellationToken), destination, cancellationToken);
+
+    private static void CopyTree(string source, List<TreeEntry> entries, string destination, CancellationToken cancellationToken)
+    {
+        Directory.CreateDirectory(destination);
+        foreach (var entry in entries)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var target = Path.Combine(destination, Path.GetFileName(entry.Path));
+            if (entry.Children is { } children) CopyTree(entry.Path, children, target, cancellationToken);
+            else File.Copy(entry.Path, target);
         }
         Directory.SetLastWriteTimeUtc(destination, Directory.GetLastWriteTimeUtc(source));
     }

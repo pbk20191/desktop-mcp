@@ -86,4 +86,11 @@ internal static unsafe partial class CoreNative
 
     [LibraryImport("kernel32.dll", EntryPoint = "GetFinalPathNameByHandleW", SetLastError = true)]
     internal static partial uint GetFinalPathNameByHandle(SafeFileHandle file, char* buffer, uint bufferLength, uint flags);
+
+    // kernel32: the system code pages behind Python's mbcs and oem codecs
+    [LibraryImport("kernel32.dll")]
+    internal static partial uint GetACP();
+
+    [LibraryImport("kernel32.dll")]
+    internal static partial uint GetOEMCP();
 }

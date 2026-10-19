@@ -1,5 +1,6 @@
 using System.Text;
 using DesktopMcp.Core.FileSystem;
+using DesktopMcp.Core.Interop;
 
 namespace DesktopMcp.Core.Tests;
 
@@ -38,6 +39,12 @@ public sealed class TextFilesTests : IDisposable
     [InlineData("latin-1", "é", new byte[] { 0xE9 })]
     [InlineData("cp1252", "€", new byte[] { 0x80 })]
     [InlineData("cp949", "가", new byte[] { 0xB0, 0xA1 })]
+    [InlineData("ks_c_5601-1987", "가", new byte[] { 0xB0, 0xA1 })]
+    [InlineData("iso8859-2", "ł", new byte[] { 0xB3 })]
+    [InlineData("iso8859_15", "€", new byte[] { 0xA4 })]
+    [InlineData("ISO-8859-15", "€", new byte[] { 0xA4 })]
+    [InlineData("latin", "é", new byte[] { 0xE9 })]
+    [InlineData("utf-7", "Hi ☺!", new byte[] { 0x48, 0x69, 0x20, 0x2B, 0x4A, 0x6A, 0x6F, 0x2D, 0x21 })]
     public void PythonCodecNamesMapToEncodings(string name, string text, byte[] bytes)
     {
         var path = _temp.Combine("enc.txt");
@@ -45,9 +52,28 @@ public sealed class TextFilesTests : IDisposable
         Assert.Equal(text, TextFiles.Read(path, name));
     }
 
+    [Theory]
+    [InlineData("nope")]
+    [InlineData("unicode")]
+    public void UnknownEncodingUsesPythonsText(string name) =>
+        Assert.Equal($"unknown encoding: {name}", Assert.Throws<ArgumentException>(() => TextEncodings.Get(name)).Message);
+
+    [Theory]
+    [InlineData("mbcs")]
+    [InlineData("ansi")]
+    [InlineData("dbcs")]
+    public void MbcsIsTheAnsiCodePage(string name) => Assert.Equal((int)CoreNative.GetACP(), TextEncodings.Get(name).Encoding.CodePage);
+
     [Fact]
-    public void UnknownEncodingUsesPythonsText() =>
-        Assert.Equal("unknown encoding: nope", Assert.Throws<ArgumentException>(() => TextEncodings.Get("nope")).Message);
+    public void OemIsTheOemCodePage() => Assert.Equal((int)CoreNative.GetOEMCP(), TextEncodings.Get("oem").Encoding.CodePage);
+
+    [Fact]
+    public void Utf7EncodesLikePython()
+    {
+        var path = _temp.Combine("u7.txt");
+        TextFiles.Write(path, "Hi ☺!", append: false, "utf-7");
+        Assert.Equal("Hi +Jjo!"u8.ToArray(), File.ReadAllBytes(path));
+    }
 
     [Fact]
     public void WriteTranslatesNewlinesAndWritesABomOnlyIntoAnEmptyFile()

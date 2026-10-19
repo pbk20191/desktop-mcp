@@ -34,6 +34,9 @@ public sealed class FileSystemToolTests : IDisposable
     [InlineData("""{"mode": "write", "path": "a.txt"}""", "Error: content parameter is required for write mode.")]
     [InlineData("""{"mode": "copy", "path": "a.txt"}""", "Error: destination parameter is required for copy mode.")]
     [InlineData("""{"mode": "move", "path": "a.txt"}""", "Error: destination parameter is required for move mode.")]
+    [InlineData("""{"mode": "copy", "path": "a.txt", "destination": ""}""", "Error: destination parameter is required for copy mode.")]
+    [InlineData("""{"mode": "move", "path": "a.txt", "destination": " \t"}""", "Error: destination parameter is required for move mode.")]
+    [InlineData("""{"mode": "copy", "path": "a.txt", "destination": null}""", "Error: destination parameter is required for copy mode.")]
     [InlineData("""{"mode": "search", "path": "."}""", "Error: pattern parameter is required for search mode.")]
     [InlineData("""{"mode": "zip", "path": "."}""", "Error: Unknown mode \"zip\". Use: read, write, copy, move, delete, list, search, info.")]
     public async Task MissingParametersUseUpstreamMessages(string json, string expected) =>

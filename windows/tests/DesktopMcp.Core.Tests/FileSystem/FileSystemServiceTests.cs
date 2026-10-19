@@ -126,6 +126,93 @@ public sealed class FileSystemServiceTests : IDisposable
     }
 
     [Fact]
+    public void CopyADirectoryIntoItsOwnSubdirectoryCopiesOneLevel()
+    {
+        Write(@"a\x.txt", "x");
+        Write(@"a\s\y.txt", "y");
+        Assert.Equal($"Copied directory: {P("a")} -> {P("a", "b")}", _fs.CopyPath(P("a"), P("a", "b"), false, CancellationToken.None));
+        Assert.Equal("x", File.ReadAllText(P("a", "b", "x.txt")));
+        Assert.Equal("y", File.ReadAllText(P("a", "b", "s", "y.txt")));
+        Assert.False(Directory.Exists(P("a", "b", "b")));
+    }
+
+    [Fact]
+    public void CopyADirectoryIntoANewDeepSubdirectoryStops()
+    {
+        Write(@"a\c\x.txt", "x");
+        Assert.Equal($"Copied directory: {P("a")} -> {P("a", "c", "d")}", _fs.CopyPath(P("a"), P("a", "c", "d"), false, CancellationToken.None));
+        Assert.Equal("x", File.ReadAllText(P("a", "c", "d", "c", "x.txt")));
+        Assert.False(Directory.Exists(P("a", "c", "d", "c", "d")));
+    }
+
+    [Fact]
+    public void CopyADirectoryOntoItselfWithOverwriteKeepsTheSource()
+    {
+        Write(@"a\x.txt", "x");
+        Assert.Equal($"Error copying: Destination {P("a")} is the source itself; overwriting it would delete the source.",
+            _fs.CopyPath(P("a"), P("A"), true, CancellationToken.None));
+        Assert.Equal("x", File.ReadAllText(P("a", "x.txt")));
+    }
+
+    [Fact]
+    public void CopyADirectoryOntoAnAncestorOrADescendantWithOverwriteKeepsTheSource()
+    {
+        Write(@"x\a\s\y.txt", "y");
+        Assert.Equal($"Error copying: Destination {P("x")} contains the source {P("x", "a")}; overwriting it would delete the source.",
+            _fs.CopyPath(P("x", "a"), P("x"), true, CancellationToken.None));
+        Assert.Equal($"Error copying: Destination {P("x", "a", "s")} is inside the source {P("x", "a")}; overwriting it would delete part of the source.",
+            _fs.CopyPath(P("x", "a"), P("x", "a", "s"), true, CancellationToken.None));
+        Assert.Equal("y", File.ReadAllText(P("x", "a", "s", "y.txt")));
+    }
+
+    [Fact]
+    public void CopyAFileOntoItselfIsPythonsSameFileError()
+    {
+        var path = Write(@"d\a.txt", "x");
+        var repr = "'" + path.Replace(@"\", @"\\") + "'";
+        Assert.Equal($"Error copying: {repr} and {repr} are the same file", _fs.CopyPath(path, path, true, CancellationToken.None));
+        Assert.Equal($"Error copying: {repr} and {repr} are the same file", _fs.CopyPath(path, P("d"), true, CancellationToken.None));
+        Assert.Equal("x", File.ReadAllText(path));
+    }
+
+    [Fact]
+    public void MoveADirectoryOntoItselfIsANoOp()
+    {
+        Write(@"a\x.txt", "x");
+        Assert.Equal($"Moved: {P("a")} -> {P("a")}", _fs.MovePath(P("a"), P("A"), true));
+        Assert.Equal("x", File.ReadAllText(P("a", "x.txt")));
+    }
+
+    [Fact]
+    public void MoveOntoAnAncestorWithOverwriteKeepsTheSource()
+    {
+        Write(@"x\a\y.txt", "y");
+        Assert.Equal($"Error moving: Destination {P("x")} contains the source {P("x", "a")}; overwriting it would delete the source.",
+            _fs.MovePath(P("x", "a"), P("x"), true));
+        Assert.Equal($"Error moving: Destination {P("x")} contains the source {P("x", "a", "y.txt")}; overwriting it would delete the source.",
+            _fs.MovePath(P("x", "a", "y.txt"), P("x"), true));
+        Assert.Equal("y", File.ReadAllText(P("x", "a", "y.txt")));
+    }
+
+    [Fact]
+    public void MoveOntoADescendantWithOverwriteKeepsTheSource()
+    {
+        Write(@"a\s\y.txt", "y");
+        Assert.Equal($"Error moving: Destination {P("a", "s")} is inside the source {P("a")}; overwriting it would delete part of the source.",
+            _fs.MovePath(P("a"), P("a", "s"), true));
+        Assert.Equal("y", File.ReadAllText(P("a", "s", "y.txt")));
+    }
+
+    [Fact]
+    public void ASiblingWithASharedPrefixIsNotAnAncestor()
+    {
+        Write(@"ab\x.txt", "x");
+        Write(@"a\y.txt", "y");
+        Assert.Equal($"Moved: {P("ab")} -> {P("a")}", _fs.MovePath(P("ab"), P("a"), true));
+        Assert.Equal("x", File.ReadAllText(P("a", "x.txt")));
+    }
+
+    [Fact]
     public void Delete()
     {
         var file = Write("a.txt", "x");

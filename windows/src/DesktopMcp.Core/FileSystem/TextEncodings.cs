@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using DesktopMcp.Core.Interop;
 
 namespace DesktopMcp.Core.FileSystem;
 
@@ -25,8 +26,13 @@ internal static class TextEncodings
             "utf-32" or "utf32" => (new UTF32Encoding(false, true), true),
             "utf-32-le" or "utf-32le" => (new UTF32Encoding(false, false), false),
             "utf-32-be" or "utf-32be" => (new UTF32Encoding(true, false), false),
-            "latin-1" or "latin1" or "l1" or "iso-8859-1" or "iso8859-1" => (Encoding.Latin1, false),
+            "latin-1" or "latin1" or "latin" or "l1" or "iso-8859-1" or "iso8859-1" => (Encoding.Latin1, false),
             "ascii" or "us-ascii" => (Encoding.ASCII, false),
+            "utf-7" or "utf7" or "u7" => (new Utf7Encoding(), false),
+            "mbcs" or "ansi" or "dbcs" => (Encoding.GetEncoding((int)CoreNative.GetACP()), false),
+            "oem" => (Encoding.GetEncoding((int)CoreNative.GetOEMCP()), false),
+            // .NET knows "unicode" (UTF-16); Python does not.
+            "unicode" => throw Unknown(name),
             _ => (Lookup(key, name), false),
         };
         return (Configure(encoding), signature);
@@ -41,18 +47,34 @@ internal static class TextEncodings
         return configured;
     }
 
+    /// <summary>Any name .NET knows (the name as given first, so ks_c_5601-1987 works), cpNNN, or Python's iso8859-N.</summary>
     private static Encoding Lookup(string key, string name)
     {
-        try
+        if (key.StartsWith("cp", StringComparison.Ordinal)
+            && int.TryParse(key.AsSpan(2), NumberStyles.None, CultureInfo.InvariantCulture, out var codePage))
         {
-            if (key.StartsWith("cp", StringComparison.Ordinal)
-                && int.TryParse(key.AsSpan(2), NumberStyles.None, CultureInfo.InvariantCulture, out var codePage))
+            try
+            {
                 return Encoding.GetEncoding(codePage);
-            return Encoding.GetEncoding(key);
+            }
+            catch (Exception e) when (e is ArgumentException or NotSupportedException)
+            {
+                throw Unknown(name);
+            }
         }
-        catch (Exception e) when (e is ArgumentException or NotSupportedException)
+        string[] candidates = key.StartsWith("iso8859-", StringComparison.Ordinal) ? [name.Trim(), key, "iso-" + key[3..]] : [name.Trim(), key];
+        foreach (var candidate in candidates)
         {
-            throw new ArgumentException($"unknown encoding: {name}");
+            try
+            {
+                return Encoding.GetEncoding(candidate);
+            }
+            catch (Exception e) when (e is ArgumentException or NotSupportedException)
+            {
+            }
         }
+        throw Unknown(name);
     }
+
+    private static ArgumentException Unknown(string name) => new($"unknown encoding: {name}");
 }
