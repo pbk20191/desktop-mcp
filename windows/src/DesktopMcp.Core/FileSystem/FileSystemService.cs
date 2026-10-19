@@ -110,14 +110,19 @@ public sealed class FileSystemService(string defaultDirectory, Func<bool> isElev
         if (SamePath(src, dst)) return $"Moved: {src} -> {dst}";
         try
         {
+            if (Exists(dst) && OverlapReason(src, dst) is { } reason) return $"Error moving: {reason}";
+            // A move between volumes may fall back to copying, which walks the source and fails on a directory loop.
+            // The source is listed here, before anything is created or deleted, so a loop leaves the destination as
+            // it was. A rename on one volume does not walk the tree and needs no listing.
+            var isDirectory = Directory.Exists(src);
+            var tree = isDirectory && !SameVolume(src, dst) ? ListTree(src, CancellationToken.None) : null;
             Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
             if (Exists(dst))
             {
-                if (OverlapReason(src, dst) is { } reason) return $"Error moving: {reason}";
                 if (Directory.Exists(dst)) DirectoryTree.Delete(dst);
                 else File.Delete(dst);
             }
-            if (Directory.Exists(src)) MoveDirectory(src, dst);
+            if (isDirectory) MoveTree(src, tree, dst);
             else File.Move(src, dst);
             return $"Moved: {src} -> {dst}";
         }
@@ -416,10 +421,8 @@ public sealed class FileSystemService(string defaultDirectory, Func<bool> isElev
     /// <summary>
     /// shutil.copytree. copytree lists each directory before it creates the copy; listing the whole source tree first
     /// goes further, so a destination inside the source is copied once and never into itself, at any depth.
+    /// <paramref name="entries"/> is the source as ListTree listed it.
     /// </summary>
-    private static void CopyDirectory(string source, string destination, CancellationToken cancellationToken) =>
-        CopyTree(source, ListTree(source, cancellationToken), destination, cancellationToken);
-
     private static void CopyTree(string source, List<TreeEntry> entries, string destination, CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(destination);
@@ -436,16 +439,24 @@ public sealed class FileSystemService(string defaultDirectory, Func<bool> isElev
         Directory.SetLastWriteTimeUtc(destination, Directory.GetLastWriteTimeUtc(source));
     }
 
-    private static void MoveDirectory(string source, string destination)
+    /// <summary>Whether a directory move can be a rename. Different roots mean the copy fallback may be needed. A test seam.</summary>
+    internal Func<string, string, bool> SameVolume { get; init; } =
+        (a, b) => string.Equals(Path.GetPathRoot(a), Path.GetPathRoot(b), StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The rename step of a directory move. A test seam.</summary>
+    internal Action<string, string> MoveDirectory { get; init; } = Directory.Move;
+
+    // tree is the source listed by MovePath, present whenever the volumes differ.
+    private void MoveTree(string source, List<TreeEntry>? tree, string destination)
     {
         try
         {
-            Directory.Move(source, destination);
+            MoveDirectory(source, destination);
         }
-        catch (IOException) when (!string.Equals(Path.GetPathRoot(source), Path.GetPathRoot(destination), StringComparison.OrdinalIgnoreCase))
+        catch (IOException) when (tree is not null)
         {
             // shutil.move across volumes: copy, then delete.
-            CopyDirectory(source, destination, CancellationToken.None);
+            CopyTree(source, tree, destination, CancellationToken.None);
             DirectoryTree.Delete(source);
         }
     }

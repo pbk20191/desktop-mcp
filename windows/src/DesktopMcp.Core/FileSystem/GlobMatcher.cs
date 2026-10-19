@@ -74,5 +74,6 @@ internal static class GlobMatcher
         }
     }
 
-    private static bool IsLink(string path) => new DirectoryInfo(path).LinkTarget is not null;
+    // Only symlinks and junctions stop the walk; other reparse points are plain directories (see DirectoryTree.IsLink).
+    private static bool IsLink(string path) => DirectoryTree.IsLink(new DirectoryInfo(path));
 }

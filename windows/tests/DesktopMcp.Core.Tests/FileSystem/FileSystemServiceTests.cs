@@ -171,6 +171,87 @@ public sealed class FileSystemServiceTests : IDisposable
     }
 
     [Fact]
+    public void CrossVolumeMoveWithALoopKeepsTheDestination()
+    {
+        Write(@"a\x.txt", "x");
+        Directory.CreateDirectory(P("a", "s"));
+        Junction(P("a", "s", "loop"), P("a"));
+        Write(@"b\keep.txt", "k");
+        // Stands in for a second volume, where the rename fails and the move falls back to copy and delete.
+        var fs = new FileSystemService(_root, () => true)
+        {
+            SameVolume = (_, _) => false,
+            MoveDirectory = (_, _) => throw new IOException("not same device"),
+        };
+        Assert.Equal($"Error moving: Directory loop: {P("a", "s", "loop")} leads back to {P("a")}",
+            fs.MovePath(P("a"), P("b"), true));
+        Assert.Equal("k", File.ReadAllText(P("b", "keep.txt")));
+        Assert.Equal("x", File.ReadAllText(P("a", "x.txt")));
+    }
+
+    [Fact]
+    public void CrossVolumeMoveFallsBackToCopyAndDelete()
+    {
+        Write(@"a\s\x.txt", "x");
+        Write(@"b\old.txt", "o");
+        var fs = new FileSystemService(_root, () => true)
+        {
+            SameVolume = (_, _) => false,
+            MoveDirectory = (_, _) => throw new IOException("not same device"),
+        };
+        Assert.Equal($"Moved: {P("a")} -> {P("b")}", fs.MovePath(P("a"), P("b"), true));
+        Assert.False(Directory.Exists(P("a")));
+        Assert.Equal(["s"], Directory.EnumerateFileSystemEntries(P("b")).Select(Path.GetFileName));
+        Assert.Equal("x", File.ReadAllText(P("b", "s", "x.txt")));
+    }
+
+    [Fact]
+    public void OnlySymlinksAndJunctionsAreLinks()
+    {
+        Write(@"plain\f.txt", "f");
+        Write(@"target\t.txt", "t");
+        Junction(P("junction"), P("target"));
+        Assert.False(DirectoryTree.IsLink(new DirectoryInfo(P("plain"))));
+        Assert.False(DirectoryTree.IsLink(new FileInfo(P("plain", "f.txt"))));
+        Assert.True(DirectoryTree.IsLink(new DirectoryInfo(P("junction"))));
+    }
+
+    [SymlinkFact]
+    public void ADirectorySymlinkIsALink()
+    {
+        Write(@"target\t.txt", "t");
+        Write(@"tree\f.txt", "f");
+        Directory.CreateSymbolicLink(P("tree", "symlink"), P("target"));
+        Assert.True(DirectoryTree.IsLink(new DirectoryInfo(P("tree", "symlink"))));
+        Assert.Equal($"Deleted directory: {P("tree")}", _fs.DeletePath(P("tree"), true));
+        Assert.False(Directory.Exists(P("tree")));
+        Assert.Equal("t", File.ReadAllText(P("target", "t.txt")));
+    }
+
+    /// <summary>A fact that is skipped when this process cannot create a symbolic link (it needs Developer Mode or elevation).</summary>
+    private sealed class SymlinkFactAttribute : FactAttribute
+    {
+        public SymlinkFactAttribute()
+        {
+            if (!CanCreateSymlinks()) Skip = "Creating a symbolic link needs Developer Mode or elevation.";
+        }
+
+        private static bool CanCreateSymlinks()
+        {
+            using var temp = new TempDirectory();
+            try
+            {
+                Directory.CreateSymbolicLink(temp.Combine("link"), temp.Path);
+                return true;
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                return false;
+            }
+        }
+    }
+
+    [Fact]
     public void CopyFollowsAJunctionThatIsNotALoop()
     {
         Write(@"c\y.txt", "y");

@@ -19,7 +19,7 @@ internal static class DirectoryTree
             directories.Add(directory);
             foreach (var entry in new DirectoryInfo(directory).EnumerateFileSystemInfos().ToList())
             {
-                if (entry.Attributes.HasFlag(FileAttributes.ReparsePoint))
+                if (IsLink(entry))
                 {
                     if (entry is DirectoryInfo) Directory.Delete(entry.FullName);
                     else File.Delete(entry.FullName);
@@ -37,4 +37,14 @@ internal static class DirectoryTree
         // Every directory is listed after its parent, so the reverse order empties children first.
         for (var i = directories.Count - 1; i >= 0; i--) Directory.Delete(directories[i]);
     }
+
+    /// <summary>
+    /// True when <paramref name="entry"/> is a link: a name surrogate, meaning a symbolic link or a mount point
+    /// (junction). The ReparsePoint attribute alone is not enough. Other reparse points, such as OneDrive
+    /// Files-On-Demand placeholders (IO_REPARSE_TAG_CLOUD_*) or deduplicated files, are ordinary files and directories
+    /// with a filter behind them, and must be walked and deleted like any other. This matches CPython, whose rmtree and
+    /// os.walk stop only at is_symlink() or is_junction(). LinkTarget is non-null only for those two tags.
+    /// </summary>
+    public static bool IsLink(FileSystemInfo entry) =>
+        entry.Attributes.HasFlag(FileAttributes.ReparsePoint) && entry.LinkTarget is not null;
 }

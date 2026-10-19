@@ -26,10 +26,17 @@ internal sealed class TempDirectory : IDisposable
         try
         {
             // Tests leave read-only files behind, which rmtree (and so DirectoryTree) refuses to delete. Links and
-            // junctions are skipped and not entered; DirectoryTree removes them as links.
-            var options = new EnumerationOptions { RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint };
-            foreach (var file in Directory.EnumerateFiles(Path, "*", options))
-                File.SetAttributes(file, FileAttributes.Normal);
+            // junctions are not entered (DirectoryTree removes them as links); other reparse points are walked.
+            var pending = new Stack<string>([Path]);
+            while (pending.TryPop(out var directory))
+            {
+                foreach (var entry in new DirectoryInfo(directory).EnumerateFileSystemInfos())
+                {
+                    if (DesktopMcp.Core.FileSystem.DirectoryTree.IsLink(entry)) continue;
+                    if (entry is DirectoryInfo) pending.Push(entry.FullName);
+                    else entry.Attributes = FileAttributes.Normal;
+                }
+            }
             DesktopMcp.Core.FileSystem.DirectoryTree.Delete(Path);
         }
         catch (IOException) { }
