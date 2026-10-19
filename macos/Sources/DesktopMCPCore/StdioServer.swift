@@ -37,12 +37,18 @@ public enum StdioServer {
 /// failed write here ends the receive stream, and with it the server loop. And the SDK's stream
 /// ends at stdin EOF while responses are still due; here it ends once every request read has
 /// been answered (or cancelled by the client, which then expects no answer).
+///
+/// Sends are written one at a time, in call order. `StdioTransport.send` suspends mid-message
+/// when stdout is full, and the server sends each response from its own task, so without the
+/// queue a second response could be written into the middle of a first.
 private actor StdoutWatchingTransport: Transport {
     nonisolated let logger: Logger
     private let inner: StdioTransport
     private let messages: AsyncThrowingStream<Data, Swift.Error>
     private let continuation: AsyncThrowingStream<Data, Swift.Error>.Continuation
     private var forwarding: Task<Void, Never>?
+    /// The last write queued; each write waits for the one before it.
+    private var lastWrite: Task<Void, Swift.Error>?
     private var unanswered: Set<ID> = []
     private var inputEnded = false
     private var outputClosed = false
@@ -73,8 +79,14 @@ private actor StdoutWatchingTransport: Transport {
     }
 
     func send(_ data: Data) async throws {
-        do {
+        let previous = lastWrite
+        let write = Task { [inner] in
+            _ = await previous?.result
             try await inner.send(data)
+        }
+        lastWrite = write
+        do {
+            try await write.value
         } catch {
             if !Self.isTemporary(error) {
                 outputClosed = true

@@ -104,4 +104,31 @@ final class StdioServerTests: XCTestCase {
         XCTAssertEqual(Set(responses.compactMap { $0["id"]?.stringValue }), ["a\u{2028}b\u{2029}c\u{0085}d"])
         XCTAssertTrue(responses.allSatisfy { $0["result"] != nil })
     }
+    func testConcurrentResponsesDoNotInterleave() async throws {
+        // A response bigger than the pipe buffer blocks mid-message until the reader drains it;
+        // a second response sent meanwhile must wait for it rather than splice into it.
+        let registry = ToolRegistry(name: "t", version: "0", instructions: "")
+        await registry.register(Tool(
+            name: "Big", description: "Returns 200 KB of text.",
+            inputSchema: .object(["type": .string("object")]),
+            annotations: ToolAnnotations(title: "Big", readOnly: true, destructive: false,
+                                         idempotent: true, openWorld: false),
+            handler: { _ in [.text(String(repeating: "x", count: 200_000))] }))
+        let pipes = Pipes()
+        let run = serve(registry, pipes)
+        pipes.send(#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"Big","arguments":{}}}"# + "\n")
+        try await Task.sleep(for: .milliseconds(100))
+        pipes.send(#"{"jsonrpc":"2.0","id":2,"method":"ping"}"# + "\n")
+        try pipes.input.fileHandleForWriting.close()
+        try await Task.sleep(for: .milliseconds(500))  // a slow reader: both sends are now waiting
+        let reading = Task.detached { pipes.output.fileHandleForReading.readDataToEndOfFile() }
+        let finished = await finishes(run, within: 10)
+        XCTAssertTrue(finished, "run() must return once stdin closes and both are answered")
+        try pipes.output.fileHandleForWriting.close()
+        let lines = await reading.value.split(separator: 0x0A)
+        let responses = lines.compactMap { try? JSON.parse(Data($0)) }
+        XCTAssertEqual(responses.count, lines.count,
+                       "every line must be one JSON message; line sizes: \(lines.map(\.count))")
+        XCTAssertEqual(Set(responses.compactMap { $0["id"]?.intValue }), [1, 2])
+    }
 }
