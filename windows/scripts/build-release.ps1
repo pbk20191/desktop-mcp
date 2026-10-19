@@ -44,4 +44,11 @@ if ($Runtimes -contains 'win-x64' -and [Runtime.InteropServices.RuntimeInformati
         Write-Host 'AOT activation check OK: the NativeAOT probe activated the statically linked Win2D'
     }
     finally { Remove-Item $png -ErrorAction SilentlyContinue }
+    # UI Automation through CsWin32's [GeneratedComInterface] interfaces, which only NativeAOT can prove (P2 Task 1).
+    & (Join-Path $probeOut 'desktop-mcp-probe.exe') uia
+    if ($LASTEXITCODE -ne 0) { throw "AOT UIA check failed: desktop-mcp-probe uia exited with $LASTEXITCODE" }
+    Write-Host 'AOT UIA check OK: the NativeAOT probe walked the foreground window through UI Automation'
+}
+else {
+    Write-Host 'AOT activation and UIA checks skipped: they need win-x64 in -Runtimes and an x64 host'
 }

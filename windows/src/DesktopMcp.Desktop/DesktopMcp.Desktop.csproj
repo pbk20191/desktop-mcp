@@ -2,6 +2,9 @@
   <PropertyGroup>
     <RootNamespace>DesktopMcp.Desktop</RootNamespace>
     <DisableRuntimeMarshalling>true</DisableRuntimeMarshalling>
+    <!-- CsWin32 emits COM interfaces as [GeneratedComInterface] (NativeMethods.json comInterop.useComSourceGenerators) only
+         when it runs as a build task; built-in COM interop does not exist under NativeAOT. -->
+    <CsWin32RunAsBuildTask>true</CsWin32RunAsBuildTask>
     <!-- Compiles the SDK's Release/Runtime version constants (used by AppRuntime) into this assembly. -->
     <WindowsAppSdkIncludeVersionInfo>true</WindowsAppSdkIncludeVersionInfo>
   </PropertyGroup>

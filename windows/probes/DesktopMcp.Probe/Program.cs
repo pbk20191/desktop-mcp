@@ -2,7 +2,7 @@ using System.Diagnostics;
 using DesktopMcp.Desktop.Dispatching;
 using DesktopMcp.Probe;
 
-// AOT probes. Usage: desktop-mcp-probe bootstrap | dispatcher | imaging [out.png] | capture [out.png] | clipboard | toast
+// AOT probes. Usage: desktop-mcp-probe bootstrap | dispatcher | imaging [out.png] | capture [out.png] | clipboard | toast | uia
 var command = args.Length > 0 ? args[0] : "dispatcher";
 var ok = command switch
 {
@@ -12,6 +12,7 @@ var ok = command switch
     "capture" => await ProbeCaptureAsync(args.Length > 1 ? args[1] : "probe-capture.png"),
     "clipboard" => await ClipboardProbe.RunAsync(),
     "toast" => ProbeToast(),
+    "uia" => await UiaProbe.RunAsync(),
     _ => Fail($"unknown probe '{command}'"),
 };
 return ok ? 0 : 1;
