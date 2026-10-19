@@ -34,35 +34,40 @@ public class HtmlToMarkdownTests
     [InlineData("<svg><title>Icon</title></svg><p>Body</p>", "Body")]
     [InlineData("<p>a</p><!-- never closed <p>b</p>", "a")]
     [InlineData("<p>a</p><script>never closed <p>b</p>", "a")]
-    [InlineData("<p>x &#xD800; &#xDFFF;</p>", "x � �")]
-    [InlineData("<p>&#0;|&#x110000;|&#99999999999999999999;|&#x;|&#;</p>", "�|�|�|&#x;|&#;")]
-    [InlineData("<img src=\"&#xD83D;\" alt=\"&#xDE00;\">", "![�](�)")]
+    [InlineData("<p>x &#xD800; &#xDFFF;</p>", "x \uFFFD \uFFFD")]
+    [InlineData("<p>&#0;|&#x110000;|&#99999999999999999999;|&#x;|&#;</p>", "\uFFFD|\uFFFD|\uFFFD|&#x;|&#;")]
+    [InlineData("<img src=\"&#xD83D;\" alt=\"&#xDE00;\">", "![\uFFFD](\uFFFD)")]
     [InlineData("<p>&#x1F600; &#128512;</p>", "\U0001F600 \U0001F600")]
     public void HandlesEdgeCases(string html, string markdown) => Assert.Equal(markdown, HtmlToMarkdown.Convert(html));
 
     [Theory]
-    [InlineData("div")]
-    [InlineData("b")]
-    [InlineData("ul><li")]
-    [InlineData("blockquote")]
-    public void SurvivesDeeplyNestedElements(string tag)
+    [InlineData("div", "deep")]
+    // Only the outer 16 wrappers render as Markdown; deeper inline nesting has no Markdown meaning.
+    [InlineData("b", "********************************deep********************************")]
+    public void SurvivesDeeplyNestedElements(string tag, string expected) => Assert.Equal(expected, ConvertNested(tag));
+
+    [Theory]
+    [InlineData("ul><li", "\n" + "                  - deep")]
+    [InlineData("blockquote", "\n\n>\n\ndeep")]
+    public void SurvivesDeeplyNestedBlocks(string tag, string expectedEnd) => Assert.EndsWith(expectedEnd, ConvertNested(tag));
+
+    private static string ConvertNested(string tag)
     {
         const int depth = 100_000;
         var html = new StringBuilder();
         for (var i = 0; i < depth; i++) html.Append('<').Append(tag).Append('>');
         html.Append("deep");
-        var markdown = HtmlToMarkdown.Convert(html.ToString());
-        Assert.Contains("deep", markdown);
+        return HtmlToMarkdown.Convert(html.ToString());
     }
 
     [Fact]
-    public void ListIndentationStopsGrowingAfterSixteenLevels()
+    public void ListIndentationStopsGrowingAfterTenLevels()
     {
         var lines = HtmlToMarkdown.Convert(string.Concat(Enumerable.Repeat("<ul><li>x", 20))).Split('\n');
         Assert.Equal(20, lines.Length);
         Assert.Equal("  - x", lines[1]);
-        Assert.Equal(new string(' ', 28) + "- x", lines[14]);
-        Assert.All(lines[15..], line => Assert.Equal(new string(' ', 30) + "- x", line));
+        Assert.Equal(new string(' ', 16) + "- x", lines[8]);
+        Assert.All(lines[9..], line => Assert.Equal(new string(' ', 18) + "- x", line));
     }
 
     [Fact]
@@ -73,6 +78,17 @@ public class HtmlToMarkdownTests
         Assert.Equal("deep\n\nafter", HtmlToMarkdown.Convert(html));
     }
 
+    [Fact]
+    public void EndTagsOfElementsPastTheDepthCapDoNotCloseAncestors()
+    {
+        var depth = HtmlParser.MaxDepth + 44;
+        var html = "<div id=app>" + string.Concat(Enumerable.Repeat("<div>", depth)) + string.Concat(Enumerable.Repeat("</div>", depth))
+            + "<p>after</p></div>";
+        var app = Assert.Single(HtmlParser.Parse(html).Children);
+        Assert.Equal("app", app.Attribute("id"));
+        Assert.Equal("p", app.Children[^1].Name);
+    }
+
     [Theory]
     [InlineData("<div>", "</x>")]
     [InlineData("<p><table>", "<span><div>")]
@@ -81,19 +97,44 @@ public class HtmlToMarkdownTests
     [InlineData("", "<a href=\"x\">y</a> &amp; ")]
     [InlineData("", "<p>a < b <!x> &#99;")]
     [InlineData("<pre>", "<code>")]
-    [InlineData("<b>", "word ", 1_000)]
-    [InlineData("<a href=\"u\">", "word ", 1_000)]
-    [InlineData("<pre>", "line\n", 1_000)]
-    [InlineData("<ul><li>", "<li>x", 1_000)]
-    public void LargeInputsStayLinear(string prefix, string unit, int prefixRepeat = 1)
+    [InlineData("", "<")]
+    [InlineData("", "<b>")]
+    [InlineData("", "<i>x")]
+    [InlineData("", "<u>x")]
+    [InlineData("", "&#1;")]
+    [InlineData("<table><tr>", "<td>")]
+    [InlineData("<pre>", " \t")]
+    [InlineData("<b>", "word ", 256)]
+    [InlineData("<a href=\"u\">", "word ", 256)]
+    [InlineData("<pre>", "line\n", 256)]
+    [InlineData("<b><i>", "w ", 128)]
+    [InlineData("<ul><li>", "<li>", 16)]
+    [InlineData("<ol><li>", "<li>x", 1_000)]
+    public void LargeInputsStayLinear(string prefix, string unit, int prefixRepeat = 1) =>
+        AssertLinear(prefix, unit, prefixRepeat, 1_000_000, TimeSpan.FromSeconds(5));
+
+    // At the 8 MB Scrape body cap. Run with: dotnet test tests/DesktopMcp.Core.Tests -p:RunSettingsFilePath= --filter Category=Stress
+    [Theory]
+    [Trait("Category", "Stress")]
+    [InlineData("", "<i>x")]
+    [InlineData("<pre>", "line\n", 256)]
+    [InlineData("<ul><li>", "<li>", 16)]
+    public void EightMegabyteInputsStayLinear(string prefix, string unit, int prefixRepeat = 1) =>
+        AssertLinear(prefix, unit, prefixRepeat, 8_000_000, TimeSpan.FromSeconds(20));
+
+    // A quadratic step would take minutes at these sizes; allocation stays within 50 bytes per input character.
+    private static void AssertLinear(string prefix, string unit, int prefixRepeat, int size, TimeSpan timeLimit)
     {
-        prefix = string.Concat(Enumerable.Repeat(prefix, prefixRepeat));
-        // About 8 MB of input, the Scrape body cap; a quadratic step would take minutes here.
-        var html = new StringBuilder(prefix);
-        while (html.Length < 8_000_000) html.Append(unit);
+        var builder = new StringBuilder(string.Concat(Enumerable.Repeat(prefix, prefixRepeat)));
+        while (builder.Length < size) builder.Append(unit);
+        var html = builder.ToString();
+        var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
         var stopwatch = Stopwatch.StartNew();
-        HtmlToMarkdown.Convert(html.ToString());
-        Assert.InRange(stopwatch.Elapsed, TimeSpan.Zero, TimeSpan.FromSeconds(20));
+        HtmlToMarkdown.Convert(html);
+        stopwatch.Stop();
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+        Assert.InRange(stopwatch.Elapsed, TimeSpan.Zero, timeLimit);
+        Assert.InRange(allocated, 0, 50L * html.Length);
     }
 
     [Fact]

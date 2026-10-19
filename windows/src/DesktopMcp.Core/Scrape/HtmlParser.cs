@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Net;
 using System.Text;
 
@@ -8,22 +9,65 @@ internal sealed class HtmlNode(string name)
 {
     public const string TextName = "#text";
 
+    // Nodes are kept small, since hostile input can make one per few input characters: a text node's string or an
+    // element's attributes share one field, and the children field holds nothing, the only child, or a list.
+    private object? _data;
+    private object? _children;
+
     public string Name { get; } = name;
-    public string Text { get; init; } = "";
-    public Dictionary<string, string> Attributes { get; } = new(StringComparer.Ordinal);
-    public List<HtmlNode> Children { get; } = [];
+
+    public string Text
+    {
+        get => _data as string ?? "";
+        init => _data = value;
+    }
+
+    public IReadOnlyDictionary<string, string> Attributes
+    {
+        get => _data as IReadOnlyDictionary<string, string> ?? FrozenDictionary<string, string>.Empty;
+        init => _data = value;
+    }
+
+    public int ChildCount => _children switch
+    {
+        null => 0,
+        HtmlNode => 1,
+        _ => ((List<HtmlNode>)_children).Count,
+    };
+
+    public HtmlNode ChildAt(int index) => _children as HtmlNode ?? ((List<HtmlNode>)_children!)[index];
+
+    /// <summary>A copy of the children; walks use <see cref="ChildCount"/> and <see cref="ChildAt"/>.</summary>
+    public IReadOnlyList<HtmlNode> Children => [.. Enumerable.Range(0, ChildCount).Select(ChildAt)];
+
+    public void Add(HtmlNode child)
+    {
+        switch (_children)
+        {
+            case null:
+                _children = child;
+                break;
+            case HtmlNode only:
+                _children = new List<HtmlNode> { only, child };
+                break;
+            default:
+                ((List<HtmlNode>)_children).Add(child);
+                break;
+        }
+    }
 
     public string Attribute(string attributeName) => Attributes.GetValueOrDefault(attributeName, "");
 
     // Recursion is safe: HtmlParser caps the tree depth at HtmlParser.MaxDepth.
-    public string InnerText() => Name == TextName ? Text : string.Concat(Children.Select(child => child.InnerText()));
+    public string InnerText() => Name == TextName ? Text : string.Concat(Enumerable.Range(0, ChildCount).Select(i => ChildAt(i).InnerText()));
 
     /// <summary>The first descendant named <paramref name="tag"/> in document order, not looking inside foreign
     /// content (svg, math), whose elements are not HTML elements of that name.</summary>
     public HtmlNode? Find(string tag)
     {
-        foreach (var child in Children)
+        for (var i = 0; i < ChildCount; i++)
         {
+            var child = ChildAt(i);
             if (child.Name == tag) return child;
             if (child.Name is "svg" or "math") continue;
             if (child.Find(tag) is { } found) return found;
@@ -35,9 +79,9 @@ internal sealed class HtmlNode(string name)
 /// <summary>
 /// A tolerant HTML parser standing in for the libxml2 tidy parser the macOS port uses: just enough tree for
 /// <see cref="HtmlToMarkdown"/>. Tag and attribute names are lower-cased; entities are decoded in text and attributes.
-/// It never throws, and its work is linear in the input: elements nest at most <see cref="MaxDepth"/> deep (deeper
-/// start tags still add their element, but its content goes to the deepest open element), which bounds both the
-/// recursion of the tree walks and every scan of the open-element stack.
+/// It never throws, and its time and memory are linear in the input: elements nest at most <see cref="MaxDepth"/>
+/// deep (deeper start tags still add their element, but its content goes to the deepest open element, and their end
+/// tags are absorbed), which bounds both the recursion of the tree walks and every scan of the open-element stack.
 /// </summary>
 internal static class HtmlParser
 {
@@ -64,6 +108,15 @@ internal static class HtmlParser
     private static readonly HashSet<string> SectionBoundaries = ["table", "html"];
     private static readonly HashSet<string> OptionBoundaries = ["select", "datalist", "html"];
 
+    // Names shared by every element of that name instead of one string per tag.
+    private static readonly HashSet<string>.AlternateLookup<ReadOnlySpan<char>> KnownNames = new HashSet<string>(
+    [
+        .. VoidElements, .. RawTextElements, .. ClosesParagraph, .. ScopeBoundaries, .. RowBoundaries, .. OptionBoundaries,
+        "a", "abbr", "b", "body", "cite", "code", "em", "font", "head", "html", "i", "label", "math", "option", "q", "s",
+        "small", "span", "strong", "sub", "sup", "svg", "tbody", "td", "tfoot", "th", "thead", "time", "tr", "u",
+        "alt", "class", "href", "id", "name", "rel", "src", "style", "title", "type",
+    ]).GetAlternateLookup<ReadOnlySpan<char>>();
+
     public static HtmlNode Parse(string html)
     {
         var document = new HtmlNode("#document");
@@ -74,10 +127,10 @@ internal static class HtmlParser
             var lt = html.IndexOf('<', position);
             if (lt < 0)
             {
-                builder.Text(Decode(html[position..]));
+                Decode(html.AsSpan(position), builder.PendingText);
                 break;
             }
-            if (lt > position) builder.Text(Decode(html[position..lt]));
+            Decode(html.AsSpan(position, lt - position), builder.PendingText);
             position = lt;
             var next = position + 1 < html.Length ? html[position + 1] : '\0';
             if (string.CompareOrdinal(html, position, "<!--", 0, 4) == 0)
@@ -102,8 +155,8 @@ internal static class HtmlParser
                 if (RawTextElements.Contains(tag.Name) && !tag.SelfClosing)
                 {
                     var close = IndexOfCloseTag(html, position, tag.Name);
-                    var content = html[position..close];
-                    builder.RawText(tag.Name, tag.Attributes, EscapableRawText.Contains(tag.Name) ? Decode(content) : content);
+                    var content = html.AsSpan(position, close - position);
+                    builder.RawText(tag.Name, tag.Attributes, EscapableRawText.Contains(tag.Name) ? Decode(content) : content.ToString());
                     position = close >= html.Length ? html.Length : SkipPast(html, close, '>');
                 }
                 else
@@ -113,10 +166,11 @@ internal static class HtmlParser
             }
             else
             {
-                builder.Text("<");
+                builder.PendingText.Append('<');
                 position++;
             }
         }
+        builder.FlushText();
         return document;
     }
 
@@ -124,32 +178,40 @@ internal static class HtmlParser
     /// Decodes character references. Named ones need their semicolon and go through <see cref="WebUtility.HtmlDecode"/>;
     /// numeric ones may omit it, and like a browser, zero, surrogates and values past U+10FFFF become U+FFFD.
     /// </summary>
-    internal static string Decode(string text)
+    internal static string Decode(ReadOnlySpan<char> text)
     {
-        var amp = text.IndexOf('&');
-        if (amp < 0) return text;
+        if (!text.Contains('&')) return text.ToString();
         var decoded = new StringBuilder(text.Length);
-        var last = 0;
-        while (amp >= 0)
-        {
-            decoded.Append(text, last, amp - last);
-            var end = amp + 1 < text.Length && text[amp + 1] == '#' ? DecodeNumeric(text, amp, decoded) : DecodeNamed(text, amp, decoded);
-            if (end < 0)
-            {
-                decoded.Append('&');
-                end = amp + 1;
-            }
-            last = end;
-            amp = text.IndexOf('&', last);
-        }
-        decoded.Append(text, last, text.Length - last);
+        Decode(text, decoded);
         return decoded.ToString();
     }
 
-    // Appends the reference starting at amp ("&#...") and returns the index after it, or -1 when it has no digits.
-    private static int DecodeNumeric(string text, int amp, StringBuilder decoded)
+    private static void Decode(ReadOnlySpan<char> text, StringBuilder decoded)
     {
-        var i = amp + 2;
+        while (true)
+        {
+            var amp = text.IndexOf('&');
+            if (amp < 0)
+            {
+                decoded.Append(text);
+                return;
+            }
+            decoded.Append(text[..amp]);
+            text = text[amp..];
+            var length = text.Length > 1 && text[1] == '#' ? DecodeNumeric(text, decoded) : DecodeNamed(text, decoded);
+            if (length < 0)
+            {
+                decoded.Append('&');
+                length = 1;
+            }
+            text = text[length..];
+        }
+    }
+
+    // Appends the reference at the start of text ("&#...") and returns its length, or -1 when it has no digits.
+    private static int DecodeNumeric(ReadOnlySpan<char> text, StringBuilder decoded)
+    {
+        var i = 2;
         var hex = i < text.Length && text[i] is 'x' or 'X';
         if (hex) i++;
         var digitsStart = i;
@@ -165,33 +227,43 @@ internal static class HtmlParser
         }
         if (i == digitsStart) return -1;
         if (i < text.Length && text[i] == ';') i++;
-        if (value is 0 or (>= 0xD800 and <= 0xDFFF) or > 0x10FFFF) decoded.Append('�');
+        if (value is 0 or (>= 0xD800 and <= 0xDFFF) or > 0x10FFFF) decoded.Append('\uFFFD');
+        else if (value <= 0xFFFF) decoded.Append((char)value);
         else decoded.Append(char.ConvertFromUtf32(value));
         return i;
     }
 
-    // Appends the named reference starting at amp ("&name;") and returns the index after it, or -1 when it is not one.
-    private static int DecodeNamed(string text, int amp, StringBuilder decoded)
+    // Appends the named reference at the start of text ("&name;") and returns its length, or -1 when it is not one.
+    private static int DecodeNamed(ReadOnlySpan<char> text, StringBuilder decoded)
     {
         const int longestName = 32;
-        var i = amp + 1;
-        while (i < text.Length && i - amp <= longestName && char.IsAsciiLetterOrDigit(text[i])) i++;
-        if (i == amp + 1 || i >= text.Length || text[i] != ';') return -1;
-        var reference = text[amp..(i + 1)];
+        var i = 1;
+        while (i < text.Length && i <= longestName && char.IsAsciiLetterOrDigit(text[i])) i++;
+        if (i == 1 || i >= text.Length || text[i] != ';') return -1;
+        var reference = text[..(i + 1)].ToString();
         var value = WebUtility.HtmlDecode(reference);
         if (value == reference) return -1;
         decoded.Append(value);
         return i + 1;
     }
 
-    private readonly record struct Tag(string Name, Dictionary<string, string> Attributes, bool SelfClosing, int Next);
+    private readonly record struct Tag(string Name, Dictionary<string, string>? Attributes, bool SelfClosing, int Next);
+
+    private static string LowerName(ReadOnlySpan<char> name)
+    {
+        const int longestKnown = 16;
+        if (name.Length > longestKnown) return name.ToString().ToLowerInvariant();
+        Span<char> lower = stackalloc char[longestKnown];
+        var length = name.ToLowerInvariant(lower);
+        return KnownNames.TryGetValue(lower[..length], out var known) ? known : lower[..length].ToString();
+    }
 
     private static Tag ReadTag(string html, int start)
     {
         var i = start;
         while (i < html.Length && !char.IsWhiteSpace(html[i]) && html[i] is not ('/' or '>')) i++;
-        var name = html[start..i].ToLowerInvariant();
-        var attributes = new Dictionary<string, string>(StringComparer.Ordinal);
+        var name = LowerName(html.AsSpan(start, i - start));
+        Dictionary<string, string>? attributes = null;
         var selfClosing = false;
         while (i < html.Length)
         {
@@ -215,7 +287,7 @@ internal static class HtmlParser
                 i++;
                 continue;
             }
-            var attributeName = html[nameStart..i].ToLowerInvariant();
+            var attributeName = LowerName(html.AsSpan(nameStart, i - nameStart));
             while (i < html.Length && char.IsWhiteSpace(html[i])) i++;
             var value = "";
             if (i < html.Length && html[i] == '=')
@@ -227,17 +299,18 @@ internal static class HtmlParser
                     var quote = html[i];
                     var end = html.IndexOf(quote, i + 1);
                     if (end < 0) end = html.Length;
-                    value = html[(i + 1)..end];
+                    value = Decode(html.AsSpan(i + 1, end - i - 1));
                     i = Math.Min(end + 1, html.Length);
                 }
                 else
                 {
                     var valueStart = i;
                     while (i < html.Length && !char.IsWhiteSpace(html[i]) && html[i] != '>') i++;
-                    value = html[valueStart..i];
+                    value = Decode(html.AsSpan(valueStart, i - valueStart));
                 }
             }
-            attributes.TryAdd(attributeName, Decode(value));
+            attributes ??= new Dictionary<string, string>(StringComparer.Ordinal);
+            attributes.TryAdd(attributeName, value);
         }
         return new Tag(name, attributes, selfClosing, i);
     }
@@ -265,39 +338,53 @@ internal static class HtmlParser
         return at < 0 ? html.Length : at + 1;
     }
 
+    private static readonly string[] OneCharStrings = [.. Enumerable.Range(0, 128).Select(c => ((char)c).ToString())];
+
     private sealed class Builder(HtmlNode document)
     {
         // The document plus at most MaxDepth open elements, so every scan below is bounded; scans for an element
         // that is not open at all are skipped, which keeps the common case constant-time.
         private readonly List<HtmlNode> _stack = [document];
         private readonly Dictionary<string, int> _openCounts = new(StringComparer.Ordinal);
+        // Start tags past MaxDepth that were not left open, by name: their end tags close nothing.
+        private readonly Dictionary<string, int> _droppedCounts = new(StringComparer.Ordinal);
 
         private HtmlNode Current => _stack[^1];
 
-        public void Text(string text)
+        /// <summary>Text read since the last tag that changed the tree; adjacent text becomes one node.</summary>
+        public StringBuilder PendingText { get; } = new();
+
+        public void FlushText()
         {
-            if (text.Length > 0) Current.Children.Add(new HtmlNode(HtmlNode.TextName) { Text = text });
+            if (PendingText.Length == 0) return;
+            var text = PendingText.Length == 1 && PendingText[0] < OneCharStrings.Length ? OneCharStrings[PendingText[0]] : PendingText.ToString();
+            Current.Add(new HtmlNode(HtmlNode.TextName) { Text = text });
+            PendingText.Clear();
         }
 
-        public void Start(string tag, Dictionary<string, string> attributes, bool selfClosing)
+        public void Start(string tag, Dictionary<string, string>? attributes, bool selfClosing)
         {
             var element = Add(tag, attributes);
-            if (!selfClosing && !VoidElements.Contains(tag) && _stack.Count <= MaxDepth)
+            if (selfClosing || VoidElements.Contains(tag)) return;
+            if (_stack.Count > MaxDepth)
             {
-                _stack.Add(element);
-                _openCounts[tag] = _openCounts.GetValueOrDefault(tag) + 1;
+                _droppedCounts[tag] = _droppedCounts.GetValueOrDefault(tag) + 1;
+                return;
             }
+            _stack.Add(element);
+            _openCounts[tag] = _openCounts.GetValueOrDefault(tag) + 1;
         }
 
         // A raw-text element is complete when it is read, so it is never left open.
-        public void RawText(string tag, Dictionary<string, string> attributes, string text)
+        public void RawText(string tag, Dictionary<string, string>? attributes, string text)
         {
             var element = Add(tag, attributes);
-            if (text.Length > 0) element.Children.Add(new HtmlNode(HtmlNode.TextName) { Text = text });
+            if (text.Length > 0) element.Add(new HtmlNode(HtmlNode.TextName) { Text = text });
         }
 
-        private HtmlNode Add(string tag, Dictionary<string, string> attributes)
+        private HtmlNode Add(string tag, Dictionary<string, string>? attributes)
         {
+            FlushText();
             if (ClosesParagraph.Contains(tag)) CloseInScope("p", ScopeBoundaries);
             if (tag == "li") CloseInScope("li", ListItemBoundaries);
             if (tag is "dt" or "dd")
@@ -320,9 +407,8 @@ internal static class HtmlParser
             if (tag == "option") CloseInScope("option", OptionBoundaries);
             if (Headings.Contains(tag) && Headings.Contains(Current.Name)) PopFrom(_stack.Count - 1);
 
-            var element = new HtmlNode(tag);
-            foreach (var (name, value) in attributes) element.Attributes[name] = value;
-            Current.Children.Add(element);
+            var element = attributes is null ? new HtmlNode(tag) : new HtmlNode(tag) { Attributes = attributes };
+            Current.Add(element);
             return element;
         }
 
@@ -330,10 +416,16 @@ internal static class HtmlParser
         {
             if (tag == "br")
             {
-                Start("br", [], selfClosing: true);
+                Start("br", null, selfClosing: true);
+                return;
+            }
+            if (_droppedCounts.GetValueOrDefault(tag) is > 0 and var dropped)
+            {
+                _droppedCounts[tag] = dropped - 1;
                 return;
             }
             if (!IsOpen(tag)) return;
+            FlushText();
             for (var i = _stack.Count - 1; i > 0; i--)
             {
                 if (_stack[i].Name != tag) continue;

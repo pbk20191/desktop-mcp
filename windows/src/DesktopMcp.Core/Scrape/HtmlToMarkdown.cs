@@ -1,16 +1,17 @@
 using System.Text;
-using System.Text.RegularExpressions;
 
 namespace DesktopMcp.Core.Scrape;
 
 /// <summary>
 /// HTML to Markdown, ported from the macOS port's HTMLToMarkdown.swift: the same element rules, frames for inline
 /// wrappers, list nesting, whitespace collapsing and final tidy. Unlike Python's markdownify, the contents of script,
-/// style and other non-content elements are dropped. Two bounds keep untrusted input safe: the tree walk recurses at
-/// most <see cref="HtmlParser.MaxDepth"/> deep, and list indentation stops growing after <see cref="MaxListIndent"/>
-/// levels, so deeply nested lists cannot multiply the output size.
+/// style and other non-content elements are dropped. Bounds keep untrusted input linear in time and memory: the tree
+/// walk recurses at most <see cref="HtmlParser.MaxDepth"/> deep; inline wrappers nested more than
+/// <see cref="MaxInlineFrames"/> deep render their content unwrapped, so each character is copied through at most that
+/// many frames; and list indentation stops growing after <see cref="MaxListIndent"/> levels, so deeply nested lists
+/// cannot multiply the output size.
 /// </summary>
-public static partial class HtmlToMarkdown
+public static class HtmlToMarkdown
 {
     private static readonly HashSet<string> Skipped =
         ["script", "style", "noscript", "template", "svg", "head", "iframe", "object", "canvas", "title"];
@@ -19,7 +20,8 @@ public static partial class HtmlToMarkdown
         "p", "div", "section", "article", "header", "footer", "main", "nav", "aside", "form", "table", "thead", "tbody", "tfoot",
         "figure", "figcaption", "details", "summary", "dl", "dt", "dd", "fieldset", "address", "center",
     ];
-    private const int MaxListIndent = 16;
+    private const int MaxListIndent = 10;
+    private const int MaxInlineFrames = 16;
     private static readonly char[] Newlines = ['\n', '\r', '\u000B', '\u000C', '\u0085', '\u2028', '\u2029'];
 
     public static string Convert(string html)
@@ -30,22 +32,119 @@ public static partial class HtmlToMarkdown
         return renderer.Finish(document.Find("title")?.InnerText() ?? "");
     }
 
-    [GeneratedRegex("[ \t\r\n\f]+")]
-    private static partial Regex Whitespace();
+    private static bool IsNewline(char c) => Array.IndexOf(Newlines, c) >= 0;
 
-    [GeneratedRegex(@"\s+$")]
-    private static partial Regex TrailingWhitespace();
+    // The [Start, End) range of builder left after trimming characters matching trim from both ends, found in one
+    // forward pass over the chunks, because indexing a large StringBuilder far from its end is not constant-time.
+    private static (int Start, int End) TrimRange(StringBuilder builder, Func<char, bool> trim)
+    {
+        var start = -1;
+        var end = 0;
+        var offset = 0;
+        foreach (var chunk in builder.GetChunks())
+        {
+            var span = chunk.Span;
+            for (var i = 0; i < span.Length; i++)
+            {
+                if (trim(span[i])) continue;
+                if (start < 0) start = offset + i;
+                end = offset + i + 1;
+            }
+            offset += span.Length;
+        }
+        return start < 0 ? (0, 0) : (start, end);
+    }
 
-    [GeneratedRegex("\n{3,}")]
-    private static partial Regex BlankLines();
+    /// <summary>
+    /// The final tidy, streamed over the rendered text's chunks: trailing whitespace goes (except a Markdown line
+    /// break's two spaces), runs of blank lines become one, and the whole is trimmed. It runs twice, first to measure
+    /// and then to write the result in place, so the result is the only copy.
+    /// </summary>
+    private ref struct Tidy(Span<char> destination)
+    {
+        private readonly Span<char> _destination = destination;
+        private int _pendingNewlines;
+        private bool _pendingBreak;
+        private bool _started;
+        private bool _lineHasContent;
+        private char _last;
+        private char _beforeLast;
+
+        public int Length { get; private set; }
+        public string Head { get; private set; } = "";
+
+        private void Put(char c)
+        {
+            if (Length < _destination.Length) _destination[Length] = c;
+            if (Length < 2) Head += c;
+            Length++;
+        }
+
+        public void Run(StringBuilder text, StringBuilder spaces)
+        {
+            foreach (var chunk in text.GetChunks())
+            {
+                foreach (var c in chunk.Span) Next(c, spaces);
+            }
+        }
+
+        private void Next(char c, StringBuilder spaces)
+        {
+            if (c == '\n')
+            {
+                if (_lineHasContent) _pendingBreak = _last == ' ' && _beforeLast == ' ';
+                if (_started) _pendingNewlines = Math.Min(_pendingNewlines + 1, 2);
+                spaces.Clear();
+                _lineHasContent = false;
+                _last = _beforeLast = '\0';
+                return;
+            }
+            _beforeLast = _last;
+            _last = c;
+            if (char.IsWhiteSpace(c))
+            {
+                // Whitespace before the first content of the text is trimmed; within a line it waits for content.
+                if (_started) spaces.Append(c);
+                return;
+            }
+            if (_pendingBreak && _pendingNewlines > 0)
+            {
+                Put(' ');
+                Put(' ');
+            }
+            for (; _pendingNewlines > 0; _pendingNewlines--) Put('\n');
+            _pendingBreak = false;
+            foreach (var chunk in spaces.GetChunks())
+            {
+                foreach (var space in chunk.Span) Put(space);
+            }
+            spaces.Clear();
+            Put(c);
+            _started = true;
+            _lineHasContent = true;
+        }
+    }
 
     private sealed class Renderer
     {
-        private sealed class Frame(string tag, string href)
+        // Frames are reused, since inline wrappers open and close once per element.
+        private sealed class Frame
         {
-            public string Tag { get; } = tag;
-            public string Href { get; } = href;
-            public StringBuilder Text { get; } = new();
+            private const int ReusedCapacity = 4096;
+
+            public string Tag { get; private set; } = "";
+            public string Href { get; private set; } = "";
+            public StringBuilder Text { get; private set; } = new();
+
+            public Frame Reset(string tag, string href)
+            {
+                Tag = tag;
+                Href = href;
+                // Clearing a large multi-chunk builder allocates its whole capacity again, so a large one is replaced.
+                if (Text.Capacity > ReusedCapacity) Text = new StringBuilder();
+                else Text.Clear();
+                return this;
+            }
         }
 
         private sealed class ListState(bool ordered)
@@ -54,7 +153,8 @@ public static partial class HtmlToMarkdown
             public int Counter { get; set; }
         }
 
-        private readonly List<Frame> _frames = [new Frame("#root", "")];
+        private readonly List<Frame> _frames = [new Frame().Reset("#root", "")];
+        private readonly Stack<Frame> _spareFrames = new();
         private readonly List<ListState> _lists = [];
         private int _preDepth;
 
@@ -88,46 +188,65 @@ public static partial class HtmlToMarkdown
             while (Current.Length > 0 && Current[^1] == ' ') Current.Length--;
         }
 
-        private void OpenFrame(string tag, string href = "") => _frames.Add(new Frame(tag, href));
+        // Past MaxInlineFrames the wrapper is not opened, and its content renders straight into the current frame.
+        private bool OpenFrame(string tag, string href = "")
+        {
+            if (_frames.Count > MaxInlineFrames) return false;
+            _frames.Add((_spareFrames.TryPop(out var spare) ? spare : new Frame()).Reset(tag, href));
+            return true;
+        }
 
+        // Wraps the frame's trimmed text and appends it to the parent frame without copying it into a string first.
         private void CloseFrame(string tag)
         {
             if (_frames.Count <= 1 || _frames[^1].Tag != tag) return;
             var frame = _frames[^1];
             _frames.RemoveAt(_frames.Count - 1);
-            var inner = frame.Text.ToString();
-            var trimmed = inner.Trim();
+            Wrap(tag, frame.Text, frame.Href);
+            _spareFrames.Push(frame);
+        }
+
+        private void Wrap(string tag, StringBuilder inner, string href)
+        {
+            if (tag == "pre")
+            {
+                EnsureBlankLine();
+                var (codeStart, codeEnd) = TrimRange(inner, IsNewline);
+                Current.Append("```\n").Append(inner, codeStart, codeEnd - codeStart).Append("\n```");
+                EnsureBlankLine();
+                return;
+            }
+            var (start, end) = TrimRange(inner, char.IsWhiteSpace);
+            if (start == end) return;
             switch (tag)
             {
                 case "a":
-                    if (trimmed.Length == 0) return;
-                    var href = frame.Href;
-                    if (href.Length == 0 || href.StartsWith("javascript:", StringComparison.Ordinal) || href.StartsWith('#')) Emit(trimmed);
-                    else Emit($"[{trimmed.Replace("\n", " ")}]({href})");
+                    if (href.Length == 0 || href.StartsWith("javascript:", StringComparison.Ordinal) || href.StartsWith('#'))
+                    {
+                        Current.Append(inner, start, end - start);
+                    }
+                    else
+                    {
+                        var textStart = Current.Append('[').Length;
+                        Current.Append(inner, start, end - start).Replace('\n', ' ', textStart, end - start);
+                        Current.Append("](").Append(href).Append(')');
+                    }
                     break;
                 case "strong" or "b":
-                    if (trimmed.Length > 0) Emit($"**{trimmed}**");
+                    Current.Append("**").Append(inner, start, end - start).Append("**");
                     break;
                 case "em" or "i":
-                    if (trimmed.Length > 0) Emit($"*{trimmed}*");
+                    Current.Append('*').Append(inner, start, end - start).Append('*');
                     break;
                 case "code":
-                    if (trimmed.Length > 0) Emit($"`{trimmed}`");
-                    break;
-                case "pre":
-                    EnsureBlankLine();
-                    Emit("```\n" + inner.Trim(Newlines) + "\n```");
-                    EnsureBlankLine();
-                    break;
-                default:
-                    Emit(inner);
+                    Current.Append('`').Append(inner, start, end - start).Append('`');
                     break;
             }
         }
 
         public void VisitChildren(HtmlNode node)
         {
-            foreach (var child in node.Children) Visit(child);
+            for (var i = 0; i < node.ChildCount; i++) Visit(node.ChildAt(i));
         }
 
         private void Visit(HtmlNode node)
@@ -155,7 +274,7 @@ public static partial class HtmlToMarkdown
                     break;
                 case "h1" or "h2" or "h3" or "h4" or "h5" or "h6":
                     EnsureBlankLine();
-                    Emit(new string('#', tag[1] - '0') + " ");
+                    Current.Append('#', tag[1] - '0').Append(' ');
                     VisitChildren(node);
                     EnsureBlankLine();
                     break;
@@ -170,15 +289,15 @@ public static partial class HtmlToMarkdown
                     break;
                 case "li":
                     EnsureNewline();
-                    var indent = new string(' ', 2 * (Math.Clamp(_lists.Count, 1, MaxListIndent) - 1));
+                    Current.Append(' ', 2 * (Math.Clamp(_lists.Count, 1, MaxListIndent) - 1));
                     if (_lists.Count > 0 && _lists[^1].Ordered)
                     {
                         _lists[^1].Counter++;
-                        Emit($"{indent}{_lists[^1].Counter}. ");
+                        Current.Append(_lists[^1].Counter).Append(". ");
                     }
                     else
                     {
-                        Emit($"{indent}- ");
+                        Emit("- ");
                     }
                     VisitChildren(node);
                     EnsureNewline();
@@ -190,14 +309,14 @@ public static partial class HtmlToMarkdown
                     EnsureBlankLine();
                     break;
                 case "a":
-                    OpenFrame("a", node.Attribute("href"));
+                    var link = OpenFrame("a", node.Attribute("href"));
                     VisitChildren(node);
-                    CloseFrame("a");
+                    if (link) CloseFrame("a");
                     break;
                 case "strong" or "b" or "em" or "i":
-                    OpenFrame(tag);
+                    var emphasis = OpenFrame(tag);
                     VisitChildren(node);
-                    CloseFrame(tag);
+                    if (emphasis) CloseFrame(tag);
                     break;
                 case "code":
                     if (_preDepth > 0)
@@ -206,17 +325,17 @@ public static partial class HtmlToMarkdown
                     }
                     else
                     {
-                        OpenFrame("code");
+                        var code = OpenFrame("code");
                         VisitChildren(node);
-                        CloseFrame("code");
+                        if (code) CloseFrame("code");
                     }
                     break;
                 case "pre":
                     _preDepth++;
-                    OpenFrame("pre");
+                    var pre = OpenFrame("pre");
                     VisitChildren(node);
                     _preDepth--;
-                    CloseFrame("pre");
+                    if (pre) CloseFrame("pre");
                     break;
                 case "tr":
                     EnsureNewline();
@@ -238,6 +357,9 @@ public static partial class HtmlToMarkdown
             }
         }
 
+        private static bool IsCollapsible(char c) => c is ' ' or '\t' or '\r' or '\n' or '\f' or '\u00A0';
+
+        // Runs of [ \t\r\n\f] and no-break spaces become one space, which is dropped at the start of a line.
         private void Text(string raw)
         {
             if (_preDepth > 0)
@@ -245,10 +367,25 @@ public static partial class HtmlToMarkdown
                 Emit(raw);
                 return;
             }
-            var collapsed = Whitespace().Replace(raw.Replace('\u00A0', ' '), " ");
             var atLineStart = Current.Length == 0 || Current[^1] is ' ' or '\n';
-            if (collapsed == " " && atLineStart) return;
-            Emit(collapsed.StartsWith(' ') && atLineStart ? collapsed[1..] : collapsed);
+            var space = false;
+            var i = 0;
+            while (i < raw.Length)
+            {
+                if (IsCollapsible(raw[i]))
+                {
+                    space = true;
+                    i++;
+                    continue;
+                }
+                var wordStart = i;
+                while (i < raw.Length && !IsCollapsible(raw[i])) i++;
+                if (space && !atLineStart) Current.Append(' ');
+                Current.Append(raw, wordStart, i - wordStart);
+                space = false;
+                atLineStart = false;
+            }
+            if (space && !atLineStart) Current.Append(' ');
         }
 
         public string Finish(string title)
@@ -259,15 +396,17 @@ public static partial class HtmlToMarkdown
                 _frames.RemoveAt(_frames.Count - 1);
                 _frames[^1].Text.Append(inner.Text);
             }
-            // Tidy: trailing spaces (except Markdown line breaks), runs of blank lines.
-            var body = string.Join("\n", _frames[0].Text.ToString().Split('\n').Select(line =>
-            {
-                var stripped = TrailingWhitespace().Replace(line, "");
-                return line.EndsWith("  ", StringComparison.Ordinal) && stripped.Length > 0 ? stripped + "  " : stripped;
-            }));
-            body = BlankLines().Replace(body, "\n\n").Trim();
+            var text = _frames[0].Text;
+            var spaces = new StringBuilder();
+            var measure = new Tidy(Span<char>.Empty);
+            measure.Run(text, spaces);
             var cleanTitle = title.Trim();
-            return cleanTitle.Length > 0 && !body.StartsWith("# ", StringComparison.Ordinal) ? cleanTitle + "\n\n" + body : body;
+            var prefix = cleanTitle.Length > 0 && measure.Head != "# " ? cleanTitle + "\n\n" : "";
+            return string.Create(prefix.Length + measure.Length, (prefix, text, spaces), static (destination, state) =>
+            {
+                state.prefix.CopyTo(destination);
+                new Tidy(destination[state.prefix.Length..]).Run(state.text, state.spaces.Clear());
+            });
         }
     }
 }
