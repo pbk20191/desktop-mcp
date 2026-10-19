@@ -1,4 +1,4 @@
-// swift-tools-version:6.0
+// swift-tools-version:6.1
 import PackageDescription
 
 // The macOS port of desktop-mcp. Sources live under macos/; build and test from the repository root.
@@ -15,15 +15,18 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-nio-transport-services", from: "1.21.0"),
         .package(url: "https://github.com/apple/swift-nio-ssl", from: "2.27.0"),
         .package(url: "https://github.com/apple/swift-nio-http2", from: "1.35.0"),
-        // Transitive (via swift-nio), capped so Swift 6.0/6.1 toolchains (Xcode 16) can load the
-        // graph: 1.7.x needs tools 6.2+, and the 6.0 manifests of 1.3-1.6 fail SwiftPM 6.1's
-        // language-mode check. Release builds use Xcode 16 to ship a single file for macOS 13+
-        // (see scripts/build-release.sh).
+        // Official MCP Swift SDK. 0.12.1 transitively pins swift-docc-plugin to branch: "main"; accepted.
+        .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.12.1"),
+        // Transitive (via swift-nio), capped to keep the graph loadable by Xcode 16.4's SwiftPM
+        // (1.3+ manifests need a newer toolchain); macos/scripts/build-release.sh picks that Xcode.
         .package(url: "https://github.com/apple/swift-collections", "1.1.0"..<"1.3.0"),
     ],
     targets: [
         .target(
             name: "DesktopMCPCore",
+            dependencies: [
+                .product(name: "MCP", package: "swift-sdk"),
+            ],
             path: "macos/Sources/DesktopMCPCore",
             linkerSettings: [
                 .linkedFramework("ApplicationServices"),
@@ -38,6 +41,7 @@ let package = Package(
             name: "DesktopMCPHTTP",
             dependencies: [
                 "DesktopMCPCore",
+                .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOHTTP1", package: "swift-nio"),
                 .product(name: "NIOHTTP2", package: "swift-nio-http2"),
@@ -57,8 +61,8 @@ let package = Package(
             ],
             path: "macos/Sources/desktop-mcp"
         ),
-        .testTarget(name: "DesktopMCPCoreTests", dependencies: ["DesktopMCPCore"], path: "macos/Tests/DesktopMCPCoreTests"),
-        .testTarget(name: "DesktopMCPHTTPTests", dependencies: ["DesktopMCPHTTP", "DesktopMCPCore"], path: "macos/Tests/DesktopMCPHTTPTests"),
+        .testTarget(name: "DesktopMCPCoreTests", dependencies: ["DesktopMCPCore", .product(name: "MCP", package: "swift-sdk")], path: "macos/Tests/DesktopMCPCoreTests"),
+        .testTarget(name: "DesktopMCPHTTPTests", dependencies: ["DesktopMCPHTTP", "DesktopMCPCore", .product(name: "MCP", package: "swift-sdk")], path: "macos/Tests/DesktopMCPHTTPTests"),
     ],
     swiftLanguageModes: [.v6]
 )
