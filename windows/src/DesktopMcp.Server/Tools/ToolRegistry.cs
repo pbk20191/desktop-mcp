@@ -22,6 +22,7 @@ public static class ToolRegistry
         "Process" => new ProcessTool(protocolTool, services.Processes),
         "Clipboard" => new ClipboardTool(protocolTool, services.Clipboard),
         "Notification" => new NotificationTool(protocolTool, services.Toasts),
+        "Scrape" => new ScrapeTool(protocolTool, services.Scrape),
         _ => new PendingTool(protocolTool),
     };
 }

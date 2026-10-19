@@ -1,6 +1,7 @@
 using DesktopMcp.Core.FileSystem;
 using DesktopMcp.Core.PowerShell;
 using DesktopMcp.Core.Processes;
+using DesktopMcp.Core.Scrape;
 using DesktopMcp.Core.WindowsRegistry;
 using DesktopMcp.Desktop.ClipboardAccess;
 using DesktopMcp.Desktop.Toasts;
@@ -19,6 +20,7 @@ public sealed record ToolServices
     public required ProcessService Processes { get; init; }
     public required IClipboard Clipboard { get; init; }
     public required IToastSender Toasts { get; init; }
+    public required ScrapeClient Scrape { get; init; }
 
     public static ToolServices CreateDefault() => new()
     {
@@ -28,5 +30,6 @@ public sealed record ToolServices
         Processes = new ProcessService(),
         Clipboard = new SystemClipboard(),
         Toasts = new ToastSender(),
+        Scrape = new ScrapeClient(),
     };
 }
