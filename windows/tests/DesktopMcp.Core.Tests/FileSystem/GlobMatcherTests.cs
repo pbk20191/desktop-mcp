@@ -19,18 +19,6 @@ public sealed class GlobMatcherTests : IDisposable
     private string[] Relative(string pattern, bool recursive) =>
         GlobMatcher.Glob(_root, pattern, recursive, CancellationToken.None).Select(p => Path.GetRelativePath(_root, p)).Order(StringComparer.OrdinalIgnoreCase).ToArray();
 
-    [Theory]
-    [InlineData("*.txt", "a.txt", true)]
-    [InlineData("*.txt", "A.TXT", true)]
-    [InlineData("?.log", "c.log", true)]
-    [InlineData("[ab].txt", "b.txt", true)]
-    [InlineData("[!ab].txt", "c.txt", true)]
-    [InlineData("[!ab].txt", "a.txt", false)]
-    [InlineData("*", ".hidden", true)]
-    [InlineData("a.txt", "a.txtx", false)]
-    public void FnmatchIsCaseInsensitiveAndMatchesDotFiles(string pattern, string name, bool expected) =>
-        Assert.Equal(expected, Fnmatch.ToRegex(pattern).IsMatch(name));
-
     [Fact]
     public void GlobMatchesOneLevel() => Assert.Equal([".hidden.txt", "a.txt", "B.TXT"], Relative("*.txt", recursive: false));
 

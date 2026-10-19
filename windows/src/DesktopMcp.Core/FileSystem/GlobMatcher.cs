@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using DesktopMcp.Core.Text;
 
 namespace DesktopMcp.Core.FileSystem;
@@ -12,10 +13,12 @@ internal static class GlobMatcher
         var segments = pattern.Split('/', '\\').Where(s => s.Length > 0 && s != ".").ToList();
         if (recursive) segments.Insert(0, "**");
         if (segments.Count == 0) return [root];
-        return Walk(root, segments, 0, cancellationToken).Distinct(StringComparer.OrdinalIgnoreCase);
+        // Each segment's regex is built once here, not on every directory the walk visits; null stands for **.
+        var regexes = segments.Select(s => s == "**" ? null : Fnmatch.ToRegex(s)).ToList();
+        return Walk(root, regexes, 0, cancellationToken).Distinct(StringComparer.OrdinalIgnoreCase);
     }
 
-    private static IEnumerable<string> Walk(string directory, IReadOnlyList<string> segments, int index, CancellationToken cancellationToken)
+    private static IEnumerable<string> Walk(string directory, IReadOnlyList<Regex?> segments, int index, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (index == segments.Count)
@@ -23,9 +26,9 @@ internal static class GlobMatcher
             yield return directory;
             yield break;
         }
-        var segment = segments[index];
+        var regex = segments[index];
         var last = index == segments.Count - 1;
-        if (segment == "**")
+        if (regex is null)
         {
             if (last)
             {
@@ -42,7 +45,6 @@ internal static class GlobMatcher
             }
             yield break;
         }
-        var regex = Fnmatch.ToRegex(segment);
         foreach (var entry in Entries(directory, directoriesOnly: !last))
         {
             if (!regex.IsMatch(Path.GetFileName(entry))) continue;
