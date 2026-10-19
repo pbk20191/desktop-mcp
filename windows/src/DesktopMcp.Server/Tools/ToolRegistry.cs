@@ -20,6 +20,7 @@ public static class ToolRegistry
         "FileSystem" => new FileSystemTool(protocolTool, services.FileSystem),
         "Registry" => new RegistryTool(protocolTool, services.Registry),
         "Process" => new ProcessTool(protocolTool, services.Processes),
+        "Clipboard" => new ClipboardTool(protocolTool, services.Clipboard),
         _ => new PendingTool(protocolTool),
     };
 }

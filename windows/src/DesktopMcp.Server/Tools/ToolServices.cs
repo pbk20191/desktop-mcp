@@ -2,6 +2,7 @@ using DesktopMcp.Core.FileSystem;
 using DesktopMcp.Core.PowerShell;
 using DesktopMcp.Core.Processes;
 using DesktopMcp.Core.WindowsRegistry;
+using DesktopMcp.Desktop.ClipboardAccess;
 
 namespace DesktopMcp.Server.Tools;
 
@@ -15,6 +16,7 @@ public sealed record ToolServices
     public required FileSystemService FileSystem { get; init; }
     public required RegistryService Registry { get; init; }
     public required ProcessService Processes { get; init; }
+    public required IClipboard Clipboard { get; init; }
 
     public static ToolServices CreateDefault() => new()
     {
@@ -22,5 +24,6 @@ public sealed record ToolServices
         FileSystem = new FileSystemService(),
         Registry = new RegistryService(),
         Processes = new ProcessService(),
+        Clipboard = new SystemClipboard(),
     };
 }

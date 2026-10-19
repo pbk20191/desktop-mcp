@@ -10,3 +10,15 @@ WindowsCreateString
 WindowsDeleteString
 // Monitors
 MonitorFromPoint
+// Clipboard (the Win32 fallback for the Clipboard tool)
+OpenClipboard
+CloseClipboard
+EmptyClipboard
+IsClipboardFormatAvailable
+GetClipboardData
+SetClipboardData
+CLIPBOARD_FORMAT
+GlobalAlloc
+GlobalLock
+GlobalUnlock
+GlobalFree

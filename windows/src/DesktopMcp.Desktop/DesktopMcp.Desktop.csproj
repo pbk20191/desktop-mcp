@@ -16,5 +16,6 @@
   <ItemGroup>
     <ProjectReference Include="..\DesktopMcp.Core\DesktopMcp.Core.csproj" />
     <InternalsVisibleTo Include="DesktopMcp.Desktop.Tests" />
+    <InternalsVisibleTo Include="desktop-mcp-probe" />
   </ItemGroup>
 </Project>
