@@ -1,11 +1,7 @@
 MIT License
 
 Copyright (c) 2026 pbk
-
-This project is a port of CursorTouch/MacOS-MCP and CursorTouch/Windows-MCP
-(https://github.com/CursorTouch), Copyright (c) 2026 Jeomon George, also
-released under the MIT License. Their notice applies to the tool contract and
-to any text derived from them.
+Portions Copyright (c) 2026 Jeomon George (CursorTouch/MacOS-MCP, CursorTouch/Windows-MCP)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

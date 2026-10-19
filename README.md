@@ -57,4 +57,4 @@ Tools split into two groups, which matters for headless use:
 
 ## License
 
-MIT. See [LICENSE](LICENSE); the ports derive their tool contract from CursorTouch's MIT-licensed servers, whose notice is included there.
+MIT. See [LICENSE](LICENSE). The ports derive their tool contract from [CursorTouch](https://github.com/CursorTouch)'s MIT-licensed servers, whose copyright notice is included there.
