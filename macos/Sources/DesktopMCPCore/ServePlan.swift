@@ -12,6 +12,9 @@ public struct ServePlan: Equatable, Sendable {
     public var tls: (certificate: String, privateKey: String)?
     public var oauth: (clientID: String, clientSecret: String)?
     public var excludedTools: [String]
+    /// Seconds an HTTP session may stay idle before it is dropped; 0 keeps sessions until the
+    /// client ends them. Command line only.
+    public var sessionTimeout: TimeInterval = 1800
     /// Non-fatal notes for the log.
     public var warnings: [String] = []
 
@@ -40,6 +43,7 @@ public struct ServePlan: Equatable, Sendable {
         public var oauthClientID: String?
         public var oauthClientSecret: String?
         public var excludeTools: String?
+        public var sessionTimeout: Int?
 
         public init() {}
     }
@@ -109,6 +113,7 @@ public struct ServePlan: Equatable, Sendable {
             tls: certificate.flatMap { c in privateKey.map { (c, $0) } },
             oauth: oauth, excludedTools: excluded)
         plan.warnings = warnings
+        if let sessionTimeout = cli.sessionTimeout { plan.sessionTimeout = TimeInterval(sessionTimeout) }
         if transport == "stdio" && (authKey != nil || !allowlist.isEmpty) {
             plan.warnings.append("auth_key / ip_allowlist have no effect on stdio transport")
         }
@@ -123,6 +128,7 @@ public struct ServePlan: Equatable, Sendable {
             && lhs.ipAllowlist == rhs.ipAllowlist
             && lhs.tls?.certificate == rhs.tls?.certificate && lhs.tls?.privateKey == rhs.tls?.privateKey
             && lhs.oauth?.clientID == rhs.oauth?.clientID && lhs.oauth?.clientSecret == rhs.oauth?.clientSecret
-            && lhs.excludedTools == rhs.excludedTools && lhs.warnings == rhs.warnings
+            && lhs.excludedTools == rhs.excludedTools && lhs.sessionTimeout == rhs.sessionTimeout
+            && lhs.warnings == rhs.warnings
     }
 }

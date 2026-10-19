@@ -94,8 +94,13 @@ struct Serve: AsyncParsableCommand {
                                discussion: "Or $\(Shell.maxTimeoutEnv); default 240."))
     var maxTimeout: Int?
 
+    @Option(name: .customLong("session-timeout"),
+            help: "Seconds a session may stay idle before it is dropped; 0 keeps sessions until the client ends them. (default: 1800)")
+    var sessionTimeout: Int?
+
     func validate() throws {
         if let maxTimeout, maxTimeout < 0 { throw ValidationError("--max-timeout must be 0 or greater.") }
+        if let sessionTimeout, sessionTimeout < 0 { throw ValidationError("--session-timeout must be 0 or greater.") }
         if let port, !(0...65535).contains(port) { throw ValidationError("--port must be between 0 and 65535.") }
     }
 
@@ -118,6 +123,7 @@ struct Serve: AsyncParsableCommand {
         values.oauthClientID = oauthClientID
         values.oauthClientSecret = oauthClientSecret
         values.excludeTools = excludeTools
+        values.sessionTimeout = sessionTimeout
         do {
             return try ServePlan.resolve(values, environment: ProcessInfo.processInfo.environment, config: fileConfig)
         } catch {
@@ -193,6 +199,7 @@ struct Serve: AsyncParsableCommand {
             settings.oauth = OAuthService(issuer: "\(plan.scheme)://\(plan.host):\(plan.port)",
                                           clientID: oauth.clientID, clientSecret: oauth.clientSecret)
         }
+        settings.sessionIdleTimeout = plan.sessionTimeout
         let app = HTTPApp(registry: registry, settings: settings)
         let tls = plan.tls.map { NIOHTTPServer.TLSFiles(certificate: $0.certificate, privateKey: $0.privateKey) }
         let listening = try await NIOHTTPServer.bind(host: plan.host, port: plan.port, tls: tls)
@@ -201,7 +208,14 @@ struct Serve: AsyncParsableCommand {
             + (plan.authKey != nil ? " (auth key required)" : "")
             + (plan.oauth != nil ? " (OAuth enabled)" : ""))
         if debug { log("IP allowlist: \(plan.ipAllowlist.isEmpty ? "none" : plan.ipAllowlist.map(\.description).joined(separator: ", "))") }
-        try await NIOHTTPServer.serve(listening, app: app)
+        // Sessions outlive requests: end them (and their tool calls) however `serve` ends.
+        do {
+            try await NIOHTTPServer.serve(listening, app: app)
+        } catch {
+            await app.shutdown()
+            throw error
+        }
+        await app.shutdown()
     }
 }
 

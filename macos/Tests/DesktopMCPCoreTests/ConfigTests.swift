@@ -172,6 +172,15 @@ final class ConfigTests: XCTestCase {
         XCTAssertThrowsError(try ServePlan.resolve(cli, environment: [:], config: DesktopMCPConfig()))
     }
 
+    func testSessionTimeoutDefaultsToHalfAnHourAndZeroDisablesIt() throws {
+        var cli = ServePlan.CommandLineValues()
+        XCTAssertEqual(try ServePlan.resolve(cli, environment: [:], config: DesktopMCPConfig()).sessionTimeout, 1800)
+        cli.sessionTimeout = 0
+        XCTAssertEqual(try ServePlan.resolve(cli, environment: [:], config: DesktopMCPConfig()).sessionTimeout, 0)
+        cli.sessionTimeout = 90
+        XCTAssertEqual(try ServePlan.resolve(cli, environment: [:], config: DesktopMCPConfig()).sessionTimeout, 90)
+    }
+
     func testPlanRefusesUnauthenticatedRemoteBind() throws {
         var cli = ServePlan.CommandLineValues()
         cli.transport = "streamable-http"
