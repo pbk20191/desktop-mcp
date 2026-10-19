@@ -1,9 +1,7 @@
 import Foundation
 
-/// A JSON document of unknown shape: tool arguments, input schemas, request ids. Messages with a
-/// fixed shape are `Codable` types (see `JSONRPC.swift`) and only embed a `JSONValue` where the
-/// protocol leaves the shape open. Objects are unordered; use `OrderedJSON` where key order is
-/// visible to callers.
+/// A JSON document of unknown shape (OAuth request bodies, messages the stdio bridge relays).
+/// Objects are unordered; use `OrderedJSON` where key order is visible to callers.
 ///
 /// Integers keep their exact value (request ids may exceed 2^53); `1` and `1.0` compare equal.
 public enum JSONValue: Sendable {

@@ -6,8 +6,7 @@ import XCTest
 /// The `connect` bridge against a real streamable-http server over sockets.
 final class StdioBridgeServerTests: XCTestCase {
     func start(authKey: String?) async throws -> (Int, Task<Void, Error>) {
-        let server = await DesktopMCP.makeServer()
-        let app = HTTPApp(server: server, settings: HTTPApp.Settings(transport: .streamableHTTP, authKey: authKey))
+        let app = HTTPApp(registry: await DesktopMCP.makeRegistry(), settings: HTTPApp.Settings(authKey: authKey))
         let listening = try await NIOHTTPServer.bind(host: "127.0.0.1", port: 0)
         let task = Task { try await NIOHTTPServer.serve(listening, app: app) }
         return (try XCTUnwrap(listening.port), task)

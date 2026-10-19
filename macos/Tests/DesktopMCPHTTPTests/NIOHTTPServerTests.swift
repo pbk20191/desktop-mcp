@@ -1,16 +1,15 @@
 import Foundation
 import DesktopMCPCore
 import DesktopMCPHTTP
+import MCP
 import XCTest
 
 /// End to end over real sockets: NIOTransportServices listener, HTTP/1.1, optional TLS.
 final class NIOHTTPServerTests: XCTestCase {
-    func start(_ transport: HTTPTransport, authKey: String? = nil, allowlist: [String]? = nil,
+    func start(authKey: String? = nil, allowlist: [String]? = nil,
                tls: NIOHTTPServer.TLSFiles? = nil) async throws -> (Int, Task<Void, Error>) {
-        let server = await DesktopMCP.makeServer()
-        let settings = HTTPApp.Settings(transport: transport, authKey: authKey,
-                                        ipAllowlist: try allowlist.map(IPNetwork.parseAllowlist))
-        let app = HTTPApp(server: server, settings: settings)
+        let settings = HTTPApp.Settings(authKey: authKey, ipAllowlist: try allowlist.map(IPNetwork.parseAllowlist))
+        let app = HTTPApp(registry: await DesktopMCP.makeRegistry(), settings: settings)
         let listening = try await NIOHTTPServer.bind(host: "127.0.0.1", port: 0, tls: tls)
         let task = Task { try await NIOHTTPServer.serve(listening, app: app) }
         return (try XCTUnwrap(listening.port), task)
@@ -25,7 +24,7 @@ final class NIOHTTPServerTests: XCTestCase {
     }
 
     func testStreamableHTTPOverSockets() async throws {
-        let (port, task) = try await start(.streamableHTTP, authKey: "k")
+        let (port, task) = try await start(authKey: "k")
         defer { task.cancel() }
         let url = "http://127.0.0.1:\(port)/mcp"
         let body = #"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#
@@ -37,16 +36,34 @@ final class NIOHTTPServerTests: XCTestCase {
         let (data, response) = try await URLSession.shared.data(for: request(url, body: body, headers: headers))
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
         XCTAssertEqual(try JSONValue.parse(data)["result"]?["tools"]?.arrayValue?.count, 12)
+    }
 
-        var streaming = headers
-        streaming["Accept"] = "application/json, text/event-stream"
-        let (sse, sseResponse) = try await URLSession.shared.data(for: request(url, body: body, headers: streaming))
-        XCTAssertEqual((sseResponse as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type"), "text/event-stream")
-        XCTAssertTrue(String(decoding: sse, as: UTF8.self).hasPrefix("event: message\r\ndata: {"))
+    func testSDKClientOverHTTP() async throws {
+        let (port, task) = try await start(authKey: "k")
+        defer { task.cancel() }
+        let transport = HTTPClientTransport(
+            endpoint: URL(string: "http://127.0.0.1:\(port)/mcp")!, streaming: false,
+            requestModifier: { request in
+                var request = request
+                request.setValue("Bearer k", forHTTPHeaderField: "Authorization")
+                return request
+            })
+        let client = Client(name: "t", version: "0")
+        _ = try await client.connect(transport: transport)
+        defer { Task { await client.disconnect() } }
+
+        let tools = try await client.listTools().tools
+        XCTAssertEqual(tools.count, 12)
+        let waited = try await client.callTool(name: "Wait", arguments: ["duration": 0])
+        XCTAssertNotEqual(waited.isError, true)
+        let clicked = try await client.callTool(name: "Click", arguments: ["loc": [1]])
+        XCTAssertEqual(clicked.isError, true)
+        guard case .text(let text, _, _) = clicked.content.first else { return XCTFail("\(clicked.content)") }
+        XCTAssertEqual(text, "Error executing tool Click: Location must be a list of exactly 2 integers [x, y]")
     }
 
     func testStoppingTheServerClosesTheListenerAndItsEventLoops() async throws {
-        let (port, task) = try await start(.streamableHTTP)
+        let (port, task) = try await start()
         let url = "http://127.0.0.1:\(port)/mcp"
         let headers = ["Content-Type": "application/json", "Accept": "application/json"]
         let (_, before) = try await URLSession.shared.data(for: request(url, body: #"{"jsonrpc":"2.0","id":1,"method":"ping"}"#, headers: headers))
@@ -65,55 +82,33 @@ final class NIOHTTPServerTests: XCTestCase {
         }
     }
 
-    func testStoppingTheServerWithAnOpenStreamReturnsPromptly() async throws {
-        let (port, task) = try await start(.sse)
-        // A client holding an event stream open: its handler is blocked on the stream.
-        let (bytes, response) = try await URLSession.shared.bytes(for: request("http://127.0.0.1:\(port)/sse", method: "GET"))
-        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
-        var lines = bytes.lines.makeAsyncIterator()
-        let first = try await lines.next()
-        XCTAssertEqual(first, "event: endpoint")
+    func testStoppingTheServerWithARequestInFlightReturnsPromptly() async throws {
+        let (port, task) = try await start()
+        // A client waiting on a long tool call: its handler is blocked on the call.
+        let body = #"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"Wait","arguments":{"duration":30}}}"#
+        let wait = request("http://127.0.0.1:\(port)/mcp", body: body,
+                           headers: ["Content-Type": "application/json", "Accept": "application/json"])
+        let call = Task { try await URLSession.shared.data(for: wait) }
+        try await Task.sleep(for: .milliseconds(300))
 
         // Connections are children of `serve`: cancelling it cancels them, and it still returns promptly.
         task.cancel()
         let started = Date()
         do { try await task.value } catch is CancellationError {} catch { XCTFail("\(error)") }
         XCTAssertLessThan(Date().timeIntervalSince(started), 5)
-        // The client's stream ends as well (with EOF or a connection error).
-        do { while let _ = try await lines.next() {} } catch {}
+        // The client's request ends as well (with an error or an empty response), not after 30 seconds.
+        _ = try? await call.value
+        XCTAssertLessThan(Date().timeIntervalSince(started), 5)
     }
 
     func testIPAllowlistSeesThePeerAddress() async throws {
         let body = #"{"jsonrpc":"2.0","id":1,"method":"ping"}"#
         let headers = ["Content-Type": "application/json", "Accept": "application/json"]
         for (allowlist, expected) in [(["127.0.0.1"], 200), (["10.0.0.0/8"], 403)] {
-            let (port, task) = try await start(.streamableHTTP, allowlist: allowlist)
+            let (port, task) = try await start(allowlist: allowlist)
             defer { task.cancel() }
             let (data, response) = try await URLSession.shared.data(for: request("http://127.0.0.1:\(port)/mcp", body: body, headers: headers))
             XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, expected, String(decoding: data, as: UTF8.self))
-        }
-    }
-
-    func testSSEOverSockets() async throws {
-        let (port, task) = try await start(.sse)
-        defer { task.cancel() }
-        let (bytes, _) = try await URLSession.shared.bytes(for: request("http://127.0.0.1:\(port)/sse", method: "GET"))
-        var lines = bytes.lines.makeAsyncIterator()
-        let first = try await lines.next()
-        XCTAssertEqual(first, "event: endpoint")
-        let second = try await lines.next()
-        let endpoint = try XCTUnwrap(second).replacingOccurrences(of: "data: ", with: "")
-
-        let post = request("http://127.0.0.1:\(port)\(endpoint)", body: #"{"jsonrpc":"2.0","id":9,"method":"ping"}"#,
-                           headers: ["Content-Type": "application/json"])
-        let (_, accepted) = try await URLSession.shared.data(for: post)
-        XCTAssertEqual((accepted as? HTTPURLResponse)?.statusCode, 202)
-
-        while let line = try await lines.next() {
-            if line.hasPrefix("data: ") {
-                XCTAssertEqual(try JSONValue.parse(String(line.dropFirst(6)))["id"], 9)
-                break
-            }
         }
     }
 
@@ -138,7 +133,7 @@ final class NIOHTTPServerTests: XCTestCase {
     func testTLSFromPEMFiles() async throws {
         let (tls, cleanup) = try selfSignedCertificate()
         defer { cleanup() }
-        let (port, task) = try await start(.streamableHTTP, tls: tls)
+        let (port, task) = try await start(tls: tls)
         defer { task.cancel() }
         let session = URLSession(configuration: .ephemeral, delegate: TrustEverything(), delegateQueue: nil)
         let (data, response) = try await session.data(for: request(
@@ -151,11 +146,11 @@ final class NIOHTTPServerTests: XCTestCase {
     func testHTTP2IsNegotiatedOverTLS() async throws {
         let (tls, cleanup) = try selfSignedCertificate()
         defer { cleanup() }
-        let (port, task) = try await start(.streamableHTTP, authKey: "k", tls: tls)
+        let (port, task) = try await start(authKey: "k", tls: tls)
         defer { task.cancel() }
         let session = URLSession(configuration: .ephemeral, delegate: TrustEverything(), delegateQueue: nil)
         let url = "https://127.0.0.1:\(port)/mcp"
-        let headers = ["Content-Type": "application/json", "Authorization": "Bearer k"]
+        let headers = ["Content-Type": "application/json", "Authorization": "Bearer k", "Accept": "application/json"]
 
         // Plain JSON response, and the connection's protocol as URLSession saw it.
         let metrics = ProtocolRecorder()
@@ -163,16 +158,6 @@ final class NIOHTTPServerTests: XCTestCase {
             for: request(url, body: #"{"jsonrpc":"2.0","id":7,"method":"ping"}"#, headers: headers), delegate: metrics)
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
         XCTAssertEqual(try JSONValue.parse(data)["id"], 7)
-        XCTAssertEqual(metrics.protocols.current, ["h2"])
-
-        // A streamed (SSE) response has no content-length; over HTTP/2 it must still arrive whole.
-        let streaming = headers.merging(["Accept": "text/event-stream"]) { $1 }
-        let (sse, sseResponse) = try await session.data(
-            for: request(url, body: #"{"jsonrpc":"2.0","id":8,"method":"tools/list"}"#, headers: streaming), delegate: metrics)
-        XCTAssertEqual((sseResponse as? HTTPURLResponse)?.value(forHTTPHeaderField: "content-type"), "text/event-stream")
-        let text = String(decoding: sse, as: UTF8.self)
-        XCTAssertTrue(text.hasPrefix("event: message\r\ndata: "), text)
-        XCTAssertTrue(text.contains(#""id":8"#), text)
         XCTAssertEqual(metrics.protocols.current, ["h2"])
 
         // Several requests at once share one HTTP/2 connection as separate streams.

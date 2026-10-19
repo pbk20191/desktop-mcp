@@ -139,8 +139,8 @@ struct Serve: AsyncParsableCommand {
         let analytics = PostHogAnalytics.isEnabled() ? PostHogAnalytics(verbose: debug) : nil
         let debug = self.debug
         let stdio = plan.transport == "stdio"
-        let server = await DesktopMCP.makeServer(excluding: plan.excludedTools)
-        await server.setObserver(analytics)
+        let registry = await DesktopMCP.makeRegistry(excluding: plan.excludedTools)
+        await registry.setObserver(analytics)
 
         // This task is the root; everything else is a child of it: telemetry delivery, the server
         // (stdio or HTTP) and the signal watcher that stops it. The process exits by returning.
@@ -151,11 +151,11 @@ struct Serve: AsyncParsableCommand {
                 await withTaskGroup(of: Int32.self) { race in
                     race.addTask {
                         if stdio {
-                            await server.runStdio()
+                            await StdioServer.run(registry)
                             return 0
                         }
                         do {
-                            try await serveHTTP(server, plan: plan, debug: debug)
+                            try await serveHTTP(registry, plan: plan, debug: debug)
                             return 0
                         } catch is CancellationError {
                             return 0
@@ -183,23 +183,21 @@ struct Serve: AsyncParsableCommand {
         if code != 0 { throw ExitCode(code) }
     }
 
-    func serveHTTP(_ server: MCPServer, plan: ServePlan, debug: Bool) async throws {
-        let transport: HTTPTransport = plan.transport == "sse" ? .sse : .streamableHTTP
-        var settings = HTTPApp.Settings(transport: transport, authKey: plan.authKey,
+    func serveHTTP(_ registry: ToolRegistry, plan: ServePlan, debug: Bool) async throws {
+        var settings = HTTPApp.Settings(authKey: plan.authKey,
                                         ipAllowlist: plan.ipAllowlist.isEmpty ? nil : plan.ipAllowlist)
         if let oauth = plan.oauth {
             settings.oauth = OAuthService(issuer: "\(plan.scheme)://\(plan.host):\(plan.port)",
                                           clientID: oauth.clientID, clientSecret: oauth.clientSecret)
         }
-        let app = HTTPApp(server: server, settings: settings)
+        let app = HTTPApp(registry: registry, settings: settings)
         let tls = plan.tls.map { NIOHTTPServer.TLSFiles(certificate: $0.certificate, privateKey: $0.privateKey) }
         let listening = try await NIOHTTPServer.bind(host: plan.host, port: plan.port, tls: tls)
-        let path = transport == .sse ? "/sse" : "/mcp"
-        log("Serving \(plan.transport) on \(plan.scheme)://\(plan.host):\(listening.port ?? plan.port)\(path)"
+        log("Serving streamable-http on \(plan.scheme)://\(plan.host):\(listening.port ?? plan.port)/mcp"
             + (plan.tls != nil ? " (TLS; HTTP/2 or HTTP/1.1 via ALPN)" : "")
             + (plan.authKey != nil ? " (auth key required)" : "")
             + (plan.oauth != nil ? " (OAuth enabled)" : ""))
-        if transport == .sse {
+        if plan.transport == "sse" {
             log("Warning: the HTTP+SSE transport is deprecated since MCP 2025-03-26 and may be removed; "
                 + "switch clients to streamable-http (POST /mcp).")
         }

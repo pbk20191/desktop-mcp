@@ -68,7 +68,7 @@ public struct StdioBridge: Sendable {
                 }
             }
             var buffer: [UInt8] = []
-            for await chunk in MCPSession.chunks(of: input) {
+            for await chunk in Self.chunks(of: input) {
                 for byte in chunk {
                     if byte == 0x0A {
                         dispatch(buffer)
@@ -131,6 +131,23 @@ public struct StdioBridge: Sendable {
         return payload.replacingOccurrences(of: "\r", with: "").replacingOccurrences(of: "\n", with: " ")
     }
 
+    /// The handle's data as it arrives. Unlike `FileHandle.bytes`, which only notices cancellation
+    /// when the next byte arrives, this ends as soon as the consuming task is cancelled.
+    static func chunks(of input: FileHandle) -> AsyncStream<Data> {
+        AsyncStream(bufferingPolicy: .unbounded) { continuation in
+            input.readabilityHandler = { handle in
+                let data = handle.availableData
+                if data.isEmpty {
+                    handle.readabilityHandler = nil
+                    continuation.finish()
+                } else {
+                    continuation.yield(data)
+                }
+            }
+            continuation.onTermination = { _ in input.readabilityHandler = nil }
+        }
+    }
+
     struct Failure: Error, CustomStringConvertible {
         let description: String
         init(_ description: String) { self.description = description }
@@ -164,5 +181,32 @@ public enum SSE {
         }
         flush()
         return payloads
+    }
+}
+
+/// Serialises writes so concurrent responses never interleave on stdout.
+public actor StdoutWriter {
+    public static let shared = StdoutWriter()
+    private var closed = false
+
+    /// Writes the whole text; false once stdout is gone (the client closed its end), after which
+    /// nothing more is attempted.
+    @discardableResult
+    public func write(_ text: String) -> Bool {
+        if closed { return false }
+        let bytes = Array(text.utf8)
+        var offset = 0
+        while offset < bytes.count {
+            let written = bytes.withUnsafeBytes { buffer in
+                Darwin.write(STDOUT_FILENO, buffer.baseAddress! + offset, buffer.count - offset)
+            }
+            if written < 0 {
+                if errno == EINTR { continue }
+                closed = true
+                return false
+            }
+            offset += written
+        }
+        return true
     }
 }

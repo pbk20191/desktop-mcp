@@ -175,18 +175,6 @@ public enum DesktopMCP {
     enabling operation of the desktop on the user's behalf.
     """
 
-    /// A server with every tool registered except those named in `excluding`.
-    public static func makeServer(desktop: Desktop = Desktop(), excluding excluded: [String] = []) async -> MCPServer {
-        let server = MCPServer(name: "desktop-mcp", version: version, instructions: instructions)
-        for tool in tools(desktop) {
-            await server.register(tool)
-        }
-        for name in excluded where !(await server.remove(tool: name)) {
-            log("Could not exclude tool '\(name)' — not found")
-        }
-        return server
-    }
-
     /// A registry with every tool registered except those named in `excluding`.
     public static func makeRegistry(desktop: Desktop = Desktop(), excluding excluded: [String] = []) async -> ToolRegistry {
         let registry = ToolRegistry(name: "desktop-mcp", version: version, instructions: instructions)
@@ -444,4 +432,9 @@ public enum DesktopMCP {
                 }),
         ]
     }
+}
+
+/// Diagnostics go to stderr: stdout is the stdio transport.
+public func log(_ message: String) {
+    FileHandle.standardError.write(Data(("[desktop-mcp] " + message + "\n").utf8))
 }

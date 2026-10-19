@@ -1,4 +1,5 @@
 import Foundation
+import MCP
 
 public struct HTTPRequest: Sendable {
     public var method: String
@@ -77,15 +78,6 @@ public struct HTTPResponse: Sendable {
                      body: .data(Data(text.utf8)))
     }
 
-    static func eventStream(_ stream: AsyncStream<String>) -> HTTPResponse {
-        HTTPResponse(status: 200, headers: [
-            ("content-type", "text/event-stream"),
-            ("cache-control", "no-store"),
-            ("connection", "keep-alive"),
-            ("x-accel-buffering", "no"),
-        ], body: .stream(stream))
-    }
-
     public func header(_ name: String) -> String? {
         headers.first { $0.0.lowercased() == name.lowercased() }?.1
     }
@@ -97,25 +89,16 @@ public struct HTTPResponse: Sendable {
     }
 }
 
-public enum HTTPTransport: String, Sendable {
-    case sse
-    case streamableHTTP = "streamable-http"
-}
-
 /// The HTTP side of the server, independent of the socket layer: CORS, IP allowlist, bearer /
-/// OAuth authentication, OAuth endpoints, and the MCP SSE or streamable-HTTP endpoints.
+/// OAuth authentication, OAuth endpoints, and the stateless streamable-HTTP MCP endpoint.
 /// Middleware runs in the original's order: OPTIONS, CORS, allowlist, auth, routes.
 public final class HTTPApp: Sendable {
     public struct Settings: Sendable {
-        public var transport: HTTPTransport
         public var authKey: String?
         public var ipAllowlist: [IPNetwork]?
         public var oauth: OAuthService?
-        /// Interval between keep-alive comments on SSE streams; also how disconnects are noticed.
-        public var pingInterval: Double = 15
 
-        public init(transport: HTTPTransport, authKey: String? = nil, ipAllowlist: [IPNetwork]? = nil, oauth: OAuthService? = nil) {
-            self.transport = transport
+        public init(authKey: String? = nil, ipAllowlist: [IPNetwork]? = nil, oauth: OAuthService? = nil) {
             self.authKey = authKey
             self.ipAllowlist = ipAllowlist
             self.oauth = oauth
@@ -126,12 +109,11 @@ public final class HTTPApp: Sendable {
         "/health", "/.well-known/oauth-authorization-server", "/oauth/register", "/oauth/authorize", "/oauth/token",
     ]
 
-    let server: MCPServer
+    let registry: ToolRegistry
     let settings: Settings
-    let sessions = SSESessions()
 
-    public init(server: MCPServer, settings: Settings) {
-        self.server = server
+    public init(registry: ToolRegistry, settings: Settings) {
+        self.registry = registry
         self.settings = settings
     }
 
@@ -208,133 +190,57 @@ public final class HTTPApp: Sendable {
         if let oauth = settings.oauth, let response = await oauth.handle(request) {
             return response
         }
-        switch (settings.transport, request.path) {
-        case (.sse, "/sse"):
-            return request.method == "GET" ? await openSSE() : methodNotAllowed()
-        case (.sse, "/messages/"), (.sse, "/messages"):
-            return request.method == "POST" ? await postMessage(request) : methodNotAllowed()
-        case (.streamableHTTP, "/mcp"), (.streamableHTTP, "/mcp/"):
-            switch request.method {
-            case "POST": return await streamablePost(request)
-            default:
+        switch request.path {
+        case "/mcp", "/mcp/":
+            guard request.method == "POST" else {
                 // Stateless: no standalone server-to-client stream, no sessions to delete.
-                return .json(MCPServer.errorResponse(id: "server-error", code: -32000, message: "Method Not Allowed"),
-                             status: 405, headers: [("allow", "POST")])
+                return Self.convert(.error(statusCode: 405, .invalidRequest("Method Not Allowed"),
+                                           extraHeaders: ["Allow": "POST"]))
             }
+            return await mcpPost(request)
         default:
             return .text("Not Found", status: 404)
         }
     }
 
-    private func methodNotAllowed() -> HTTPResponse {
-        .text("Method Not Allowed", status: 405)
-    }
-
-    // MARK: SSE transport (protocol 2024-11-05)
-
-    /// GET /sse: an event stream whose first event names the endpoint to POST messages to.
-    private func openSSE() async -> HTTPResponse {
-        let id = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
-        let (stream, continuation) = AsyncStream.makeStream(of: String.self, bufferingPolicy: .unbounded)
-        let session = MCPSession(server: server) { message in
-            continuation.yield("event: message\r\ndata: \(message)\r\n\r\n")
-        }
-        await sessions.add(id, session)
-        continuation.yield("event: endpoint\r\ndata: /messages/?session_id=\(id)\r\n\r\n")
-
-        let interval = settings.pingInterval
-        let pinger = Task {
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(interval))
-                if Task.isCancelled { break }
-                continuation.yield(": ping - \(ISO8601DateFormatter().string(from: Date()))\r\n\r\n")
-            }
-        }
-        let sessions = self.sessions
-        continuation.onTermination = { _ in
-            pinger.cancel()
-            Task {
-                await session.cancelAll()
-                await sessions.remove(id)
-            }
-        }
-        return .eventStream(stream)
-    }
-
-    /// POST /messages/?session_id=…: hands the message to that session; replies go out on its stream.
-    private func postMessage(_ request: HTTPRequest) async -> HTTPResponse {
-        guard let raw = request.query["session_id"] else { return .text("session_id is required", status: 400) }
-        guard raw.count == 32, raw.allSatisfy(\.isHexDigit) else { return .text("Invalid session ID", status: 400) }
-        guard let session = await sessions.get(raw.lowercased()) else { return .text("Could not find session", status: 404) }
-        guard let incoming = try? JSONCoding.decode(JSONRPCIncoming.self, from: request.body) else {
-            return .text("Could not parse message", status: 400)
-        }
-        await session.receive(incoming)
-        return .text("Accepted", status: 202)
-    }
-
     // MARK: Streamable HTTP transport (stateless)
 
-    private func streamablePost(_ request: HTTPRequest) async -> HTTPResponse {
-        let contentType = request.header("content-type") ?? ""
-        guard contentType.lowercased().contains("json") else {
-            return .json(MCPServer.errorResponse(id: "server-error", code: -32600,
-                                                 message: "Unsupported Media Type: Content-Type must be application/json"),
-                         status: 415)
+    /// One SDK server on one stateless transport per request: JSON-RPC ids from different
+    /// clients never meet, and nothing outlives the response.
+    private func mcpPost(_ request: HTTPRequest) async -> HTTPResponse {
+        let transport = StatelessHTTPServerTransport(validationPipeline: StandardValidationPipeline(validators: [
+            // No OriginValidator: `handle` has already checked the origin.
+            AcceptHeaderValidator(mode: .jsonOnly),
+            ContentTypeValidator(),
+            ProtocolVersionValidator(),
+        ]))
+        let started: StartedServer
+        do {
+            started = try await registry.start(on: transport)
+        } catch {
+            log("Could not start an MCP server for an HTTP request: \(error)")
+            return Self.convert(.error(statusCode: 500, .internalError("Could not start the MCP server")))
         }
-        guard let incoming = try? JSONCoding.decode(JSONRPCIncoming.self, from: request.body) else {
-            return .json(MCPServer.errorResponse(id: .null, code: -32700, message: "Parse error"), status: 400)
+        // The socket layer cancels this task when the client disconnects: stop the tool call.
+        let response = await withTaskCancellationHandler {
+            await transport.handleRequest(MCP.HTTPRequest(
+                method: request.method, headers: request.headers,
+                body: request.body.isEmpty ? nil : request.body, path: request.path))
+        } onCancel: {
+            Task { await started.shutdown() }
         }
-        let messages = incoming.messages
-        if messages.isEmpty {
-            return .json(MCPServer.errorResponse(id: .null, code: -32600, message: "Invalid Request"), status: 400)
-        }
-        guard messages.contains(where: \.needsResponse) else {
-            // Only notifications or responses. Without a session there is nothing to cancel.
-            return HTTPResponse(status: 202)
-        }
-        let client = messages.lazy.compactMap { message -> ClientInfo? in
-            if case .initialize(let params) = message.request?.params { return params.clientInfo }
-            return nil
-        }.first
-        let server = self.server
-
-        let accept = (request.header("accept") ?? "").lowercased()
-        if accept.contains("text/event-stream") {
-            let (stream, continuation) = AsyncStream.makeStream(of: String.self, bufferingPolicy: .unbounded)
-            let worker = Task {
-                await withTaskGroup(of: Void.self) { group in
-                    for item in messages {
-                        group.addTask {
-                            if let response = await server.respond(to: item, client: client) {
-                                continuation.yield("event: message\r\ndata: \(response.serialized())\r\n\r\n")
-                            }
-                        }
-                    }
-                }
-                continuation.finish()
-            }
-            // The client hung up: stop the work it was waiting for.
-            continuation.onTermination = { reason in
-                if case .cancelled = reason { worker.cancel() }
-            }
-            return .eventStream(stream)
-        }
-
-        var responses: [JSONRPCResponse] = []
-        for item in messages {
-            if let response = await server.respond(to: item, client: client) { responses.append(response) }
-        }
-        return incoming.isBatch ? .json(responses) : .json(responses[0])
+        await started.shutdown()
+        return Self.convert(response)
     }
-}
 
-/// Live SSE sessions by id.
-actor SSESessions {
-    private var sessions: [String: MCPSession] = [:]
-
-    func add(_ id: String, _ session: MCPSession) { sessions[id] = session }
-    func get(_ id: String) -> MCPSession? { sessions[id] }
-    func remove(_ id: String) { sessions[id] = nil }
-    var count: Int { sessions.count }
+    static func convert(_ response: MCP.HTTPResponse) -> HTTPResponse {
+        if case .stream = response {
+            // The stateless transport answers with JSON only; a stream here is a bug, not a crash.
+            log("The MCP transport returned a stream, which the stateless endpoint does not serve")
+            return convert(.error(statusCode: 500, .internalError("Unexpected streaming response")))
+        }
+        return HTTPResponse(status: response.statusCode,
+                            headers: response.headers.map { ($0.key.lowercased(), $0.value) },
+                            body: .data(response.bodyData ?? Data()))
+    }
 }
