@@ -87,35 +87,67 @@ internal static unsafe partial class CoreNative
     [LibraryImport("kernel32.dll", EntryPoint = "GetFinalPathNameByHandleW", SetLastError = true)]
     internal static partial uint GetFinalPathNameByHandle(SafeFileHandle file, char* buffer, uint bufferLength, uint flags);
 
-    // kernel32: Toolhelp process snapshot (process names as psutil reports them)
-    internal const uint Th32csSnapProcess = 0x2;
-    internal static readonly nint InvalidHandleValue = -1;
+    // ntdll: the system process snapshot psutil falls back to when it cannot open a process
+    internal const int SystemProcessInformationClass = 5;
+    internal const int StatusInfoLengthMismatch = unchecked((int)0xC0000004);
 
     [StructLayout(LayoutKind.Sequential)]
-    internal struct ProcessEntry32W
+    internal struct UnicodeString
     {
-        public uint Size;
-        public uint Usage;
-        public uint ProcessId;
-        public nuint DefaultHeapId;
-        public uint ModuleId;
-        public uint Threads;
-        public uint ParentProcessId;
-        public int PriorityClassBase;
-        public uint Flags;
-        public fixed char ExeFile[260];
+        public ushort Length;           // bytes, without a terminator
+        public ushort MaximumLength;
+        public char* Buffer;
     }
 
+    /// <summary>The leading fields of SYSTEM_PROCESS_INFORMATION, up to WorkingSetSize.</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct SystemProcessInformation
+    {
+        public uint NextEntryOffset;
+        public uint NumberOfThreads;
+        public long WorkingSetPrivateSize;
+        public uint HardFaultCount;
+        public uint NumberOfThreadsHighWatermark;
+        public ulong CycleTime;
+        public long CreateTime;         // FILETIME ticks
+        public long UserTime;           // 100 ns units
+        public long KernelTime;
+        public UnicodeString ImageName;
+        public int BasePriority;
+        public nint UniqueProcessId;
+        public nint InheritedFromUniqueProcessId;
+        public uint HandleCount;
+        public uint SessionId;
+        public nuint UniqueProcessKey;
+        public nuint PeakVirtualSize;
+        public nuint VirtualSize;
+        public uint PageFaultCount;
+        public nuint PeakWorkingSetSize;
+        public nuint WorkingSetSize;
+    }
+
+    [LibraryImport("ntdll.dll")]
+    internal static partial int NtQuerySystemInformation(int infoClass, void* buffer, uint length, out uint returnLength);
+
+    // kernel32: opening and terminating a process (psutil's terminate/kill)
+    internal const uint ProcessTerminate = 0x0001;
+    internal const uint ProcessQueryLimitedInformation = 0x1000;
+    internal const uint StillActive = 259;
+
     [LibraryImport("kernel32.dll", SetLastError = true)]
-    internal static partial nint CreateToolhelp32Snapshot(uint flags, uint processId);
+    internal static partial nint OpenProcess(uint desiredAccess, [MarshalAs(UnmanagedType.Bool)] bool inheritHandle, uint processId);
 
-    [LibraryImport("kernel32.dll", EntryPoint = "Process32FirstW", SetLastError = true)]
+    [LibraryImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    internal static partial bool Process32First(nint snapshot, ProcessEntry32W* entry);
+    internal static partial bool GetProcessTimes(nint process, out long creationTime, out long exitTime, out long kernelTime, out long userTime);
 
-    [LibraryImport("kernel32.dll", EntryPoint = "Process32NextW", SetLastError = true)]
+    [LibraryImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    internal static partial bool Process32Next(nint snapshot, ProcessEntry32W* entry);
+    internal static partial bool GetExitCodeProcess(nint process, out uint exitCode);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool TerminateProcess(nint process, uint exitCode);
 
     // kernel32: the system code pages behind Python's mbcs and oem codecs
     [LibraryImport("kernel32.dll")]

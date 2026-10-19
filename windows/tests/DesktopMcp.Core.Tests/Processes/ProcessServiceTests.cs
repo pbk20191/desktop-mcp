@@ -1,4 +1,6 @@
+using System.ComponentModel;
 using System.Diagnostics;
+using System.Security.Principal;
 using DesktopMcp.Core.Processes;
 
 namespace DesktopMcp.Core.Tests;
@@ -56,7 +58,29 @@ public class ProcessServiceTests
     }
 
     [Fact]
-    public void PidZeroIsTheSystemIdleProcess() => Assert.Equal("System Idle Process", ProcessSnapshot.Names()[0]);
+    public void PidsZeroAndFourAreNamedAsPsutilNamesThem()
+    {
+        var names = ProcessSnapshot.Names();
+        Assert.Equal("System Idle Process", names[0]);
+        Assert.Equal("System", names[4]);
+    }
+
+    [UnelevatedFact]
+    public void TheSnapshotReadsCpuTimeOfAProcessThatCannotBeOpened()
+    {
+        using var system = Process.GetProcessById(4);
+        Assert.Throws<Win32Exception>(() => system.TotalProcessorTime);
+        Assert.True(ProcessSnapshot.Take().Single(p => p.Pid == 4).CpuTime > 0);
+    }
+
+    [Fact]
+    public void CpuIsAShareOfOneCpuRoundedLikePsutil()
+    {
+        Assert.Equal(50.0, ProcessService.CpuPercent(0, 1_250_000, 0.25));
+        Assert.Equal(1.2, ProcessService.CpuPercent(1_000, 32_250, 0.25));   // 1.25% rounds half to even
+        Assert.Equal(200.0, ProcessService.CpuPercent(0, 5_000_000, 0.25));
+        Assert.Equal(0.0, ProcessService.CpuPercent(10, 0, 0.25));
+    }
 
     [Fact]
     public void KillByPid()
@@ -64,6 +88,7 @@ public class ProcessServiceTests
         using var child = UniqueChild.Start();
         Assert.Equal($"Terminated: {child.Name} (PID {child.Process.Id})", _processes.Kill(null, child.Process.Id, force: false));
         Assert.True(child.Process.WaitForExit(5000));
+        Assert.Equal(15, child.Process.ExitCode);   // psutil's TerminateProcess(handle, SIGTERM)
     }
 
     [Fact]
@@ -80,11 +105,22 @@ public class ProcessServiceTests
         Assert.Equal("Error: Provide either pid or name parameter for kill mode.", _processes.Kill(null, null, false));
         Assert.Equal("No process with PID 2147483644 found.", _processes.Kill(null, 2147483644, false));
         Assert.Equal("No process matching \"no-such-process-dmcp.exe\" found or access denied.", _processes.Kill("no-such-process-dmcp.exe", null, false));
+        Assert.Equal("No process matching \"\" found or access denied.", _processes.Kill("", null, false));
         Assert.Equal("pid must be a positive integer (got -1)", Assert.Throws<ArgumentException>(() => _processes.Kill(null, -1, false)).Message);
     }
 
     private static string[] Names(string table) =>
         table.Split('\n').Skip(3).Select(line => line.Split("  ", StringSplitOptions.RemoveEmptyEntries)[1].Trim()).ToArray();
+
+    /// <summary>A fact that is skipped when this process is elevated, since elevation can open protected processes.</summary>
+    private sealed class UnelevatedFactAttribute : FactAttribute
+    {
+        public UnelevatedFactAttribute()
+        {
+            using var identity = WindowsIdentity.GetCurrent();
+            if (new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator)) Skip = "Needs an unelevated process.";
+        }
+    }
 
     /// <summary>A copy of ping.exe under a unique name, so killing by name cannot touch anything else.</summary>
     private sealed class UniqueChild : IDisposable

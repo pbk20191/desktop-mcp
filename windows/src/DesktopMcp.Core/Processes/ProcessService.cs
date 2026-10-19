@@ -1,6 +1,7 @@
-using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
+using System.Runtime.InteropServices;
+using DesktopMcp.Core.Interop;
 using DesktopMcp.Core.Text;
 
 namespace DesktopMcp.Core.Processes;
@@ -47,83 +48,81 @@ public sealed class ProcessService
     {
         if (pid is null && name is null) return "Error: Provide either pid or name parameter for kill mode.";
         var killed = new List<string>();
+        var snapshot = ProcessSnapshot.Take();
         if (pid is { } id)
         {
             // psutil.Process(pid) raises this ValueError, which upstream does not catch.
             if (id < 0) throw new ArgumentException($"pid must be a positive integer (got {id})");
-            if (id > int.MaxValue) return $"No process with PID {id} found.";
-            Process process;
-            try { process = Process.GetProcessById((int)id); }
-            catch (ArgumentException) { return $"No process with PID {id} found."; }
-            using (process)
+            var target = id <= int.MaxValue ? snapshot.Find(p => p.Pid == id) : null;
+            switch (target is null ? KillOutcome.Gone : Terminate(target))
             {
-                var processName = ProcessSnapshot.Names().GetValueOrDefault((int)id) ?? process.ProcessName;
-                try { process.Kill(); }
-                catch (Win32Exception) { return $"Access denied to kill PID {id}. Try running as administrator."; }
-                catch (InvalidOperationException) { return $"No process with PID {id} found."; }
-                killed.Add($"{processName} (PID {id})");
+                case KillOutcome.Gone: return $"No process with PID {id} found.";
+                case KillOutcome.Denied: return $"Access denied to kill PID {id}. Try running as administrator.";
             }
+            killed.Add($"{target!.Name} (PID {id})");
         }
         else
         {
-            foreach (var (processId, processName) in ProcessSnapshot.Names().OrderBy(p => p.Key))
+            // upstream skips processes without a name, so an empty name matches nothing.
+            foreach (var process in snapshot)
             {
-                if (!processName.Equals(name, StringComparison.OrdinalIgnoreCase)) continue;
-                try
-                {
-                    using var process = Process.GetProcessById(processId);
-                    process.Kill();
-                    killed.Add($"{processName} (PID {processId})");
-                }
-                catch (Exception e) when (e is ArgumentException or Win32Exception or InvalidOperationException)
-                {
-                }
+                if (process.Name.Length == 0 || !process.Name.Equals(name, StringComparison.OrdinalIgnoreCase)) continue;
+                if (Terminate(process) == KillOutcome.Killed) killed.Add($"{process.Name} (PID {process.Pid})");
             }
         }
         if (killed.Count == 0) return $"No process matching \"{name}\" found or access denied.";
         return $"{(force ? "Force killed" : "Terminated")}: {string.Join(", ", killed)}";
     }
 
-    // Two CPU-time samples CpuSampleInterval apart; like psutil, a share of one CPU (can exceed 100).
-    private static async Task<IReadOnlyList<ProcessRow>> SampleAsync(CancellationToken cancellationToken)
+    private enum KillOutcome { Killed, Gone, Denied }
+
+    /// <summary>
+    /// psutil's terminate() and kill(): TerminateProcess with exit code 15 (SIGTERM). The process must still be the one
+    /// in the snapshot: a different creation time means its PID was reused, so the snapshot's process is gone.
+    /// </summary>
+    private static KillOutcome Terminate(ProcessEntry process)
     {
-        var first = CpuTimes();
-        var clock = Stopwatch.StartNew();
-        await Task.Delay(CpuSampleInterval, cancellationToken).ConfigureAwait(false);
-        var second = CpuTimes();
-        var elapsed = clock.Elapsed.TotalSeconds;
-        var names = ProcessSnapshot.Names();
-        var rows = new List<ProcessRow>();
-        foreach (var process in Process.GetProcesses())
+        if (process.Pid == 0) return KillOutcome.Denied;   // psutil refuses PID 0 with AccessDenied
+        var handle = CoreNative.OpenProcess(CoreNative.ProcessTerminate | CoreNative.ProcessQueryLimitedInformation, false, (uint)process.Pid);
+        if (handle == 0) return Marshal.GetLastPInvokeError() == ErrorAccessDenied ? KillOutcome.Denied : KillOutcome.Gone;
+        try
         {
-            using (process)
-            {
-                if (!names.TryGetValue(process.Id, out var name)) continue;
-                var cpu = first.TryGetValue(process.Id, out var before) && second.TryGetValue(process.Id, out var after)
-                    ? Math.Max(0, (after - before).TotalSeconds / elapsed * 100)
-                    : 0;
-                long workingSet;
-                try { workingSet = process.WorkingSet64; }
-                catch (InvalidOperationException) { continue; }
-                // Python's round(rss / 2**20, 1); sorting uses the rounded value, as upstream does.
-                var memory = double.Parse(PyText.Fixed(workingSet / (1024.0 * 1024.0), 1), CultureInfo.InvariantCulture);
-                rows.Add(new ProcessRow(process.Id, name, cpu, memory));
-            }
+            if (!CoreNative.GetProcessTimes(handle, out var created, out _, out _, out _)) return KillOutcome.Denied;
+            if (created != process.CreateTime) return KillOutcome.Gone;
+            if (CoreNative.GetExitCodeProcess(handle, out var exitCode) && exitCode != CoreNative.StillActive) return KillOutcome.Gone;
+            // Like psutil, ERROR_ACCESS_DENIED here means the process is already exiting.
+            return CoreNative.TerminateProcess(handle, SigTerm) || Marshal.GetLastPInvokeError() == ErrorAccessDenied
+                ? KillOutcome.Killed
+                : KillOutcome.Denied;
         }
-        return rows;
+        finally
+        {
+            CoreNative.CloseHandle(handle);
+        }
     }
 
-    private static Dictionary<int, TimeSpan> CpuTimes()
+    // Two snapshots CpuSampleInterval apart. A process is matched by PID and creation time, so a reused PID reads 0.
+    private static async Task<IReadOnlyList<ProcessRow>> SampleAsync(CancellationToken cancellationToken)
     {
-        var times = new Dictionary<int, TimeSpan>();
-        foreach (var process in Process.GetProcesses())
-        {
-            using (process)
-            {
-                try { times[process.Id] = process.TotalProcessorTime; }
-                catch (Exception e) when (e is Win32Exception or InvalidOperationException or NotSupportedException) { }
-            }
-        }
-        return times;
+        var first = ProcessSnapshot.Take().ToDictionary(p => (p.Pid, p.CreateTime), p => p.CpuTime);
+        var clock = Stopwatch.StartNew();
+        await Task.Delay(CpuSampleInterval, cancellationToken).ConfigureAwait(false);
+        var second = ProcessSnapshot.Take();
+        var elapsed = clock.Elapsed.TotalSeconds;
+        return second.Select(p => new ProcessRow(
+            p.Pid,
+            p.Name.Length > 0 ? p.Name : "Unknown",
+            first.TryGetValue((p.Pid, p.CreateTime), out var before) ? CpuPercent(before, p.CpuTime, elapsed) : 0,
+            // Python's round(rss / 2**20, 1); sorting uses the rounded value, as upstream does.
+            Round1(p.WorkingSet / (1024.0 * 1024.0)))).ToList();
     }
+
+    /// <summary>psutil's cpu_percent: a share of one CPU (can exceed 100), rounded to 1 decimal.</summary>
+    internal static double CpuPercent(long before, long after, double elapsedSeconds) =>
+        Round1(Math.Max(0, (after - before) / 1e7 / elapsedSeconds * 100));
+
+    private static double Round1(double value) => double.Parse(PyText.Fixed(value, 1), CultureInfo.InvariantCulture);
+
+    private const int ErrorAccessDenied = 5;
+    private const uint SigTerm = 15;
 }
