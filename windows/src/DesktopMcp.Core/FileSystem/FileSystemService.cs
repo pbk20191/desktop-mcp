@@ -102,22 +102,32 @@ public sealed class FileSystemService(string defaultDirectory, Func<bool> isElev
 
     public string MovePath(string source, string destination, bool overwrite)
     {
-        // Decisions 11: a link in the final component is moved, or replaced, as a link; its target is never touched.
-        var src = PathResolver.ResolveKeepingLink(source);
-        var dst = PathResolver.ResolveKeepingLink(destination);
-        if (!Exists(src)) return $"Error: Source not found: {src}";
-        if (Exists(dst) && !overwrite) return $"Error: Destination already exists: {dst}. Set overwrite=True to replace.";
-        // Decisions 11: moving a path onto itself changes nothing.
-        if (SamePath(src, dst)) return $"Moved: {src} -> {dst}";
         try
         {
+            // Decisions 11: a link in the final component is moved, or replaced, as a link; its target is never touched.
+            var src = PathResolver.ResolveKeepingLink(source);
+            var dst = PathResolver.ResolveKeepingLink(destination);
+            if (!Exists(src)) return $"Error: Source not found: {src}";
+            if (Exists(dst) && !overwrite) return $"Error: Destination already exists: {dst}. Set overwrite=True to replace.";
+            // Decisions 11: moving a path onto itself changes nothing.
+            if (SamePath(src, dst)) return $"Moved: {src} -> {dst}";
             if (Exists(dst) && OverlapReason(src, dst) is { } reason) return $"Error moving: {reason}";
+            var srcIsLink = PathResolver.IsLink(src);
+            if (srcIsLink)
+            {
+                // A link is renamed, never walked or copied, so it cannot leave its volume. Refused before the
+                // destination is deleted.
+                if (!SameVolume(src, dst)) return $"Error moving: {src} is a link, and a link cannot be moved to another volume.";
+                // Overwriting the link's own target, or a tree that holds it or lies inside it, would delete the target
+                // and leave the link pointing at nothing (or at itself).
+                if (Exists(dst) && LinkTargetOverlapReason(src, PathResolver.Resolve(src), dst) is { } targetReason)
+                    return $"Error moving: {targetReason}";
+            }
             // A move between volumes may fall back to copying, which walks the source and fails on a directory loop.
             // The source is listed here, before anything is created or deleted, so a loop leaves the destination as
             // it was. A rename on one volume does not walk the tree and needs no listing.
-            // A link is renamed, never walked: a failed rename across volumes is an error, not a copy of its target.
             var isDirectory = Directory.Exists(src);
-            var tree = isDirectory && !PathResolver.IsLink(src) && !SameVolume(src, dst) ? ListTree(src, CancellationToken.None) : null;
+            var tree = isDirectory && !srcIsLink && !SameVolume(src, dst) ? ListTree(src, CancellationToken.None) : null;
             Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
             if (Exists(dst)) DeleteEntry(dst);
             if (isDirectory) MoveTree(src, tree, dst);
@@ -136,11 +146,12 @@ public sealed class FileSystemService(string defaultDirectory, Func<bool> isElev
 
     public string DeletePath(string path, bool recursive)
     {
-        // Decisions 11: a link in the final component is deleted as a link, recursive or not; its target survives.
-        var target = PathResolver.ResolveKeepingLink(path);
-        if (!Exists(target)) return $"Error: Path not found: {target}";
+        var target = path;
         try
         {
+            // Decisions 11: a link in the final component is deleted as a link, recursive or not; its target survives.
+            target = PathResolver.ResolveKeepingLink(path);
+            if (!Exists(target)) return $"Error: Path not found: {target}";
             if (File.Exists(target))
             {
                 File.Delete(target);
@@ -383,6 +394,15 @@ public sealed class FileSystemService(string defaultDirectory, Func<bool> isElev
         if (SamePath(src, dst)) return $"Destination {dst} is the source itself; overwriting it would delete the source.";
         if (IsBelow(src, dst)) return $"Destination {dst} contains the source {src}; overwriting it would delete the source.";
         if (IsBelow(dst, src)) return $"Destination {dst} is inside the source {src}; overwriting it would delete part of the source.";
+        return null;
+    }
+
+    /// <summary>Decisions 11: why overwriting <paramref name="dst"/> would delete some of a moved link's target, or null.</summary>
+    private static string? LinkTargetOverlapReason(string link, string target, string dst)
+    {
+        if (SamePath(target, dst)) return $"Destination {dst} is the target of the link {link}; overwriting it would delete the target.";
+        if (IsBelow(target, dst)) return $"Destination {dst} contains {target}, the target of the link {link}; overwriting it would delete the target.";
+        if (IsBelow(dst, target)) return $"Destination {dst} is inside {target}, the target of the link {link}; overwriting it would delete part of the target.";
         return null;
     }
 

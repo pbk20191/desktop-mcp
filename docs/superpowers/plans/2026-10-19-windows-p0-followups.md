@@ -35,6 +35,7 @@ All other P1 items are done (see docs/superpowers/plans/2026-10-19-windows-p1-he
 - Tests and probes still hand-declare a few imports (`AppRuntimeTests`' `GetModuleHandleW`, the probes); `ProcessJobTests` uses throwaway `SafeFileHandle` wrappers.
 - Deferred test and fidelity minors: Task 2 ctor validation and case tests; Task 3 LCS allocation per window; Task 4 `ToolArguments` edge tests; Task 6 IPv6 parse leniency and no comment on the mask tricks; Task 7 the help test's `Contains` check; Task 8 the slow-machine timeout test; Task 9 `PathResolver` edge cases, the ucs-2/iso8859/csunicode11utf7 aliases and dangling junctions; Task 10 `REG_LINK`, and `AHiveIsNeverDeleted` cannot tell the guards apart; Task 11b the HSTRING handle is not disposed on a create failure; Task 14 triple parse and `ReadPort`; Task 16 double parse, test naming and `LoopbackHttpServer`.
 - Clipboard: the fallback to Win32 sticks after a WinRT timeout. Scrape: DNS resolution runs outside the 10 s timeout. Test-only APIs live in product code (`ProcessSnapshot.Names`, `IsProcessInJob`). Duplicated helpers: the max-delay constant, and the temp folders in `Server.Tests`. `ProcessJob`'s namespace. For P5: strip `DESKTOP_MCP_*` secrets from the PowerShell child's environment.
+- Fnmatch: the doc says ntpath.normcase, but the code uses `re.IGNORECASE` semantics, so a range across the case boundary (`[A-_]`) differs; reversed ranges compare UTF-16 units rather than code points.
 
 ## P2 (desktop read: UIA, tree, Snapshot, capture, Screenshot)
 

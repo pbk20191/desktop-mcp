@@ -283,9 +283,26 @@ public sealed class FileSystemServiceTests : IDisposable
             SameVolume = (_, _) => false,
             MoveDirectory = (_, _) => throw new IOException("not same device"),
         };
-        Assert.Equal("Error moving: not same device", fs.MovePath(P("j"), P("b"), false));
+        Assert.Equal($"Error moving: {P("j")} is a link, and a link cannot be moved to another volume.", fs.MovePath(P("j"), P("b"), false));
         Assert.True(PathResolver.IsLink(P("j")));
         Assert.False(Directory.Exists(P("b")));
+        Assert.Equal("t", File.ReadAllText(P("target", "t.txt")));
+    }
+
+    [Fact]
+    public void ACrossVolumeMoveOfAJunctionWithOverwriteKeepsTheDestination()
+    {
+        Write(@"target\t.txt", "t");
+        Junction(P("j"), P("target"));
+        Write(@"dest\keep.txt", "k");
+        var fs = new FileSystemService(_root, () => true)
+        {
+            SameVolume = (_, _) => false,
+            MoveDirectory = (_, _) => throw new IOException("not same device"),
+        };
+        Assert.Equal($"Error moving: {P("j")} is a link, and a link cannot be moved to another volume.", fs.MovePath(P("j"), P("dest"), true));
+        Assert.Equal("k", File.ReadAllText(P("dest", "keep.txt")));
+        Assert.True(PathResolver.IsLink(P("j")));
         Assert.Equal("t", File.ReadAllText(P("target", "t.txt")));
     }
 
@@ -302,14 +319,18 @@ public sealed class FileSystemServiceTests : IDisposable
     }
 
     [Fact]
-    public void MovingAJunctionOntoItsOwnTargetIsNotAnOverlap()
+    public void MovingAJunctionOntoOrAroundItsOwnTargetIsRefused()
     {
-        // The link and its target are different entries: the overwrite replaces the target, as the user asked.
-        Write(@"target\t.txt", "t");
-        Junction(P("j"), P("target"));
-        Assert.Equal($"Moved: {P("j")} -> {P("target")}", _fs.MovePath(P("j"), P("target"), true));
-        Assert.False(Directory.Exists(P("j")));
-        Assert.True(PathResolver.IsLink(P("target")));
+        Write(@"outer\target\sub\t.txt", "t");
+        Junction(P("j"), P("outer", "target"));
+        Assert.Equal($"Error moving: Destination {P("outer", "target")} is the target of the link {P("j")}; overwriting it would delete the target.",
+            _fs.MovePath(P("j"), P("outer", "target"), true));
+        Assert.Equal($"Error moving: Destination {P("outer")} contains {P("outer", "target")}, the target of the link {P("j")}; overwriting it would delete the target.",
+            _fs.MovePath(P("j"), P("outer"), true));
+        Assert.Equal($"Error moving: Destination {P("outer", "target", "sub")} is inside {P("outer", "target")}, the target of the link {P("j")}; overwriting it would delete part of the target.",
+            _fs.MovePath(P("j"), P("outer", "target", "sub"), true));
+        Assert.True(PathResolver.IsLink(P("j")));
+        Assert.Equal("t", File.ReadAllText(P("outer", "target", "sub", "t.txt")));
     }
 
     [Fact]
