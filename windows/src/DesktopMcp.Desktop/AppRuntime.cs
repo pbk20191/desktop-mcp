@@ -78,8 +78,11 @@ public static class AppRuntime
         throw new InvalidOperationException(
             $"The Windows App SDK runtime {RuntimeVersion.DotQuadString} or later ({Framework.PackageFamilyName}, {Release.Major}.{Release.Minor}, " +
             $"{RuntimeInformation.ProcessArchitecture.ToString().ToLowerInvariant()}) is not installed. " +
-            $"Install the Windows App SDK {Release.Major}.{Release.Minor} runtime from {DownloadsPage} (HRESULT 0x{hresult.Value:X8}).");
+            $"{InstallHint()} (HRESULT 0x{hresult.Value:X8}).");
     }
+
+    /// <summary>"Install the Windows App SDK x.y runtime from &lt;downloads page&gt;"; shared with <c>ComErrors</c> for REGDB_E_CLASSNOTREG.</summary>
+    internal static string InstallHint() => $"Install the Windows App SDK {Release.Major}.{Release.Minor} runtime from {DownloadsPage}";
 
     private static PackageDependencyProcessorArchitectures CurrentArchitecture() => RuntimeInformation.ProcessArchitecture switch
     {
