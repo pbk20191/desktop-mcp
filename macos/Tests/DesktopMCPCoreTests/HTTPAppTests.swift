@@ -343,6 +343,50 @@ final class HTTPAppTests: XCTestCase {
         XCTAssertEqual(try payload.map { try JSON.parse($0)["method"] }, "notifications/tools/list_changed")
     }
 
+    func testEventsStillBufferedWhenAGetReaderLeavesAreReplayed() async throws {
+        let app = try await app()
+        defer { Task { await app.shutdown() } }
+        let id = try await session(app)
+        let first = await app.handle(inSession(id, "", method: "GET"))
+        guard case .stream(let firstBody) = first.body else { return XCTFail("not a stream") }
+        let (primed, primedContinuation) = AsyncStream<Void>.makeStream()
+        let reader = Task {
+            var iterator = firstBody.makeAsyncIterator()
+            _ = await iterator.next() // the priming event
+            primedContinuation.yield()
+            // Stops reading, like a socket writer stuck on a slow client...
+            try? await Task.sleep(for: .seconds(60))
+            // ...then asks again once cancelled, as NIOHTTPServer's consumer does.
+            _ = await iterator.next()
+        }
+        for await _ in primed { break }
+        let sessionServer = await app.sessionServer(id: id)
+        let server = try XCTUnwrap(sessionServer)
+        for _ in 0..<3 { try await server.notify(ToolListChangedNotification.message()) }
+        try await Task.sleep(for: .milliseconds(100))
+        reader.cancel()
+        await reader.value
+        try await Task.sleep(for: .milliseconds(100))
+
+        // None of the three left the server: the re-opened GET must replay all of them.
+        let second = await app.handle(inSession(id, "", method: "GET"))
+        XCTAssertEqual(second.status, 200, second.bodyText ?? "")
+        guard case .stream(let secondBody) = second.body else { return XCTFail("not a stream") }
+        let received = Task { () -> Int in
+            var text = ""
+            func count() -> Int { SSE.dataPayloads(text).filter { $0.contains("list_changed") }.count }
+            for await chunk in secondBody {
+                text += chunk
+                if count() >= 3 { break }
+            }
+            return count()
+        }
+        let timeout = Task { try await Task.sleep(for: .seconds(2)); received.cancel() }
+        let count = await received.value
+        timeout.cancel()
+        XCTAssertEqual(count, 3)
+    }
+
     func testCancelledWhileTheSessionAnswersEndsTheCall() async throws {
         let observer = RecordingObserver()
         let registry = await DesktopMCP.makeRegistry()

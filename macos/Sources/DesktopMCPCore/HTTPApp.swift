@@ -330,11 +330,13 @@ public final class HTTPApp: Sendable {
         // leaves while the response head is being written is the socket layer's to notice.)
         if Task.isCancelled {
             if let eventID, case .stream(let events, _) = response {
-                // The SDK put its priming event on the stream before answering; its id is what
-                // the next GET resumes from (see `Session.lastGetEventID`).
+                // A first GET's stream starts with the SDK's priming event; its id is what the
+                // next GET resumes from (see `Session.lastGetEventID`). A resumed stream starts
+                // with the events it replays: none was sent, so the id it resumed from stays.
                 var iterator = events.makeAsyncIterator()
-                if let chunk = try? await iterator.next(), let id = SSE.eventIDs(String(decoding: chunk, as: UTF8.self)).last {
-                    await eventID(id)
+                if let chunk = try? await iterator.next() {
+                    let text = String(decoding: chunk, as: UTF8.self)
+                    if SSE.dataPayloads(text).isEmpty, let id = SSE.eventIDs(text).last { await eventID(id) }
                 }
             }
             await ended(true)
@@ -361,38 +363,17 @@ public final class HTTPApp: Sendable {
     /// finishes, `ended(false)` runs before the client sees the end, so a session ended for its
     /// byte budget is gone by the client's next request. When the socket layer stops reading
     /// (the client disconnected, the server is stopping), `ended(true)`. One of the two, once.
-    /// `eventID` sees the `id:` of every event forwarded, before the client gets the event.
+    /// `eventID` sees the `id:` of each event the socket layer has taken (see `SSEForwarder`):
+    /// an event still waiting in the SDK's stream when the reader went away is not reported,
+    /// so a `GET` that resumes from the last reported id replays it.
     static func convert(_ response: MCP.HTTPResponse, ended: (@Sendable (_ cancelled: Bool) async -> Void)?,
                         eventID: (@Sendable (String) async -> Void)? = nil) -> HTTPResponse {
         guard case .stream(let events, _) = response else { return convert(response) }
-        let (stream, continuation) = AsyncStream<String>.makeStream()
-        let reported = Locked(false)
-        /// True for the first caller only.
-        @Sendable func claim() -> Bool {
-            reported.withLock { done in
-                defer { done = true }
-                return !done
-            }
-        }
-        let pump = Task {
-            do {
-                for try await chunk in events {
-                    let text = String(decoding: chunk, as: UTF8.self)
-                    // The SDK yields one formatted event per chunk.
-                    if let eventID, let id = SSE.eventIDs(text).last { await eventID(id) }
-                    continuation.yield(text)
-                }
-            } catch {
-                // The transport ended the stream with an error: the client sees it close.
-            }
-            if claim() { await ended?(false) }
-            continuation.finish()
-        }
-        continuation.onTermination = { termination in
-            // Claimed before the pump is cancelled: a pump cut short must not report a finish.
-            if case .cancelled = termination, claim() { Task { await ended?(true) } }
-            pump.cancel()
-        }
+        // Pulled, not pumped: the SDK's stream is read only when the socket layer asks for the
+        // next chunk, so nothing sits in a buffer of ours when the reader goes away.
+        let forwarder = SSEForwarder(events, ended: ended, eventID: eventID)
+        let stream = AsyncStream<String>(unfolding: { await forwarder.next() },
+                                         onCancel: { forwarder.cancelled() })
         return HTTPResponse(status: response.statusCode,
                             headers: response.headers.map { ($0.key.lowercased(), $0.value) },
                             body: .stream(stream))
@@ -407,5 +388,85 @@ public final class HTTPApp: Sendable {
         return HTTPResponse(status: response.statusCode,
                             headers: response.headers.map { ($0.key.lowercased(), $0.value) },
                             body: .data(response.bodyData ?? Data()))
+    }
+}
+
+/// Feeds one SDK response stream to the socket layer a chunk at a time (`HTTPApp.convert`),
+/// reporting its end once and the ids of the events the socket layer has taken.
+///
+/// An event's id is reported when the socket layer comes back for the next chunk, which it
+/// does after writing the event; if it comes back cancelled (the write failed, the client
+/// left), the id is dropped and a resumed `GET` sends the event again. A priming event (no
+/// data) is reported when taken: nothing is lost if it never arrives, and the first `GET` has
+/// no other id to resume from.
+actor SSEForwarder {
+    /// nil once finished. Read through a fresh iterator per chunk: an actor cannot keep a
+    /// (non-`Sendable`) iterator across calls on macOS 13, and an `AsyncThrowingStream`'s
+    /// iterators share its buffer, which ends when the stream itself is released.
+    private var events: AsyncThrowingStream<Data, any Error>?
+    private let ended: (@Sendable (_ cancelled: Bool) async -> Void)?
+    private let eventID: (@Sendable (String) async -> Void)?
+    private let reported = Locked(false)
+    /// The id of the event handed out last, until the socket layer asks for another.
+    private var pendingID: String?
+
+    init(_ events: AsyncThrowingStream<Data, any Error>, ended: (@Sendable (_ cancelled: Bool) async -> Void)?,
+         eventID: (@Sendable (String) async -> Void)?) {
+        self.events = events
+        self.ended = ended
+        self.eventID = eventID
+    }
+
+    /// True for the first caller only.
+    private nonisolated func claim() -> Bool {
+        reported.withLock { done in
+            defer { done = true }
+            return !done
+        }
+    }
+
+    /// The next chunk, nil at the end. The SDK yields one formatted event per chunk.
+    func next() async -> String? {
+        guard !Task.isCancelled, let events else { return nil }
+        if let id = pendingID {
+            pendingID = nil
+            await eventID?(id)
+        }
+        let chunk: Data?
+        do {
+            var iterator = events.makeAsyncIterator()
+            chunk = try await iterator.next()
+        } catch {
+            // The transport ended the stream with an error: the client sees it close.
+            chunk = nil
+        }
+        // Cancelled while waiting: the reader is gone, and `cancelled()` has reported it.
+        if Task.isCancelled { return nil }
+        guard let chunk else {
+            self.events = nil
+            if claim() { await ended?(false) }
+            return nil
+        }
+        let text = String(decoding: chunk, as: UTF8.self)
+        if let eventID, let id = SSE.eventIDs(text).last {
+            if SSE.dataPayloads(text).isEmpty { await eventID(id) } else { pendingID = id }
+        }
+        return text
+    }
+
+    /// The socket layer stopped reading (the client disconnected, the server is stopping).
+    nonisolated func cancelled() {
+        if claim() {
+            let ended = ended
+            Task { await ended?(true) }
+        }
+    }
+
+    /// A stream dropped without being read to the end or cancelled counts as cancelled.
+    deinit {
+        if claim() {
+            let ended = ended
+            Task { await ended?(true) }
+        }
     }
 }
