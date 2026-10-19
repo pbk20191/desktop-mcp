@@ -1,12 +1,11 @@
 using System.Globalization;
-using System.Numerics;
 using System.Text.RegularExpressions;
 
 namespace DesktopMcp.Core.Text;
 
 /// <summary>
 /// tabulate 0.10's "simple" format with headers (spec §6: a deterministic implementation). A column whose non-empty
-/// cells all parse as integers is an int column (cells re-printed as integers, right-aligned); one whose cells all
+/// cells all parse as integers is an int column (cells kept as written, right-aligned); one whose cells all
 /// parse as numbers is a float column (cells printed with Python's "g" format, aligned on the decimal point);
 /// anything else is text (left-aligned). Each column is at least two characters wider than its header, columns are
 /// separated by two spaces, widths count code points, and every line is right-stripped.
@@ -50,19 +49,18 @@ public static partial class TableFormatter
     private static bool IsInt(string s) => IntPattern().IsMatch(s);
 
     private static bool IsNumber(string s) =>
-        IsInt(s) || s.ToLowerInvariant() is "inf" or "+inf" or "-inf" or "infinity" or "+infinity" or "-infinity" or "nan" or "+nan" or "-nan"
+        IsInt(s) || s.ToLowerInvariant() is "inf" or "-inf" or "nan"
         || (FloatPattern().IsMatch(s) && double.TryParse(s.Replace("_", ""), NumberStyles.Float, CultureInfo.InvariantCulture, out _));
 
     private static string Format(string cell, Kind kind)
     {
         if (cell.Length == 0) return cell;
-        if (kind == Kind.Int) return BigInteger.Parse(cell.Replace("_", ""), NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture).ToString(CultureInfo.InvariantCulture);
-        var lower = cell.ToLowerInvariant().TrimStart('+');
-        var value = lower switch
+        if (kind == Kind.Int) return cell;   // tabulate's int format is a no-op on strings: "007" stays "007"
+        var value = cell.ToLowerInvariant() switch
         {
-            "inf" or "infinity" => double.PositiveInfinity,
-            "-inf" or "-infinity" => double.NegativeInfinity,
-            "nan" or "-nan" => double.NaN,
+            "inf" => double.PositiveInfinity,
+            "-inf" => double.NegativeInfinity,
+            "nan" => double.NaN,
             _ => double.Parse(cell.Replace("_", ""), NumberStyles.Float, CultureInfo.InvariantCulture),
         };
         return PyText.FormatG(value);

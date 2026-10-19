@@ -26,10 +26,22 @@ public class TableFormatterTests
     }
 
     [Fact]
-    public void IntegerCellsAreNormalisedAndCellsTrimmed()
+    public void IntegerCellsKeepTheirTextAndCellsAreTrimmed()
     {
         var table = TableFormatter.Simple(["n", "s"], [["007", " left "]]);
-        Assert.Equal("  n  s\n---  ----\n  7  left", table);
+        Assert.Equal("  n  s\n---  ----\n007  left", table);
+    }
+
+    [Fact]
+    public void SignedAndUnderscoredIntegersKeepTheirText()
+    {
+        Assert.Equal("  n\n---\n +5\n1_0", TableFormatter.Simple(["n"], [["+5"], ["1_0"]]));
+    }
+
+    [Fact]
+    public void OnlyInfAndNanAreSpecialNumbers()
+    {
+        Assert.Equal("x\n----\n+inf\n1", TableFormatter.Simple(["x"], [["+inf"], ["1"]]));
     }
 
     [Fact]
