@@ -18,6 +18,7 @@ public static class ToolRegistry
         "Wait" => new WaitTool(protocolTool),
         "PowerShell" => new PowerShellTool(protocolTool, services.PowerShell),
         "FileSystem" => new FileSystemTool(protocolTool, services.FileSystem),
+        "Registry" => new RegistryTool(protocolTool, services.Registry),
         _ => new PendingTool(protocolTool),
     };
 }

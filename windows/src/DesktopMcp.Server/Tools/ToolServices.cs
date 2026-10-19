@@ -1,5 +1,6 @@
 using DesktopMcp.Core.FileSystem;
 using DesktopMcp.Core.PowerShell;
+using DesktopMcp.Core.WindowsRegistry;
 
 namespace DesktopMcp.Server.Tools;
 
@@ -11,10 +12,12 @@ public sealed record ToolServices
 {
     public required PowerShellRunner PowerShell { get; init; }
     public required FileSystemService FileSystem { get; init; }
+    public required RegistryService Registry { get; init; }
 
     public static ToolServices CreateDefault() => new()
     {
         PowerShell = new PowerShellRunner(),
         FileSystem = new FileSystemService(),
+        Registry = new RegistryService(),
     };
 }
