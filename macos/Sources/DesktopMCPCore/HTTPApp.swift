@@ -90,13 +90,21 @@ public struct HTTPResponse: Sendable {
 }
 
 /// The HTTP side of the server, independent of the socket layer: CORS, IP allowlist, bearer /
-/// OAuth authentication, OAuth endpoints, and the stateless streamable-HTTP MCP endpoint.
+/// OAuth authentication, OAuth endpoints, and the streamable-HTTP MCP endpoint (stateless by
+/// default, with opt-in sessions for clients that send `initialize` and accept SSE).
 /// Middleware runs in the original's order: OPTIONS, CORS, allowlist, auth, routes.
 public final class HTTPApp: Sendable {
     public struct Settings: Sendable {
         public var authKey: String?
         public var ipAllowlist: [IPNetwork]?
         public var oauth: OAuthService?
+        /// Seconds a session may go without a request before it is ended; 0 disables eviction.
+        public var sessionIdleTimeout: TimeInterval = 1800
+        /// Bytes a session's server may send before the session is ended (between requests):
+        /// the SDK's stateful transport keeps every message it sent until the session ends.
+        public var sessionByteBudget: Int = 64 * 1024 * 1024
+        /// Live sessions at most; one more evicts the least recently used idle one.
+        public var maxSessions: Int = 64
 
         public init(authKey: String? = nil, ipAllowlist: [IPNetwork]? = nil, oauth: OAuthService? = nil) {
             self.authKey = authKey
@@ -111,10 +119,28 @@ public final class HTTPApp: Sendable {
 
     let registry: ToolRegistry
     let settings: Settings
+    let sessions: SessionStore
 
     public init(registry: ToolRegistry, settings: Settings) {
         self.registry = registry
         self.settings = settings
+        self.sessions = SessionStore(registry: registry, settings: settings)
+    }
+
+    /// Ends every session (cancelling their tool calls) and stops the sweeper. Call once
+    /// after `NIOHTTPServer.serve` returns; tests call it in `defer`. Idempotent.
+    public func shutdown() async {
+        await sessions.shutdown()
+    }
+
+    /// Test hook: ends every session as eviction would.
+    func evictAllSessions() async {
+        await sessions.endAll()
+    }
+
+    /// Test hook: the server of a live session, to send it server-initiated messages.
+    func sessionServer(id: String) async -> MCP.Server? {
+        await sessions.server(for: id)
     }
 
     public func handle(_ request: HTTPRequest) async -> HTTPResponse {
@@ -192,10 +218,18 @@ public final class HTTPApp: Sendable {
         }
         switch request.path {
         case "/mcp", "/mcp/":
+            if let sessionID = request.header(HTTPHeaderName.sessionID) {
+                return await mcpSession(request, sessionID: sessionID)
+            }
             guard request.method == "POST" else {
-                // Stateless: no standalone server-to-client stream, no sessions to delete.
+                // No session: no standalone server-to-client stream, nothing to delete. SDK
+                // clients read 405 on GET as "no stream" and stop asking.
                 return Self.convert(.error(statusCode: 405, .invalidRequest("Method Not Allowed"),
                                            extraHeaders: ["Allow": "POST"]))
+            }
+            // Sessions are opt-in: only an `initialize` that accepts SSE gets one.
+            if Self.isInitialize(request.body), request.header("accept")?.contains("text/event-stream") == true {
+                return await mcpSessionCreate(request)
             }
             return await mcpPost(request)
         default:
@@ -212,7 +246,8 @@ public final class HTTPApp: Sendable {
             // No OriginValidator: `handle` has already checked the origin.
             AcceptHeaderValidator(mode: .jsonOnly),
             ContentTypeValidator(),
-            ProtocolVersionValidator(),
+            // No ProtocolVersionValidator: SDK 0.12.1 rejects any version newer than it knows
+            // (2026-07-28 clients included); `initialize` negotiates the version instead.
         ]))
         let started: StartedServer
         do {
@@ -231,6 +266,88 @@ public final class HTTPApp: Sendable {
         }
         await started.shutdown()
         return Self.convert(response)
+    }
+
+    // MARK: Streamable HTTP transport (sessions)
+
+    /// A single `initialize` request; only the method is decoded.
+    static func isInitialize(_ body: Data) -> Bool {
+        struct Probe: Decodable { var method: String? }
+        return (try? JSONDecoder().decode(Probe.self, from: body))?.method == "initialize"
+    }
+
+    /// The request as a session's transport sees it: without `Last-Event-ID` (resumability is
+    /// not offered, and the SDK would take the client's first `GET` for a resume of a finished
+    /// stream instead of the standalone one), and with a fresh `RequestHandle` naming the tool
+    /// call it may start, replacing any value the client sent.
+    static func sessionRequest(_ request: HTTPRequest, handle: String) -> MCP.HTTPRequest {
+        var headers = request.headers
+        headers["last-event-id"] = nil
+        headers[RequestHandle.header] = handle
+        return MCP.HTTPRequest(method: request.method, headers: headers,
+                               body: request.body.isEmpty ? nil : request.body, path: request.path)
+    }
+
+    private func mcpSessionCreate(_ request: HTTPRequest) async -> HTTPResponse {
+        let handle = UUID().uuidString
+        let response = await sessions.create(initialize: Self.sessionRequest(request, handle: handle))
+        guard SessionStore.isStream(response),
+              let id = response.headers.first(where: { $0.key.lowercased() == HTTPHeaderName.sessionID.lowercased() })?.value
+        else { return Self.convert(response) }
+        return Self.convert(response, ended: requestEnded(sessionID: id, handle: handle))
+    }
+
+    private func mcpSession(_ request: HTTPRequest, sessionID: String) async -> HTTPResponse {
+        let handle = UUID().uuidString
+        guard let response = await sessions.handle(Self.sessionRequest(request, handle: handle), sessionID: sessionID) else {
+            // What the SDK answers for a session it has ended; clients re-initialise on 404.
+            return Self.convert(.error(statusCode: 404, .invalidRequest("Not Found: Session not found or expired")))
+        }
+        // Only POST streams are in flight; the standalone GET stream is not a request.
+        return Self.convert(response, ended: request.method == "POST" ? requestEnded(sessionID: sessionID, handle: handle) : nil)
+    }
+
+    /// Reports the end of a `POST` response stream to its session. `cancelled`: the client
+    /// went away first, so the tool call the request started is cancelled.
+    private func requestEnded(sessionID: String, handle: String) -> @Sendable (_ cancelled: Bool) async -> Void {
+        let sessions = sessions
+        return { cancelled in
+            await sessions.requestEnded(sessionID: sessionID, handle: handle, cancelled: cancelled)
+        }
+    }
+
+    /// A session response for the socket layer. A stream is forwarded chunk by chunk. When it
+    /// finishes, `ended(false)` runs before the client sees the end, so a session ended for its
+    /// byte budget is gone by the client's next request. When the socket layer stops reading
+    /// (the client disconnected, the server is stopping), `ended(true)`. One of the two, once.
+    static func convert(_ response: MCP.HTTPResponse, ended: (@Sendable (_ cancelled: Bool) async -> Void)?) -> HTTPResponse {
+        guard case .stream(let events, _) = response else { return convert(response) }
+        let (stream, continuation) = AsyncStream<String>.makeStream()
+        let reported = Locked(false)
+        /// True for the first caller only.
+        @Sendable func claim() -> Bool {
+            reported.withLock { done in
+                defer { done = true }
+                return !done
+            }
+        }
+        let pump = Task {
+            do {
+                for try await chunk in events { continuation.yield(String(decoding: chunk, as: UTF8.self)) }
+            } catch {
+                // The transport ended the stream with an error: the client sees it close.
+            }
+            if claim() { await ended?(false) }
+            continuation.finish()
+        }
+        continuation.onTermination = { termination in
+            // Claimed before the pump is cancelled: a pump cut short must not report a finish.
+            if case .cancelled = termination, claim() { Task { await ended?(true) } }
+            pump.cancel()
+        }
+        return HTTPResponse(status: response.statusCode,
+                            headers: response.headers.map { ($0.key.lowercased(), $0.value) },
+                            body: .stream(stream))
     }
 
     static func convert(_ response: MCP.HTTPResponse) -> HTTPResponse {

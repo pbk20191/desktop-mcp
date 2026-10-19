@@ -1,11 +1,13 @@
 import CryptoKit
+import enum MCP.Value
 import XCTest
 @testable import DesktopMCPCore
 
 final class HTTPAppTests: XCTestCase {
     func app(authKey: String? = nil, allowlist: [String]? = nil, oauth: OAuthService? = nil,
-             registry: ToolRegistry? = nil) async throws -> HTTPApp {
-        let settings = HTTPApp.Settings(authKey: authKey, ipAllowlist: try allowlist.map(IPNetwork.parseAllowlist), oauth: oauth)
+             registry: ToolRegistry? = nil, configure: (inout HTTPApp.Settings) -> Void = { _ in }) async throws -> HTTPApp {
+        var settings = HTTPApp.Settings(authKey: authKey, ipAllowlist: try allowlist.map(IPNetwork.parseAllowlist), oauth: oauth)
+        configure(&settings)
         let registry = if let registry { registry } else { await DesktopMCP.makeRegistry() }
         return HTTPApp(registry: registry, settings: settings)
     }
@@ -38,6 +40,7 @@ final class HTTPAppTests: XCTestCase {
                                                      headers: [("Content-Type", "text/plain")] + Self.json,
                                                      body: Data(Self.ping.utf8)))
         XCTAssertEqual(wrongType.status, 415)
+        // Without a session id there is no stream to open and nothing to delete.
         let get = await app.handle(HTTPRequest(method: "GET", target: "/mcp", headers: []))
         XCTAssertEqual(get.status, 405)
         XCTAssertEqual(get.header("allow"), "POST")
@@ -110,6 +113,244 @@ final class HTTPAppTests: XCTestCase {
         // /health skips auth (and the allowlist); no route answers it yet, so it is a 404, not a 401.
         let health = await app.handle(HTTPRequest(method: "GET", target: "/health", headers: []))
         XCTAssertNotEqual(health.status, 401)
+    }
+
+    // MARK: Sessions
+
+    static let sse = "application/json, text/event-stream"
+    static let initializeBody = #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}"#
+
+    func sendInitialize(_ app: HTTPApp, accept: String = sse) async -> HTTPResponse {
+        await app.handle(post("/mcp", Self.initializeBody, headers: [("Accept", accept)]))
+    }
+
+    /// A session created by `initialize`, its stream read to the end.
+    func session(_ app: HTTPApp) async throws -> String {
+        let response = await sendInitialize(app)
+        XCTAssertEqual(response.status, 200)
+        let id = try XCTUnwrap(response.header("mcp-session-id"))
+        _ = try await sseData(response)
+        return id
+    }
+
+    func inSession(_ id: String, _ body: String, method: String = "POST", extra: [(String, String)] = []) -> HTTPRequest {
+        HTTPRequest(method: method, target: "/mcp",
+                    headers: [("Content-Type", "application/json"), ("Accept", Self.sse), ("Mcp-Session-Id", id)] + extra,
+                    body: Data(body.utf8), remoteAddress: "127.0.0.1")
+    }
+
+    static func call(_ id: Int, _ tool: String, _ arguments: String) -> String {
+        #"{"jsonrpc":"2.0","id":\#(id),"method":"tools/call","params":{"name":"\#(tool)","arguments":\#(arguments)}}"#
+    }
+
+    func testInitializeWithSSEAcceptCreatesASession() async throws {
+        let app = try await app()
+        defer { Task { await app.shutdown() } }
+        let response = await sendInitialize(app)
+        XCTAssertEqual(response.status, 200)
+        XCTAssertEqual(response.header("content-type"), "text/event-stream")
+        XCTAssertNotNil(response.header("mcp-session-id"))
+        let payloads = try await sseData(response)
+        XCTAssertEqual(payloads.count, 1)
+        XCTAssertEqual(payloads.first?["result"]?["serverInfo"]?["name"], "desktop-mcp")
+        let count = await app.sessions.count
+        XCTAssertEqual(count, 1)
+    }
+
+    func testInitializeWithJSONAcceptStaysStateless() async throws {
+        let app = try await app()
+        defer { Task { await app.shutdown() } }
+        let response = await sendInitialize(app, accept: "application/json")
+        XCTAssertEqual(response.status, 200)
+        XCTAssertEqual(response.header("content-type"), "application/json")
+        XCTAssertNil(response.header("mcp-session-id"))
+        let count = await app.sessions.count
+        XCTAssertEqual(count, 0)
+    }
+
+    func testRequestsWithoutASessionStayStateless() async throws {
+        let app = try await app()
+        defer { Task { await app.shutdown() } }
+        let response = await app.handle(post("/mcp", Self.ping, headers: [("Accept", Self.sse)]))
+        XCTAssertEqual(response.status, 200)
+        XCTAssertEqual(response.header("content-type"), "application/json")
+        XCTAssertNil(response.header("mcp-session-id"))
+        let count = await app.sessions.count
+        XCTAssertEqual(count, 0)
+    }
+
+    func testUnknownSessionIdIs404() async throws {
+        let app = try await app()
+        defer { Task { await app.shutdown() } }
+        let response = await app.handle(inSession("nope", Self.ping))
+        XCTAssertEqual(response.status, 404)
+        let message = try JSON.parse(response.bodyText!)["error"]?["message"]?.stringValue
+        XCTAssertTrue(message?.contains("Session not found") == true, response.bodyText!)
+    }
+
+    func testGetAndDeleteWithoutASessionAre405() async throws {
+        let app = try await app()
+        defer { Task { await app.shutdown() } }
+        for method in ["GET", "DELETE"] {
+            let response = await app.handle(HTTPRequest(method: method, target: "/mcp", headers: [("Accept", Self.sse)]))
+            XCTAssertEqual(response.status, 405, method)
+            XCTAssertEqual(response.header("allow"), "POST", method)
+        }
+    }
+
+    func testSessionRoundTripAndDelete() async throws {
+        let observer = RecordingObserver()
+        let registry = await DesktopMCP.makeRegistry()
+        await registry.setObserver(observer)
+        let app = try await app(registry: registry)
+        defer { Task { await app.shutdown() } }
+        let id = try await session(app)
+
+        let waited = try await sseData(await app.handle(inSession(id, Self.call(2, "Wait", #"{"duration":0}"#))))
+        XCTAssertEqual(waited.count, 1)
+        XCTAssertEqual(waited.first?["result"]?["isError"], false)
+        let events = await observer.events
+        XCTAssertEqual(events, ["ok Wait t"])
+
+        let deleted = await app.handle(inSession(id, "", method: "DELETE"))
+        XCTAssertEqual(deleted.status, 200)
+        let after = await app.handle(inSession(id, Self.ping))
+        XCTAssertEqual(after.status, 404)
+        let count = await app.sessions.count
+        XCTAssertEqual(count, 0)
+    }
+
+    func testReinitializeOnALiveSessionIs400AndKeepsIt() async throws {
+        let app = try await app()
+        defer { Task { await app.shutdown() } }
+        let id = try await session(app)
+        let again = await app.handle(inSession(id, Self.initializeBody))
+        XCTAssertEqual(again.status, 400)
+        let ping = await app.handle(inSession(id, Self.ping))
+        XCTAssertEqual(ping.status, 200)
+        _ = try await sseData(ping)
+    }
+
+    func testBatchesAreRejectedInSessions() async throws {
+        let app = try await app()
+        defer { Task { await app.shutdown() } }
+        let id = try await session(app)
+        let batch = await app.handle(inSession(id, "[\(Self.ping),{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}]"))
+        XCTAssertEqual(batch.status, 400)
+    }
+
+    func testProtocolVersionHeaderIsNotValidated() async throws {
+        let app = try await app()
+        defer { Task { await app.shutdown() } }
+        let future = ("MCP-Protocol-Version", "2026-07-28")
+        let stateless = await app.handle(post("/mcp", Self.ping, headers: Self.json + [future]))
+        XCTAssertEqual(stateless.status, 200, stateless.bodyText ?? "")
+        let id = try await session(app)
+        let inSession = await app.handle(inSession(id, Self.ping, extra: [future]))
+        XCTAssertEqual(inSession.status, 200, inSession.bodyText ?? "")
+        _ = try await sseData(inSession)
+    }
+
+    func testLastEventIDIsStripped() async throws {
+        let app = try await app()
+        defer { Task { await app.shutdown() } }
+        let id = try await session(app)
+        // A resume would fail (400) or replay a finished POST stream; this must be the standalone stream.
+        let get = await app.handle(inSession(id, "", method: "GET", extra: [("Last-Event-ID", "1")]))
+        XCTAssertEqual(get.status, 200, get.bodyText ?? "")
+        XCTAssertEqual(get.header("content-type"), "text/event-stream")
+        let second = await app.handle(inSession(id, "", method: "GET"))
+        XCTAssertEqual(second.status, 409)
+    }
+
+    func testIdleSessionsAreEvicted() async throws {
+        let app = try await app { $0.sessionIdleTimeout = 0.2 }
+        defer { Task { await app.shutdown() } }
+        let id = try await session(app)
+        try await Task.sleep(for: .milliseconds(500))
+        await app.sessions.sweep(now: Date())
+        let ping = await app.handle(inSession(id, Self.ping))
+        XCTAssertEqual(ping.status, 404)
+    }
+
+    func testByteBudgetEndsTheSession() async throws {
+        let app = try await app { $0.sessionByteBudget = 200 }
+        defer { Task { await app.shutdown() } }
+        // The initialize reply alone (instructions included) passes 200 bytes: the session
+        // serves that reply to the end, then ends.
+        let id = try await session(app)
+        let ping = await app.handle(inSession(id, Self.ping))
+        XCTAssertEqual(ping.status, 404)
+    }
+
+    func testSessionCapEvictsIdleLRUAndRefusesWhenBusy() async throws {
+        let app = try await app { $0.maxSessions = 2 }
+        defer { Task { await app.shutdown() } }
+        let first = try await session(app)
+        let second = try await session(app)
+        let third = try await session(app)
+        let gone = await app.handle(inSession(first, Self.ping))
+        XCTAssertEqual(gone.status, 404)
+
+        // Both remaining sessions are busy: none may be evicted for a new one.
+        // A session answers with a stream at once; the call runs until the stream ends.
+        var waits: [HTTPResponse] = []
+        for id in [second, third] {
+            waits.append(await app.handle(inSession(id, Self.call(2, "Wait", #"{"duration":30}"#))))
+        }
+        XCTAssertEqual(waits.map(\.status), [200, 200])
+        let refused = await sendInitialize(app)
+        XCTAssertEqual(refused.status, 503)
+        let count = await app.sessions.count
+        XCTAssertEqual(count, 2)
+    }
+
+    func testDisconnectInsideASessionCancelsOnlyThatCall() async throws {
+        let observer = RecordingObserver()
+        let registry = await DesktopMCP.makeRegistry()
+        await registry.setObserver(observer)
+        let app = try await app(registry: registry)
+        defer { Task { await app.shutdown() } }
+        let id = try await session(app)
+        let shell = #"{"command":"sleep 2; echo late"}"#
+        let dropped = await app.handle(inSession(id, Self.call(2, "Shell", shell)))
+        let kept = await app.handle(inSession(id, Self.call(3, "Shell", shell)))
+        // The socket layer consumes the body in a task and cancels it when the peer closes.
+        guard case .stream(let droppedBody) = dropped.body else { return XCTFail("not a stream") }
+        let reader = Task { for await _ in droppedBody {} }
+        let keptPayloads = Task { try await sseData(kept) }
+        try await Task.sleep(for: .milliseconds(200))
+        let cancelled = Date()
+        reader.cancel()
+
+        let deadline = Date().addingTimeInterval(1)
+        while await observer.events.isEmpty, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let events = await observer.events
+        XCTAssertEqual(events, ["ok Shell t"])
+        XCTAssertLessThan(Date().timeIntervalSince(cancelled), 1.5)
+
+        let payloads = try await keptPayloads.value
+        let text = payloads.first?["result"]?["content"]?.arrayValue?.first?["text"]?.stringValue
+        XCTAssertTrue(text?.contains("late") == true, "\(payloads)")
+        XCTAssertGreaterThan(Date().timeIntervalSince(cancelled), 1.5)
+    }
+
+    func testCancelledNotificationInsideASession() async throws {
+        let app = try await app()
+        defer { Task { await app.shutdown() } }
+        let id = try await session(app)
+        let wait = await app.handle(inSession(id, Self.call(7, "Wait", #"{"duration":30}"#)))
+        let payloads = Task { try await sseData(wait) }
+        try await Task.sleep(for: .milliseconds(200))
+        let sent = Date()
+        let cancel = await app.handle(inSession(id, #"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}}"#))
+        XCTAssertEqual(cancel.status, 202)
+        let result = try await payloads.value.first?["result"]
+        XCTAssertLessThan(Date().timeIntervalSince(sent), 2)
+        XCTAssertEqual(result?["isError"], true)
+        XCTAssertEqual(result?["content"]?.arrayValue?.first?["text"], "Cancelled.")
     }
 
     // MARK: Middleware
@@ -259,6 +500,17 @@ final class HTTPAppTests: XCTestCase {
         let v11 = await oauth.validate(accessToken)
         XCTAssertFalse(v11)
     }
+}
+
+/// The non-empty `data` payloads of a `.stream` body, read until the stream ends.
+func sseData(_ response: HTTPResponse) async throws -> [Value] {
+    guard case .stream(let stream) = response.body else {
+        XCTFail("not a stream: \(response.status) \(response.bodyText ?? "")")
+        return []
+    }
+    var text = ""
+    for await chunk in stream { text += chunk }
+    return try SSE.dataPayloads(text).map { try JSON.parse($0) }
 }
 
 final class Clock: @unchecked Sendable {
