@@ -48,17 +48,36 @@ public sealed record IpNetwork(IPAddress Network, int PrefixLength)
         {
             var max = baseAddress.AddressFamily == AddressFamily.InterNetwork ? 32 : 128;
             var prefixText = value[(slash + 1)..];
-            if (prefixText.Length is > 0 and <= 3 && prefixText.All(char.IsAsciiDigit))
+            if (TryParsePrefix(prefixText, baseAddress.AddressFamily, max, out var prefix))
             {
-                var prefix = int.Parse(prefixText, CultureInfo.InvariantCulture);
-                if (prefix <= max)
-                {
-                    network = new IpNetwork(Mask(baseAddress, prefix), prefix);
-                    return true;
-                }
+                network = new IpNetwork(Mask(baseAddress, prefix), prefix);
+                return true;
             }
         }
         error = $"{PyText.Repr(value)} does not appear to be an IPv4 or IPv6 network";
+        return false;
+    }
+
+    /// <summary>An integer prefix, or for IPv4 a dotted netmask (ones then zeros) or hostmask (zeros then ones),
+    /// netmask first as Python's ip_network does.</summary>
+    private static bool TryParsePrefix(string text, AddressFamily family, int max, out int prefix)
+    {
+        prefix = 0;
+        if (text.Length is > 0 and <= 3 && text.All(char.IsAsciiDigit))
+        {
+            prefix = int.Parse(text, CultureInfo.InvariantCulture);
+            return prefix <= max;
+        }
+        if (family != AddressFamily.InterNetwork || !IpAddressText.TryParse(text, out var mask) || mask.AddressFamily != family) return false;
+        var bytes = mask.GetAddressBytes();
+        var bits = (uint)bytes[0] << 24 | (uint)bytes[1] << 16 | (uint)bytes[2] << 8 | bytes[3];
+        var ones = System.Numerics.BitOperations.LeadingZeroCount(~bits);
+        if (ones == 32 || (bits << ones) == 0) { prefix = ones; return true; }
+        if (((bits + 1) & bits) == 0)
+        {
+            prefix = System.Numerics.BitOperations.LeadingZeroCount(bits);
+            return true;
+        }
         return false;
     }
 

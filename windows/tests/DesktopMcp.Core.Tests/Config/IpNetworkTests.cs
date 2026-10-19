@@ -26,6 +26,24 @@ public class IpNetworkTests
     }
 
     [Theory]
+    [InlineData("10.1.2.3/255.255.0.0", "10.1.0.0/16")]
+    [InlineData("10.1.2.3/0.0.255.255", "10.1.0.0/16")]
+    [InlineData("10.1.2.3/0.0.0.0", "0.0.0.0/0")]
+    [InlineData("10.1.2.3/255.255.255.255", "10.1.2.3/32")]
+    [InlineData("10.1.2.3/0", "0.0.0.0/0")]
+    [InlineData("10.1.2.3/32", "10.1.2.3/32")]
+    public void AcceptsIpv4NetmaskAndHostmaskSuffixes(string entry, string expected) =>
+        Assert.Equal(expected, Assert.Single(IpNetwork.ParseAllowlist([entry])).ToString());
+
+    [Theory]
+    [InlineData("10.0.0.0/255.0.255.0")]
+    [InlineData("10.0.0.0/0.255.0.255")]
+    [InlineData("::1/255.255.0.0")]
+    public void RejectsNonContiguousMasksAndIpv6DottedMasks(string entry) =>
+        Assert.Equal($"Invalid IP allowlist entries: '{entry}': '{entry}' does not appear to be an IPv4 or IPv6 network",
+            Assert.Throws<FormatException>(() => IpNetwork.ParseAllowlist([entry])).Message);
+
+    [Theory]
     [InlineData("localhost", true)]
     [InlineData("LOCALHOST", true)]
     [InlineData("127.0.0.1", true)]
