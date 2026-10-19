@@ -6,7 +6,10 @@
     <WindowsAppSdkIncludeVersionInfo>true</WindowsAppSdkIncludeVersionInfo>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Microsoft.WindowsAppSDK" />
+    <!-- Version constants (AppRuntime) and the framework package identity. -->
+    <PackageReference Include="Microsoft.WindowsAppSDK.Runtime" />
+    <!-- Microsoft.UI.Dispatching, Microsoft.UI.Windowing, Microsoft.UI.Win32Interop. -->
+    <PackageReference Include="Microsoft.WindowsAppSDK.InteractiveExperiences" />
     <PackageReference Include="Microsoft.Graphics.Win2D" />
   </ItemGroup>
   <ItemGroup>

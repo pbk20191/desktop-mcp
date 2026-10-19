@@ -1,10 +1,8 @@
-using System.Runtime.InteropServices;
-using DesktopMcp.Desktop.Interop;
-using Windows.System;
+using Microsoft.UI.Dispatching;
 
 namespace DesktopMcp.Desktop.Dispatching;
 
-/// <summary><see cref="IDesktopDispatcher"/> on a system-owned DispatcherQueue thread.</summary>
+/// <summary><see cref="IDesktopDispatcher"/> on a dedicated Windows App SDK (Microsoft.UI.Dispatching) DispatcherQueue thread.</summary>
 public sealed class DispatcherQueueThread : IDesktopDispatcher
 {
     private readonly DispatcherQueueController _controller;
@@ -18,24 +16,14 @@ public sealed class DispatcherQueueThread : IDesktopDispatcher
         ManagedThreadId = threadId;
     }
 
+    /// <summary>
+    /// Starts a dedicated Windows App SDK DispatcherQueue thread. Initialises the Windows App SDK runtime first
+    /// (throws <see cref="InvalidOperationException"/> with an install hint when it is missing).
+    /// </summary>
     public static DispatcherQueueThread Start()
     {
-        var options = new Native.DispatcherQueueOptions
-        {
-            Size = Marshal.SizeOf<Native.DispatcherQueueOptions>(),
-            ThreadType = 1,     // DQTYPE_THREAD_DEDICATED
-            ApartmentType = 2,  // DQTAT_COM_STA (a dedicated thread rejects DQTAT_COM_NONE with E_INVALIDARG)
-        };
-        Marshal.ThrowExceptionForHR(Native.CreateDispatcherQueueController(options, out var abi));
-        DispatcherQueueController controller;
-        try
-        {
-            controller = DispatcherQueueController.FromAbi(abi);
-        }
-        finally
-        {
-            Marshal.Release(abi);
-        }
+        AppRuntime.EnsureInitialized();
+        var controller = DispatcherQueueController.CreateOnDedicatedThread();
 
         var threadId = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
         if (!controller.DispatcherQueue.TryEnqueue(() => threadId.SetResult(Environment.CurrentManagedThreadId)))

@@ -2,10 +2,11 @@ using System.Diagnostics;
 using DesktopMcp.Desktop.Dispatching;
 using DesktopMcp.Probe;
 
-// AOT probes for P0. Usage: desktop-mcp-probe dispatcher | imaging [out.png] | capture [out.png]
+// AOT probes. Usage: desktop-mcp-probe bootstrap | dispatcher | imaging [out.png] | capture [out.png]
 var command = args.Length > 0 ? args[0] : "dispatcher";
 var ok = command switch
 {
+    "bootstrap" => BootstrapProbe.Run(),
     "dispatcher" => await ProbeDispatcherAsync(),
     "imaging" => await ProbeImagingAsync(args.Length > 1 ? args[1] : "probe-imaging.png"),
     "capture" => await ProbeCaptureAsync(args.Length > 1 ? args[1] : "probe-capture.png"),
@@ -18,10 +19,11 @@ static async Task<bool> ProbeDispatcherAsync()
     var clock = Stopwatch.StartNew();
     await using var dispatcher = DispatcherQueueThread.Start();
     var onThread = await dispatcher.InvokeAsync(() => dispatcher.HasThreadAccess);
+    var apartment = await dispatcher.InvokeAsync(BootstrapProbe.DescribeApartment);
     var ticks = 0;
     using (await dispatcher.StartTimerAsync(TimeSpan.FromMilliseconds(20), () => ticks++))
         await Task.Delay(200);
-    Console.WriteLine($"dispatcher: started+invoked in {clock.ElapsedMilliseconds} ms, onThread={onThread}, ticks={ticks}");
+    Console.WriteLine($"dispatcher: started+invoked in {clock.ElapsedMilliseconds} ms, onThread={onThread}, ticks={ticks}, apartment={apartment}");
     var hookOk = await HookProbe.RunAsync(dispatcher);
     return onThread && ticks >= 3 && hookOk;
 }
@@ -56,7 +58,7 @@ static async Task<bool> ProbeCaptureAsync(string path)
     var captureMs = clock.ElapsedMilliseconds;
     var png = await new DesktopMcp.Desktop.Imaging.Win2DRenderer().RenderPngAsync(image, 1.0, []);
     File.WriteAllBytes(path, png);
-    Console.WriteLine($"capture: item={DesktopMcp.Desktop.Capture.GraphicsCaptureService.LastItemCreationPath}, borderSuppressed={DesktopMcp.Desktop.Capture.GraphicsCaptureService.LastBorderSuppressed}");
+    Console.WriteLine($"capture: borderSuppressed={DesktopMcp.Desktop.Capture.GraphicsCaptureService.LastBorderSuppressed}");
     Console.WriteLine($"capture: {image.Width}x{image.Height} in {captureMs} ms, png {png.Length / 1024} KB -> {Path.GetFullPath(path)}");
     return image.Width > 0;
 }

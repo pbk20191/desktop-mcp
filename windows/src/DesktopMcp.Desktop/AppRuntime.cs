@@ -1,18 +1,27 @@
 using System.Runtime.InteropServices;
-using Microsoft.Windows.ApplicationModel.DynamicDependency;
+using DesktopMcp.Desktop.Interop;
+using Framework = Microsoft.WindowsAppSDK.Runtime.Packages.Framework;
 using Release = Microsoft.WindowsAppSDK.Release;
 using RuntimeVersion = Microsoft.WindowsAppSDK.Runtime.Version;
 
 namespace DesktopMcp.Desktop;
 
-/// <summary>Brings the framework-dependent Windows App SDK runtime into this unpackaged process.</summary>
+/// <summary>
+/// Brings the framework-dependent Windows App SDK runtime into this unpackaged process through the OS
+/// Dynamic Dependencies API (kernelbase, Windows 11 22H2+), without the SDK's bootstrap DLL.
+/// </summary>
 public static class AppRuntime
 {
+    private const string DownloadsPage = "https://learn.microsoft.com/windows/apps/windows-app-sdk/downloads";
+
     private static readonly Lock Gate = new();
     private static bool _initialized;
 
+    /// <summary>The full name of the Windows App SDK framework package resolved into this process (null before initialisation).</summary>
+    public static string? PackageFullName { get; private set; }
+
     /// <summary>
-    /// Initialises the Windows App SDK runtime for this unpackaged process (idempotent, thread-safe).
+    /// Adds the Windows App SDK framework package to this process's package graph (idempotent, thread-safe).
     /// Throws <see cref="InvalidOperationException"/> with an install hint when the runtime is missing.
     /// </summary>
     public static void EnsureInitialized()
@@ -21,14 +30,47 @@ public static class AppRuntime
         {
             if (_initialized)
                 return;
-            if (!Bootstrap.TryInitialize(Release.MajorMinor, Release.VersionTag, new PackageVersion(RuntimeVersion.UInt64), Bootstrap.InitializeOptions.None, out var hresult))
-            {
-                throw new InvalidOperationException(
-                    $"The Windows App SDK runtime {RuntimeVersion.DotQuadString} ({Release.Major}.{Release.Minor}) is not installed. " +
-                    $"Install it from https://aka.ms/windowsappsdk/{Release.Major}.{Release.Minor}/latest/windowsappruntimeinstall-{RuntimeInformation.ProcessArchitecture.ToString().ToLowerInvariant()}.exe " +
-                    $"(HRESULT 0x{hresult:X8}).");
-            }
+            PackageFullName = AddFrameworkDependency();
             _initialized = true;
         }
     }
+
+    private static string AddFrameworkDependency()
+    {
+        int hresult;
+        nint dependencyId = 0, fullName = 0;
+        try
+        {
+            hresult = Native.TryCreatePackageDependency(
+                0, Framework.PackageFamilyName, RuntimeVersion.UInt64, CurrentArchitecture(),
+                Native.PackageDependencyLifetimeKindProcess, null, Native.CreatePackageDependencyOptionsNone, out dependencyId);
+            if (hresult >= 0)
+                hresult = Native.AddPackageDependency(dependencyId, Native.PackageDependencyRankDefault, Native.AddPackageDependencyOptionsNone, out _, out fullName);
+            if (hresult >= 0)
+                return Marshal.PtrToStringUni(fullName) ?? Framework.PackageFamilyName;
+        }
+        catch (EntryPointNotFoundException e)
+        {
+            throw new InvalidOperationException(
+                $"The Windows App SDK runtime needs Windows 11 22H2 (build 22621) or later; this Windows has no Dynamic Dependencies API ({e.Message}).", e);
+        }
+        finally
+        {
+            var heap = Native.GetProcessHeap();
+            if (fullName != 0) Native.HeapFree(heap, 0, fullName);
+            if (dependencyId != 0) Native.HeapFree(heap, 0, dependencyId);
+        }
+        throw new InvalidOperationException(
+            $"The Windows App SDK runtime {RuntimeVersion.DotQuadString} or later ({Framework.PackageFamilyName}, {Release.Major}.{Release.Minor}, " +
+            $"{RuntimeInformation.ProcessArchitecture.ToString().ToLowerInvariant()}) is not installed. " +
+            $"Install the Windows App SDK {Release.Major}.{Release.Minor} runtime from {DownloadsPage} (HRESULT 0x{hresult:X8}).");
+    }
+
+    private static Native.PackageDependencyProcessorArchitectures CurrentArchitecture() => RuntimeInformation.ProcessArchitecture switch
+    {
+        Architecture.X64 => Native.PackageDependencyProcessorArchitectures.X64,
+        Architecture.Arm64 => Native.PackageDependencyProcessorArchitectures.Arm64,
+        Architecture.X86 => Native.PackageDependencyProcessorArchitectures.X86,
+        var other => throw new PlatformNotSupportedException($"The Windows App SDK runtime has no {other} build."),
+    };
 }

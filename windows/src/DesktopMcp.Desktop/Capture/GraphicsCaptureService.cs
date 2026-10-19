@@ -1,8 +1,6 @@
-using System.Runtime.InteropServices;
 using DesktopMcp.Desktop.Imaging;
-using DesktopMcp.Desktop.Interop;
 using Microsoft.Graphics.Canvas;
-using Windows.Foundation.Metadata;
+using Microsoft.UI.Windowing;
 using Windows.Graphics.Capture;
 using Windows.Graphics.DirectX;
 
@@ -14,24 +12,16 @@ namespace DesktopMcp.Desktop.Capture;
 /// </summary>
 public sealed class GraphicsCaptureService : IScreenCapture
 {
-    private const string CaptureItemClass = "Windows.Graphics.Capture.GraphicsCaptureItem";
-    private const string CaptureSessionClass = "Windows.Graphics.Capture.GraphicsCaptureSession";
-    private static readonly Guid IidGraphicsCaptureItemInterop = new("3628e81b-3cac-4c60-b7f4-23ce0e0c3356");
-    private static readonly Guid IidGraphicsCaptureItem = new("79c3f95b-31f7-4ec2-a464-632ef5d30760");
     private static readonly TimeSpan FrameTimeout = TimeSpan.FromSeconds(2);
 
     public static bool IsSupported { get; } = GraphicsCaptureSession.IsSupported();
-
-    /// <summary>How the last capture item was created: "DisplayId" or "MonitorInterop" (diagnostics for the P0 probe).</summary>
-    public static string? LastItemCreationPath { get; private set; }
 
     /// <summary>Whether the last capture could turn the yellow capture border off (null before the first capture).</summary>
     public static bool? LastBorderSuppressed { get; private set; }
 
     public async Task<CapturedImage> CapturePrimaryMonitorAsync(CancellationToken cancellationToken)
     {
-        var monitor = Native.MonitorFromPoint(default, Native.MonitorDefaultToPrimary);
-        var item = CreateItemForMonitor(monitor);
+        var item = CreateItemForPrimaryMonitor();
         var device = CanvasDevice.GetSharedDevice();
 
         using var pool = Direct3D11CaptureFramePool.CreateFreeThreaded(device, DirectXPixelFormat.B8G8R8A8UIntNormalized, 1, item.Size);
@@ -78,9 +68,6 @@ public sealed class GraphicsCaptureService : IScreenCapture
 
     private static bool TrySuppressBorder(GraphicsCaptureSession session)
     {
-        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 20348)
-            || !ApiInformation.IsPropertyPresent(CaptureSessionClass, nameof(GraphicsCaptureSession.IsBorderRequired)))
-            return false;
         try
         {
             session.IsBorderRequired = false;
@@ -93,41 +80,10 @@ public sealed class GraphicsCaptureService : IScreenCapture
         }
     }
 
-    private static GraphicsCaptureItem CreateItemForMonitor(nint monitor)
+    private static GraphicsCaptureItem CreateItemForPrimaryMonitor()
     {
-        if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22621)
-            && ApiInformation.IsMethodPresent(CaptureItemClass, nameof(GraphicsCaptureItem.TryCreateFromDisplayId)))
-        {
-            var displayId = Microsoft.UI.Win32Interop.GetDisplayIdFromMonitor(monitor);
-            var item = GraphicsCaptureItem.TryCreateFromDisplayId(new Windows.Graphics.DisplayId { Value = displayId.Value });
-            if (item is not null)
-            {
-                LastItemCreationPath = "DisplayId";
-                return item;
-            }
-        }
-        LastItemCreationPath = "MonitorInterop";
-        return CreateItemThroughInterop(monitor);
-    }
-
-    private static unsafe GraphicsCaptureItem CreateItemThroughInterop(nint monitor)
-    {
-        Marshal.ThrowExceptionForHR(Native.WindowsCreateString(CaptureItemClass, (uint)CaptureItemClass.Length, out var hstring));
-        nint interop = 0, item = 0;
-        try
-        {
-            Marshal.ThrowExceptionForHR(Native.RoGetActivationFactory(hstring, IidGraphicsCaptureItemInterop, out interop));
-            // IGraphicsCaptureItemInterop: IUnknown (3 slots), CreateForWindow (3), CreateForMonitor (4).
-            var createForMonitor = (delegate* unmanaged[Stdcall]<nint, nint, Guid*, nint*, int>)(*(void***)interop)[4];
-            var iid = IidGraphicsCaptureItem;
-            Marshal.ThrowExceptionForHR(createForMonitor(interop, monitor, &iid, &item));
-            return GraphicsCaptureItem.FromAbi(item);
-        }
-        finally
-        {
-            if (item != 0) Marshal.Release(item);
-            if (interop != 0) Marshal.Release(interop);
-            Native.WindowsDeleteString(hstring);
-        }
+        var displayId = DisplayArea.Primary.DisplayId;
+        return GraphicsCaptureItem.TryCreateFromDisplayId(new Windows.Graphics.DisplayId { Value = displayId.Value })
+            ?? throw new InvalidOperationException($"Windows.Graphics.Capture could not create an item for the primary display (id {displayId.Value}).");
     }
 }

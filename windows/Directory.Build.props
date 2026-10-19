@@ -1,7 +1,7 @@
 <Project>
   <PropertyGroup>
     <TargetFramework>net10.0-windows10.0.22621.0</TargetFramework>
-    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <SupportedOSPlatformVersion>10.0.22621.0</SupportedOSPlatformVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
@@ -18,6 +18,17 @@
     <WindowsAppSDKSelfContained>false</WindowsAppSDKSelfContained>
     <WindowsAppSdkBootstrapInitialize>false</WindowsAppSdkBootstrapInitialize>
   </PropertyGroup>
+
+  <!--
+    Until Win2D is removed: Win2D depends on WinUI, which brings Foundation (the bootstrap DLL and projections)
+    and WebView2. Exclude their assets in every project that sees DesktopMcp.Desktop; NuGet takes the union of
+    asset flags across dependency paths, so the exclusion must be on a direct reference in each project.
+  -->
+  <ItemGroup Condition="'$(MSBuildProjectName)' != 'DesktopMcp.Core' and '$(MSBuildProjectName)' != 'DesktopMcp.Core.Tests'">
+    <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" ExcludeAssets="all" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.Foundation" ExcludeAssets="all" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.Web.WebView2" ExcludeAssets="all" PrivateAssets="all" />
+  </ItemGroup>
 
   <PropertyGroup Condition="!$(MSBuildProjectName.EndsWith('.Tests'))">
     <IsAotCompatible>true</IsAotCompatible>
