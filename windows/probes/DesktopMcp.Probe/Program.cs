@@ -2,7 +2,7 @@ using System.Diagnostics;
 using DesktopMcp.Desktop.Dispatching;
 using DesktopMcp.Probe;
 
-// AOT probes. Usage: desktop-mcp-probe bootstrap | dispatcher | imaging [out.png] | capture [out.png] | clipboard
+// AOT probes. Usage: desktop-mcp-probe bootstrap | dispatcher | imaging [out.png] | capture [out.png] | clipboard | toast
 var command = args.Length > 0 ? args[0] : "dispatcher";
 var ok = command switch
 {
@@ -11,9 +11,26 @@ var ok = command switch
     "imaging" => await ProbeImagingAsync(args.Length > 1 ? args[1] : "probe-imaging.png"),
     "capture" => await ProbeCaptureAsync(args.Length > 1 ? args[1] : "probe-capture.png"),
     "clipboard" => await ClipboardProbe.RunAsync(),
+    "toast" => ProbeToast(),
     _ => Fail($"unknown probe '{command}'"),
 };
 return ok ? 0 : 1;
+
+static bool ProbeToast()
+{
+    try
+    {
+        new DesktopMcp.Desktop.Toasts.ToastSender().Show("desktop-mcp probe", "Toast through CsWinRT under NativeAOT",
+            DesktopMcp.Desktop.Toasts.ToastSender.WindowsPowerShellAppId);
+        Console.WriteLine("toast: shown");
+        return true;
+    }
+    catch (Exception e)
+    {
+        Console.WriteLine($"toast: {e.GetType().Name} 0x{e.HResult:X8} {e.Message}");
+        return false;
+    }
+}
 
 static async Task<bool> ProbeDispatcherAsync()
 {

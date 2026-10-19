@@ -3,6 +3,7 @@ using DesktopMcp.Core.PowerShell;
 using DesktopMcp.Core.Processes;
 using DesktopMcp.Core.WindowsRegistry;
 using DesktopMcp.Desktop.ClipboardAccess;
+using DesktopMcp.Desktop.Toasts;
 
 namespace DesktopMcp.Server.Tools;
 
@@ -17,6 +18,7 @@ public sealed record ToolServices
     public required RegistryService Registry { get; init; }
     public required ProcessService Processes { get; init; }
     public required IClipboard Clipboard { get; init; }
+    public required IToastSender Toasts { get; init; }
 
     public static ToolServices CreateDefault() => new()
     {
@@ -25,5 +27,6 @@ public sealed record ToolServices
         Registry = new RegistryService(),
         Processes = new ProcessService(),
         Clipboard = new SystemClipboard(),
+        Toasts = new ToastSender(),
     };
 }
