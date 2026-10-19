@@ -19,6 +19,7 @@ public static class ToolRegistry
         "PowerShell" => new PowerShellTool(protocolTool, services.PowerShell),
         "FileSystem" => new FileSystemTool(protocolTool, services.FileSystem),
         "Registry" => new RegistryTool(protocolTool, services.Registry),
+        "Process" => new ProcessTool(protocolTool, services.Processes),
         _ => new PendingTool(protocolTool),
     };
 }

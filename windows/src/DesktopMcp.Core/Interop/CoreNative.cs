@@ -87,6 +87,36 @@ internal static unsafe partial class CoreNative
     [LibraryImport("kernel32.dll", EntryPoint = "GetFinalPathNameByHandleW", SetLastError = true)]
     internal static partial uint GetFinalPathNameByHandle(SafeFileHandle file, char* buffer, uint bufferLength, uint flags);
 
+    // kernel32: Toolhelp process snapshot (process names as psutil reports them)
+    internal const uint Th32csSnapProcess = 0x2;
+    internal static readonly nint InvalidHandleValue = -1;
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct ProcessEntry32W
+    {
+        public uint Size;
+        public uint Usage;
+        public uint ProcessId;
+        public nuint DefaultHeapId;
+        public uint ModuleId;
+        public uint Threads;
+        public uint ParentProcessId;
+        public int PriorityClassBase;
+        public uint Flags;
+        public fixed char ExeFile[260];
+    }
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    internal static partial nint CreateToolhelp32Snapshot(uint flags, uint processId);
+
+    [LibraryImport("kernel32.dll", EntryPoint = "Process32FirstW", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool Process32First(nint snapshot, ProcessEntry32W* entry);
+
+    [LibraryImport("kernel32.dll", EntryPoint = "Process32NextW", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool Process32Next(nint snapshot, ProcessEntry32W* entry);
+
     // kernel32: the system code pages behind Python's mbcs and oem codecs
     [LibraryImport("kernel32.dll")]
     internal static partial uint GetACP();
