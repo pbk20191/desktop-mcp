@@ -30,7 +30,7 @@ public enum Concurrency {
             }
             return
         }
-        try await withThrowingTaskGroup(of: ServeEvent<Source.Element>.self) { group in
+        try await withThrowingTaskGroup(of: EachEvent<Source.Element>.self) { group in
             let (elements, relay) = AsyncStream.makeStream(of: Source.Element.self)
             group.addTask {
                 defer { relay.finish() }
@@ -65,7 +65,7 @@ public enum Concurrency {
 }
 
 /// What a child of `Concurrency.forEachConcurrently` reports back on macOS 13.
-enum ServeEvent<Element: Sendable>: Sendable {
+private enum EachEvent<Element: Sendable>: Sendable {
     /// The next element, or nil when the source has ended.
     case took(Element?)
     /// Work for one element finished (or the relay ended).

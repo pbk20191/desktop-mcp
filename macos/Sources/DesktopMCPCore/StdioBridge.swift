@@ -80,14 +80,23 @@ public struct StdioBridge: Sendable {
         }
         await withTaskGroup(of: Void.self) { outer in
             outer.addTask {
-                // A child per line, reaped as it finishes: a long session forwards many lines.
-                // This returns at EOF only once every forwarded request has finished.
-                await Concurrency.forEachConcurrently(Self.lines(of: input), discardingGroup: discardingGroup) { line in
-                    await forward(line, output: write)
-                    await followSession(output: write)
+                // Lines pass through a relay so that EOF is seen when the input ends, not when
+                // the last request does: the listener is closed then, while requests still run.
+                let (lines, relay) = AsyncStream.makeStream(of: String.self)
+                await withTaskGroup(of: Void.self) { reading in
+                    reading.addTask {
+                        for await line in Self.lines(of: input) { relay.yield(line) }
+                        // Cancels the listener and waits for it; none starts afterwards.
+                        await state.close()
+                        relay.finish()
+                    }
+                    // A child per line, reaped as it finishes: a long session forwards many
+                    // lines. This returns once the input has ended and every request finished.
+                    await Concurrency.forEachConcurrently(lines, discardingGroup: discardingGroup) { line in
+                        await forward(line, output: write)
+                        await followSession(output: write)
+                    }
                 }
-                // The requests are done; the listener is not waited for, it is cancelled.
-                await state.close()
             }
             outer.addTask {
                 for await _ in failures { return }

@@ -160,6 +160,48 @@ final class StdioBridgeTests: XCTestCase {
         XCTAssertEqual(written.current, [])
     }
 
+    /// At EOF the listener is cancelled at once, not once the requests still running are done;
+    /// those still run to their reply, and `run` ends after the last one.
+    func testEOFClosesTheListenerBeforeTheInFlightRequestEnds() async throws {
+        let posts = Locked(0)
+        StubHTTP.respond { request in
+            // The session's GET stream stays open, silent, far longer than the test.
+            if request.httpMethod == "GET" { return (200, Self.sseHeaders, [(30, Data(": idle\n\n".utf8))]) }
+            if posts.withLock({ $0 += 1; return $0 }) == 1 {
+                return (200, ["Content-Type": "application/json", "Mcp-Session-Id": "s"],
+                        [(0, Data(#"{"jsonrpc":"2.0","id":1,"result":{}}"#.utf8))])
+            }
+            return (200, Self.sseHeaders, [(1.5, Data("data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n\n".utf8))])
+        }
+        let bridge = stubBridge()
+        let pipe = Pipe()
+        let written = Locked<[String]>([])
+        let running = Task {
+            await bridge.run(input: pipe.fileHandleForReading) { line in
+                written.withLock { $0.append(line) }
+                return true
+            }
+        }
+        pipe.fileHandleForWriting.write(Data(#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#.utf8 + [0x0A]))
+        var deadline = Date().addingTimeInterval(2)
+        while await bridge.state.listener == nil, Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        let listening = await bridge.state.listener != nil
+        XCTAssertTrue(listening)
+
+        pipe.fileHandleForWriting.write(Data(#"{"jsonrpc":"2.0","id":2,"method":"ping"}"#.utf8 + [0x0A]))
+        try pipe.fileHandleForWriting.close()
+        deadline = Date().addingTimeInterval(1)
+        while await bridge.state.listener != nil, Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        let closed = await bridge.state.listener == nil
+        XCTAssertTrue(closed)
+        let replied = written.current.contains { (try? JSON.parse($0)["id"]?.intValue) == 2 }
+        XCTAssertFalse(replied, "the listener should close before the in-flight reply arrives")
+
+        await running.value
+        XCTAssertTrue(written.current.contains { (try? JSON.parse($0)["id"]?.intValue) == 2 }, "\(written.current)")
+        XCTAssertEqual(posts.current, 2)
+    }
+
     func testParserHandlesCRLFAndSplitBoundaries() {
         let stream = "event: message\r\ndata: {\"a\":\r\ndata: \"\u{E9}\"}\r\n\r\n: keep-alive\r\n\r\nid: 2\r\ndata: \r\n\r\ndata: x\r\n\r\ndata:y"
         var parser = SSEParser()
