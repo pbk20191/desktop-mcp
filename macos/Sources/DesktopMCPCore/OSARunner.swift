@@ -13,9 +13,11 @@ import OSAKit
 /// same as osascript's: results rendered with OSADisplay, errors as `start:end: kind: message
 /// (number)`, `log` output appended as osascript's stderr would be.
 ///
-/// Scripts run on a concurrent queue, one fresh language instance each, which is how the
-/// AppleScript component is thread-safe (one instance per thread of execution); the Swift
-/// concurrency pool is never blocked.
+/// Scripts run one at a time on a serial queue, each with a fresh language instance. The
+/// AppleScript component switches a process-wide pointer to the current instance's globals on
+/// every entry, so two instances in use on two threads read each other's (freed) memory; Guard
+/// Malloc caught it in `OSADispose` and `OpenComponent`. Serial it is, as in Script Editor. The
+/// Swift concurrency pool is never blocked: the queue's thread does the waiting.
 public enum OSARunner {
     public enum Language: String, Sendable {
         case appleScript = "AppleScript"
@@ -36,8 +38,6 @@ public enum OSARunner {
         public var bundleID: String?
         public var pid: pid_t?
         public var denied: Bool
-        /// A user-interface command addressed to the current application, handed to System Events.
-        public var relayedToSystemEvents = false
     }
 
     public struct Execution: Sendable {
@@ -54,7 +54,9 @@ public enum OSARunner {
         public var cancelled = false
     }
 
-    static let queue = DispatchQueue(label: "desktop-mcp.osa", qos: .userInitiated, attributes: .concurrent)
+    /// Serial: see the type comment. A script queued behind a long one may reach its deadline
+    /// while waiting; it is then stopped at its first instruction and reported as timed out.
+    static let queue = DispatchQueue(label: "desktop-mcp.osa", qos: .userInitiated)
 
     /// With `serve --debug`: every script start and end, and every Apple Event it sends, on stderr.
     public static let trace = Locked(false)
@@ -92,12 +94,11 @@ public enum OSARunner {
         return Shell.Result(output: Shell.combine(execution.result, logs).trimmingCharacters(in: .whitespacesAndNewlines), status: 0)
     }
 
-    /// StandardAdditions' dialogs need an application host; this server is not one, so the
-    /// error gets a pointer to what works (System Events shows them on any script's behalf).
-    static let userInteractionHint = "Hint: this server cannot show dialogs itself. Address user-interface commands "
-        + "(display dialog/alert, choose from list) to System Events, e.g. "
-        + "AppleScript: tell application \"System Events\" to display alert \"Title\" message \"Text\"  "
-        + "JXA: var se = Application(\"System Events\"); se.includeStandardAdditions = true; se.displayAlert(\"Title\", {message: \"Text\"}). "
+    /// Dialogs need AppKit, which needs a window server session; without one the error gets a
+    /// pointer to what works.
+    static let userInteractionHint = "Hint: this server has no window server session, so it cannot show dialogs itself "
+        + "(run it from a logged-in GUI session, e.g. as the Launch Agent). As a fallback, address user-interface commands "
+        + "to System Events: tell application \"System Events\" to display alert \"Title\" message \"Text\". "
         + "For display notification use the Notification tool."
 
     // MARK: Language
@@ -172,19 +173,27 @@ public enum OSARunner {
 
     static func runBlocking(_ source: String, language: Language, context: Context) -> Execution {
         var execution = Execution()
+        // Queued behind another script past its own deadline, or cancelled meanwhile: a short
+        // script would otherwise run to completion before the active proc ever gets a say.
+        if context.shouldStop() {
+            let state = context.snapshot
+            execution.cancelled = state.cancelled
+            execution.timedOut = !state.cancelled && state.timedOut
+            traceLog("\(language.rawValue) script not started: " + (state.cancelled ? "cancelled" : "deadline passed while queued"))
+            return execution
+        }
         guard let osaLanguage = OSALanguage(forName: language.rawValue) else {
             execution.errorMessage = "\(language.rawValue) is not available on this system"
             execution.errorNumber = -1
             return execution
         }
         // A fresh instance per run: the component is thread-safe only one instance per thread.
+        traceLog("\(language.rawValue) script starting (\(source.count) chars, deadline in \(Int(context.remaining))s)")
         let instance = OSALanguageInstance(language: osaLanguage)
         let component = instance.componentInstance
         let refCon = Unmanaged.passUnretained(context).toOpaque()
         OSASetActiveProc(component, activeProc, refCon)
         OSASetSendProc(component, sendProc, refCon)
-
-        traceLog("\(language.rawValue) script starting (\(source.count) chars, deadline in \(Int(context.remaining))s)")
         let script = OSAScript(source: source, from: nil, languageInstance: instance, using: [])
         var errorInfo: NSDictionary?
         if !script.compileAndReturnError(&errorInfo) {
@@ -252,11 +261,9 @@ public enum OSARunner {
     /// of being sent, denied targets are refused with a privilege error, and each send gets at
     /// most the time left before the deadline.
     ///
-    /// StandardAdditions' user-interface commands (`display dialog`/`alert`, `choose from list`,
-    /// `display notification`, ...) addressed to the current application are re-addressed to
-    /// System Events, which shows them on the script's behalf. This process is not an
-    /// application: run here, the first dialog needs AppKit on the main thread and the second
-    /// never answers. Scripts need no change; `display alert "x"` just works.
+    /// Events addressed to this process (StandardAdditions: `display alert`, `path to`, ...) are
+    /// sent like any other; their handlers run on the main thread through AppKit's event loop
+    /// (see AppKitHost in the executable), which is what lets dialogs work in process.
     private static let sendProc: OSASendProcPtr = { event, reply, sendMode, _, timeoutTicks, _, _, refCon in
         let context = Unmanaged<Context>.fromOpaque(refCon!).takeUnretainedValue()
         guard let event else { return OSErr(truncatingIfNeeded: paramErr) }
@@ -265,111 +272,37 @@ public enum OSARunner {
         guard AEDuplicateDesc(event, &copy) == noErr else { return OSErr(truncatingIfNeeded: memFullErr) }
         let descriptor = NSAppleEventDescriptor(aeDescNoCopy: &copy)
 
+        // AESendMessage always fills `reply` (typeNull when there is none); paths that answer
+        // without sending must do the same, or the caller disposes whatever was there.
+        func noReply() { if let reply { AEInitializeDesc(reply) } }
         if descriptor.eventClass == AEEventClass(kASAppleScriptSuite), descriptor.eventID == AEEventID(kASCommentEvent) {
             context.log(descriptor.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue ?? "")
+            noReply()
             return OSErr(noErr)
         }
 
-        let (pid, bundleID0) = target(of: descriptor)
-        var bundleID = bundleID0
-        var denied = bundleID.map { context.policy.deniedBundleIDs.contains($0) } ?? false
+        let (pid, bundleID) = target(of: descriptor)
+        let denied = bundleID.map { context.policy.deniedBundleIDs.contains($0) } ?? false
         let toSelf = pid == nil || pid == getpid()
-        var relayAddress: NSAppleEventDescriptor?
-        if toSelf, let target = relayTarget(eventClass: descriptor.eventClass, eventID: descriptor.eventID) {
-            // The target must be running and addressed by pid: a bundle-id address does not launch
-            // it, and the Apple Event Manager answers -600 / -43 for one that is not running.
-            if let address = applicationAddress(bundleID: target, launchTimeout: min(context.remaining, 15)) {
-                descriptor.setAttribute(address, forKeyword: AEKeyword(keyAddressAttr))
-                bundleID = target
-                denied = context.policy.deniedBundleIDs.contains(target)
-                relayAddress = address
-            } else {
-                traceLog("could not launch \(target); sending to self")
-            }
-        }
-        let relayed = relayAddress != nil
         context.record(SentEvent(eventClass: fourCC(descriptor.eventClass), eventID: fourCC(descriptor.eventID),
-                                 bundleID: bundleID, pid: pid, denied: denied, relayedToSystemEvents: relayed))
+                                 bundleID: bundleID, pid: pid, denied: denied))
         traceLog("send \(fourCC(descriptor.eventClass))/\(fourCC(descriptor.eventID)) -> "
                  + (bundleID ?? (toSelf ? "self" : "pid \(pid.map(String.init) ?? "?")"))
-                 + (denied ? " DENIED" : "") + (relayed ? " (relayed from self)" : "") + " timeout=\(timeoutTicks)")
-        if denied { return OSErr(truncatingIfNeeded: errAEPrivilegeError) }
+                 + (denied ? " DENIED" : "") + " timeout=\(timeoutTicks)")
+        if denied {
+            noReply()
+            return OSErr(truncatingIfNeeded: errAEPrivilegeError)
+        }
 
         let remaining = context.remaining
         guard remaining > 0 else {
             _ = context.shouldStop()
+            noReply()
             return OSErr(truncatingIfNeeded: userCanceledErr)
         }
         var ticks = Int(remaining * 60)
         if timeoutTicks > 0 { ticks = min(ticks, Int(timeoutTicks)) }
-        // `descriptor` is the event, re-addressed when relayed; `reply` still belongs to the caller.
-        var status = AESendMessage(descriptor.aeDesc, reply, sendMode, max(ticks, 1))
-        // An application answers a scripting-addition command with -1708 until it has been asked
-        // for its terminology ('ascr'/'gdut'), which is what makes it load the additions; the
-        // AppleScript runtime does that handshake itself for `tell application` targets. Do it
-        // here for the relay, once, and send again.
-        if status == noErr, let relayAddress, let reply, replyErrorNumber(reply) == OSStatus(errAEEventNotHandled),
-           requestTerminology(of: relayAddress) {
-            AEDisposeDesc(reply)
-            traceLog("primed \(bundleID ?? "?") with gdut; resending")
-            status = AESendMessage(descriptor.aeDesc, reply, sendMode, max(ticks, 1))
-        }
-        return OSErr(truncatingIfNeeded: status)
-    }
-
-    static func replyErrorNumber(_ reply: UnsafeMutablePointer<AppleEvent>) -> OSStatus? {
-        var copy = AEDesc()
-        guard AEDuplicateDesc(reply, &copy) == noErr else { return nil }
-        let descriptor = NSAppleEventDescriptor(aeDescNoCopy: &copy)
-        guard descriptor.descriptorType != typeNull else { return nil }
-        return descriptor.paramDescriptor(forKeyword: AEKeyword(keyErrorNumber)).map { OSStatus($0.int32Value) }
-    }
-
-    /// `ascr`/`gdut` ("get dynamic user terminology") to the application: the handshake after
-    /// which it accepts scripting-addition commands.
-    static func requestTerminology(of address: NSAppleEventDescriptor) -> Bool {
-        let event = NSAppleEventDescriptor.appleEvent(withEventClass: fourCC("ascr"), eventID: fourCC("gdut"),
-                                                      targetDescriptor: address,
-                                                      returnID: AEReturnID(kAutoGenerateReturnID),
-                                                      transactionID: AETransactionID(kAnyTransactionID))
-        return (try? event.sendEvent(options: [.waitForReply], timeout: 10)) != nil
-    }
-
-    /// StandardAdditions' user-interaction commands (class/ID from its sdef): display dialog,
-    /// display alert, choose from list / file / folder / file name / application / URL / remote
-    /// application / color. Not `display notification`: System Events refuses to post those for
-    /// another process (-10004); the Notification tool is the way to do that.
-    static let userInterfaceEvents: Set<UInt64> = Set([
-        ("syso", "dlog"), ("syso", "disA"), ("gtqp", "chlt"), ("syso", "stdf"), ("syso", "stfl"),
-        ("syso", "nwfl"), ("syso", "ppcb"), ("syso", "chur"), ("syso", "chra"), ("syso", "chcl"),
-    ].map { UInt64(fourCC($0.0)) << 32 | UInt64(fourCC($0.1)) })
-    static let systemEventsBundleID = "com.apple.systemevents"
-
-    /// A pid address for the application, launched (without activating it) when it is not running.
-    static func applicationAddress(bundleID: String, launchTimeout: TimeInterval) -> NSAppleEventDescriptor? {
-        if let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first {
-            return NSAppleEventDescriptor(processIdentifier: running.processIdentifier)
-        }
-        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return nil }
-        let launched = Locked<NSRunningApplication?>(nil)
-        let done = DispatchSemaphore(value: 0)
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = false
-        NSWorkspace.shared.openApplication(at: url, configuration: configuration) { application, _ in
-            launched.withLock { $0 = application }
-            done.signal()
-        }
-        _ = done.wait(timeout: .now() + max(launchTimeout, 1))
-        return launched.withLock { $0 }.map { NSAppleEventDescriptor(processIdentifier: $0.processIdentifier) }
-    }
-
-    /// Where a self-addressed event must go instead, or nil to send it to this process.
-    static func relayTarget(eventClass: AEEventClass, eventID: AEEventID) -> String? {
-        userInterfaceEvents.contains(UInt64(eventClass) << 32 | UInt64(eventID)) ? systemEventsBundleID : nil
-    }
-
-    static func fourCC(_ text: String) -> UInt32 {
-        text.utf8.prefix(4).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+        return OSErr(truncatingIfNeeded: AESendMessage(event, reply, sendMode, max(ticks, 1)))
     }
 
     /// Who the event is addressed to. AppleScript addresses running applications by process

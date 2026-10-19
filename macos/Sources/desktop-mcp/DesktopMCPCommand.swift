@@ -4,7 +4,6 @@ import Foundation
 import DesktopMCPCore
 import DesktopMCPHTTP
 
-@main
 struct DesktopMCPCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "desktop-mcp",
@@ -31,8 +30,9 @@ enum TransportChoice: String, ExpressibleByArgument, CaseIterable {
     case streamableHTTP = "streamable-http"
 }
 
-/// Async: the Swift runtime drives the main thread's CFRunLoop while the root task runs here, so
-/// NSWorkspace updates and `MainActor` work are delivered without a hand-rolled run loop.
+/// Async; the main thread is pumped at top level by `MainThreadHost` (AppKit's event loop in a
+/// window server session), so `MainActor` work and NSWorkspace updates are delivered while the
+/// root task runs here.
 struct Serve: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Run the MCP server. The default command.",
@@ -156,7 +156,7 @@ struct Serve: AsyncParsableCommand {
                             return 0
                         }
                         do {
-                            try await serveHTTP(server, plan: plan, debug: debug)
+                            try await Self.serveHTTP(server, plan: plan, debug: debug)
                             return 0
                         } catch is CancellationError {
                             return 0
@@ -184,7 +184,7 @@ struct Serve: AsyncParsableCommand {
         if code != 0 { throw ExitCode(code) }
     }
 
-    func serveHTTP(_ server: MCPServer, plan: ServePlan, debug: Bool) async throws {
+    static func serveHTTP(_ server: MCPServer, plan: ServePlan, debug: Bool) async throws {
         let transport: HTTPTransport = plan.transport == "sse" ? .sse : .streamableHTTP
         var settings = HTTPApp.Settings(transport: transport, authKey: plan.authKey,
                                         ipAllowlist: plan.ipAllowlist.isEmpty ? nil : plan.ipAllowlist)

@@ -53,13 +53,27 @@ final class OSARunnerTests: XCTestCase {
         XCTAssertEqual(result, Shell.Result(output: "Command cancelled", status: -1))
     }
 
-    func testScriptsRunConcurrently() async {
+    func testScriptsRunOneAtATime() async {
+        // Two instances in use at once corrupt the AppleScript component's switched globals
+        // (seen under Guard Malloc), so execution is serial: two 1-second scripts take 2 seconds.
         let started = Date()
         async let a = Self.run("delay 1\nreturn \"a\"")
         async let b = Self.run("delay 1\nreturn \"b\"")
         let (ra, rb) = await (a, b)
         XCTAssertEqual([ra.output, rb.output], ["a", "b"])
-        XCTAssertLessThan(Date().timeIntervalSince(started), 1.9)
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(started), 1.9)
+    }
+
+    func testAQueuedScriptStillHonoursItsOwnDeadline() async {
+        async let long = Self.run("delay 2\nreturn \"long\"", timeout: 10)
+        try? await Task.sleep(for: .milliseconds(200))
+        let started = Date()
+        let short = await Self.run("return \"short\"", timeout: 1)   // waits behind `long`, deadline passes
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2.5)
+        XCTAssertEqual(short.status, -1)
+        XCTAssertTrue(short.output.hasPrefix("Command timed out after 1 seconds"), short.output)
+        let longResult = await long
+        XCTAssertEqual(longResult.output, "long")
     }
 
     func testLogStatementsAreCapturedLikeOsascriptsStderr() async {
@@ -82,7 +96,7 @@ final class OSARunnerTests: XCTestCase {
         XCTAssertEqual(failure.status, 1)
     }
 
-    func testNonInteractiveEventsToTheCurrentApplicationStayInProcess() async {
+    func testEventsToTheCurrentApplicationAreRecorded() async {
         // `path to` is a StandardAdditions command handled inside this process.
         let execution = await OSARunner.execute("POSIX path of (path to home folder)", timeout: 10, policy: .init())
         XCTAssertNil(execution.errorNumber, execution.errorMessage ?? "")
@@ -90,28 +104,6 @@ final class OSARunnerTests: XCTestCase {
         let event = execution.events.first
         XCTAssertEqual(execution.events.count, 1)
         XCTAssertTrue(event?.pid == nil || event?.pid == getpid(), "\(String(describing: event))")
-        XCTAssertEqual(event?.relayedToSystemEvents, false)
-    }
-
-    func testSystemEventsIsAddressedByPidAndLaunchedIfNeeded() throws {
-        let address = try XCTUnwrap(OSARunner.applicationAddress(bundleID: "com.apple.systemevents", launchTimeout: 15))
-        XCTAssertEqual(address.descriptorType, typeKernelProcessID)
-        let pid = address.data.withUnsafeBytes { $0.loadUnaligned(as: pid_t.self) }
-        XCTAssertEqual(NSRunningApplication(processIdentifier: pid)?.bundleIdentifier, "com.apple.systemevents")
-        XCTAssertNil(OSARunner.applicationAddress(bundleID: "com.example.does-not-exist", launchTimeout: 1))
-    }
-
-    func testUserInterfaceCommandsAreRelayedToSystemEvents() {
-        // Decided without showing anything: the dialog itself would need a user.
-        for (cls, id) in [("syso", "dlog"), ("syso", "disA"), ("gtqp", "chlt"), ("syso", "stdf"), ("syso", "stfl"), ("syso", "nwfl")] {
-            XCTAssertEqual(OSARunner.relayTarget(eventClass: OSARunner.fourCC(cls), eventID: OSARunner.fourCC(id)),
-                           "com.apple.systemevents", id)
-        }
-        XCTAssertNil(OSARunner.relayTarget(eventClass: OSARunner.fourCC("ears"), eventID: OSARunner.fourCC("ffdr")))  // path to
-        XCTAssertNil(OSARunner.relayTarget(eventClass: OSARunner.fourCC("syso"), eventID: OSARunner.fourCC("beep")))
-        XCTAssertNil(OSARunner.relayTarget(eventClass: OSARunner.fourCC("syso"), eventID: OSARunner.fourCC("notf")))  // System Events refuses
-        XCTAssertNil(OSARunner.relayTarget(eventClass: OSARunner.fourCC("syso"), eventID: OSARunner.fourCC("chlt")))  // wrong class
-        XCTAssertEqual(OSARunner.fourCC(OSARunner.fourCC("disA")), "disA")
     }
 
     func testNoUserInteractionErrorsCarryAHintTowardsSystemEvents() {
