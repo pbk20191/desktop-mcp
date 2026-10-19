@@ -2,7 +2,8 @@
 # Checks `serve --help`, then runs two stdio sessions of desktop-mcp.exe:
 # 1. `serve --config <empty file>`: initialize, that tools/list equals spec/windows/tools.json (all tools, as JSON
 #    values), one tool call, and that this headless run did not load the (delay-loaded) graphics stack: d2d1, d3d11,
-#    dwrite, d3dcompiler_47. The empty file keeps a developer's ~/.desktop-mcp/config.toml out of the check.
+#    dwrite, d3dcompiler_47. The empty file keeps a developer's ~/.desktop-mcp/config.toml out of the check. A
+#    PowerShell call starts a ping that must die with the server (the kill-on-close Job Object, spec §5).
 # 2. `serve --config <file excluding Registry>`: tools/list equals the spec less Registry, which proves the NativeAOT
 #    exe parsed the TOML file.
 param(
@@ -105,12 +106,23 @@ try {
         if ($null -eq $call.result -or $call.result.isError) { throw "Wait failed: $($call | ConvertTo-Json -Depth 5)" }
         if ($call.result.content[0].text -cne 'Waited for 0 seconds.') { throw "unexpected Wait text: $($call.result.content[0].text)" }
 
+        # A grandchild of the server: the kill-on-close job must stop it when the server exits.
+        Send @{ jsonrpc = '2.0'; id = 4; method = 'tools/call'; params = @{ name = 'PowerShell'; arguments = @{ command = "(Start-Process -FilePath ping.exe -ArgumentList '-n','120','127.0.0.1' -WindowStyle Hidden -PassThru).Id"; timeout = 20 } } }
+        $call = Receive 4
+        if ($null -eq $call.result -or $call.result.isError -or $call.result.content[0].text -notmatch '^Response: (\d+)?
+
+Status Code: 0$') { throw "PowerShell failed: $($call | ConvertTo-Json -Depth 5)" }
+        $script:pingId = [int]$Matches[1]
+
         # The graphics stack is delay-loaded (Win2DStatic.targets): a run that never renders must not load it.
         $script:process.Refresh()
         $graphics = @($script:process.Modules | Where-Object { $_.ModuleName -in 'd2d1.dll', 'd3d11.dll', 'dwrite.dll', 'd3dcompiler_47.dll' } | ForEach-Object ModuleName)
         if ($graphics.Count -gt 0) { throw "headless run loaded the graphics stack: $($graphics -join ', ')" }
         $script:full = "$($init.result.serverInfo.name) $($init.result.serverInfo.version), $($list.result.tools.Count) tools match spec/windows/tools.json, Wait OK, graphics stack not loaded ($($script:process.Modules.Count) modules)"
     }
+    $ping = Get-Process -Id $script:pingId -ErrorAction SilentlyContinue
+    if ($ping -and -not $ping.WaitForExit(5000)) { $ping.Kill(); throw "ping $($script:pingId) outlived the server: no kill-on-close job" }
+    $script:full += ", PowerShell OK, its child died with the server"
 
     Invoke-Session $excludingConfig {
         param($init, $list, $listLine)

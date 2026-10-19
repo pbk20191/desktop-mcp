@@ -1,3 +1,5 @@
+using DesktopMcp.Core.PowerShell;
+
 namespace DesktopMcp.Server.Tools;
 
 /// <summary>
@@ -6,5 +8,10 @@ namespace DesktopMcp.Server.Tools;
 /// </summary>
 public sealed record ToolServices
 {
-    public static ToolServices CreateDefault() => new();
+    public required PowerShellRunner PowerShell { get; init; }
+
+    public static ToolServices CreateDefault() => new()
+    {
+        PowerShell = new PowerShellRunner(),
+    };
 }

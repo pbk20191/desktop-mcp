@@ -16,6 +16,7 @@ public static class ToolRegistry
     public static McpServerTool Create(Tool protocolTool, ToolServices services) => protocolTool.Name switch
     {
         "Wait" => new WaitTool(protocolTool),
+        "PowerShell" => new PowerShellTool(protocolTool, services.PowerShell),
         _ => new PendingTool(protocolTool),
     };
 }

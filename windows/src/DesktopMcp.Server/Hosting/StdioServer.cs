@@ -1,5 +1,6 @@
 using DesktopMcp.Core;
 using DesktopMcp.Core.Config;
+using DesktopMcp.Core.PowerShell;
 using DesktopMcp.Server.Tools;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -15,6 +16,10 @@ public static class StdioServer
     {
         // upstream serve sets NO_COLOR for stdio (__main__.py:725-726).
         if (Environment.GetEnvironmentVariable("NO_COLOR") is null) Environment.SetEnvironmentVariable("NO_COLOR", "1");
+        // spec §5: every process the server starts dies with it (Decisions 19). Here and not in the shared overload
+        // below, so the test host never joins a kill-on-close job.
+        if (!ProcessJob.TryAssignKillOnClose())
+            plan = plan with { Warnings = [.. plan.Warnings, "Could not put the server in a kill-on-close Job Object; PowerShell children may outlive it."] };
         return RunAsync(plan, server => server.WithStdioServerTransport(), cancellationToken);
     }
 
