@@ -49,7 +49,7 @@ Upstream is Python on FastMCP, so some behaviour has no exact C# equivalent. Eac
 14. **Notification failure text** (`notifications/service.py:271-273`). Upstream reports `Notification may have been sent. PowerShell output: <first 200 chars>`. We use no PowerShell, so the text is `Notification may have been sent. Error: <first 200 chars of the exception message>`.
 15. **Process names and CPU** (`process/service.py:22-33`). psutil names come from the process snapshot, `chrome.exe` with the extension. We read them with `CreateToolhelp32Snapshot`, mapping PID 0 (`[System Process]`) to psutil's `System Idle Process`. CPU% is measured over two samples 250 ms apart (spec §10); like psutil it is a share of one CPU and can exceed 100.
 16. **Scrape fetch** (`desktop/service.py:1033-1052`, `infrastructure/security.py:190-207`). As upstream, at most 5 requests are made (so 4 redirects are followed) before `Too many redirects while fetching URL`. Departures:
-    - We never use a proxy, so the pinned address always applies (upstream's requests honours proxy variables and then skips the pin).
+    - **System proxy (user decision, 2026-10-19).** Each request asks `HttpClient.DefaultProxy` (on Windows: the WinINet/WinHTTP settings, including auto-config, then `HTTP(S)_PROXY`/`NO_PROXY`) for the target URI. When it returns a proxy that is not bypassed, the request goes through that proxy and the address cannot be pinned. The URL and every resolved address are still validated locally first, as upstream does before its proxy skips the pin. When no proxy applies, the connection is pinned to the validated address. Every redirect is validated again either way.
     - The timeout is 10 s per request in total, not per socket read.
     - The User-Agent is `desktop-mcp/<version>`, not `python-requests/x`.
     - The body is capped at 8 MB, as the macOS port does.
@@ -57,7 +57,7 @@ Upstream is Python on FastMCP, so some behaviour has no exact C# equivalent. Eac
     - The text after the colon in `Failed to connect to <url>: ...` and `Request timed out for <url>: ...` is .NET's.
 17. **Scrape without sampling in P1** (`tools/scrape.py:28-73`). `use_dom=True` returns upstream's `No DOM information found. Please open <url> in browser first.` until the browser DOM lands (P2 snapshot, P6 DOM). Sampling arrives in P5; until then the result is the raw `URL: <url>\nContent:\n<markdown>`, which is upstream's own fallback when the client cannot sample.
 18. **Clipboard text cut** (`tools/clipboard.py:30`). `text[:100]` counts code points, as Python does, so a surrogate pair is never split.
-19. **Job Object** (spec §5). At startup `serve` puts the process in a Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. Every process the server starts is then killed when the server exits, including GUI apps a user starts through the PowerShell tool (`Start-Process notepad`). Upstream has no such job. This follows the spec but is a visible behaviour change; see the open question in the final report.
+19. **Job Object** (spec §5). At startup `serve` puts the process in a Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. Every process the server starts is then killed when the server exits, including GUI apps a user starts through the PowerShell tool (`Start-Process notepad`). Upstream has no such job. This follows the spec and is a visible behaviour change; the user confirmed it on 2026-10-19 (no breakaway).
 20. **CLI location.** Spec §3 places the CLI in the exe project. It lives in `DesktopMcp.Server/Cli` so `DesktopMcp.Server.Tests` can test it; the exe's `Program.cs` is a one-line call.
 
 ## File map
@@ -8286,6 +8286,52 @@ git commit -m "Port the macOS HTML to Markdown converter with a tolerant HTML pa
 upstream `Desktop.scrape` (`desktop/service.py:1033-1052`), `safe_get` and `validate_url` (`infrastructure/security.py:41-207`), and the tool (`tools/scrape.py:20-73`). Each request is validated first: scheme, hostname, credentials, port, and every resolved address against `AddressPolicy`. Then `SocketsHttpHandler.ConnectCallback` connects only to the first validated address, so a second DNS answer can never redirect the connection. Redirects are not followed automatically: at most 5 requests are made, and each `Location` is validated again. 4xx/5xx responses raise requests' `HTTPError` text, and the body becomes Markdown (Task 15). Decisions 16 and 17 list the departures and the P1 behaviour of `use_dom`/`use_sampling`.
 
 Tests use a raw `TcpListener` HTTP server on 127.0.0.1 rather than `HttpListener`, because http.sys rejects requests whose Host header (the pinned test hostname) does not match a registered prefix, and non-admin prefixes are limited. The test seam is an internal constructor that replaces the address rule and the resolver. Production code always uses `AddressPolicy.IsBlocked` and `Dns`, and the production tests prove that loopback is blocked before any connection is made.
+
+**System proxy amendment (user decision, 2026-10-19; Decision 16).** It overrides the step code below wherever they differ:
+
+- The internal constructor gains a third parameter, `Func<Uri, Uri?> proxyFor`. It returns the proxy for a target URI, or `null` for a direct connection. The public constructor passes `SystemProxy`:
+
+  ```csharp
+  public ScrapeClient() : this(AddressPolicy.IsBlocked, Dns.GetHostAddressesAsync, SystemProxy) { }
+
+  // HttpClient.DefaultProxy reads the Windows proxy settings (and HTTP(S)_PROXY / NO_PROXY).
+  internal static Uri? SystemProxy(Uri target)
+  {
+      var proxy = HttpClient.DefaultProxy;
+      if (proxy.IsBypassed(target)) return null;
+      var address = proxy.GetProxy(target);
+      return address is null || address == target ? null : address;
+  }
+  ```
+
+- `GetAsync` still calls `ValidateAsync` first. Then `var proxy = _proxyFor(new Uri(url));`. When `proxy` is `null`, the handler is the one shown (`UseProxy = false` and the pinning `ConnectCallback`). Otherwise the handler sets `UseProxy = true` and `Proxy = new WebProxy(proxy)`, and has no `ConnectCallback`. The proxy path does not pin, so DNS rebinding is possible there, as with upstream behind a proxy. Note this in a comment.
+- `Permissive(...)` in the tests passes `_ => null` as `proxyFor`, so a proxy configured on the test machine never affects the other tests.
+- Add these two tests to `ScrapeClientTests`. The loopback server plays the proxy and receives the absolute-form request line.
+
+  ```csharp
+  [Fact]
+  public async Task AProxyReceivesTheAbsoluteUrl()
+  {
+      await using var proxy = new LoopbackHttpServer((_, _) => LoopbackHttpServer.Response(200, "OK", "<p>via proxy</p>"));
+      var client = new ScrapeClient(_ => false, Resolve, _ => new Uri($"http://127.0.0.1:{proxy.Port}/"));
+      Assert.Equal("via proxy", await client.FetchMarkdownAsync("http://site.test:8080/page", CancellationToken.None));
+      var request = Assert.Single(proxy.Requests);
+      Assert.Equal("http://site.test:8080/page", request.Path);
+  }
+
+  [Fact]
+  public async Task AProxyDoesNotSkipValidation()
+  {
+      await using var proxy = new LoopbackHttpServer((_, _) => LoopbackHttpServer.Response(200, "OK", "<p>secret</p>"));
+      var client = new ScrapeClient(AddressPolicy.IsBlocked, Resolve, _ => new Uri($"http://127.0.0.1:{proxy.Port}/"));
+      var error = await Assert.ThrowsAsync<ScrapeException>(() => client.FetchMarkdownAsync("http://site.test/", CancellationToken.None));
+      Assert.Equal("Private, loopback, link-local, multicast, and reserved addresses are blocked: 127.0.0.1", error.Message);
+      Assert.Empty(proxy.Requests);
+  }
+  ```
+
+  If `LoopbackHttpServer` records only the path part of an absolute-form request line, make it record the request target verbatim.
+- Update the Interfaces block accordingly: the internal constructor has three parameters, and there is an internal `static Uri? SystemProxy(Uri)`.
 
 **Files:**
 - Create: `windows/src/DesktopMcp.Core/Scrape/ScrapeClient.cs`
