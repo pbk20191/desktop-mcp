@@ -70,7 +70,8 @@ try {
 
     Send @{ jsonrpc = '2.0'; id = 3; method = 'tools/call'; params = @{ name = 'Wait'; arguments = @{ duration = 0 } } }
     $call = Receive 3
-    if ($null -eq $call.result) { throw "tools/call failed: $($call | ConvertTo-Json -Depth 5)" }
+    if ($null -eq $call.result -or $call.result.isError) { throw "Wait failed: $($call | ConvertTo-Json -Depth 5)" }
+    if ($call.result.content[0].text -cne 'Waited for 0 seconds.') { throw "unexpected Wait text: $($call.result.content[0].text)" }
 
     # The graphics stack is delay-loaded (Win2DStatic.targets): a run that never renders must not load it.
     $process.Refresh()

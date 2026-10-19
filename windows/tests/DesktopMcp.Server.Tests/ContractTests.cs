@@ -1,8 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using DesktopMcp.Server.Tools;
-using ModelContextProtocol.Protocol;
-using ModelContextProtocol.Server;
 
 namespace DesktopMcp.Server.Tests;
 
@@ -28,16 +26,5 @@ public class ContractTests
             Assert.True(JsonNode.DeepEquals(tool, actual[name]),
                 $"{name} differs from spec/windows/tools.json\nspec:   {tool.ToJsonString()}\nserver: {actual[name].ToJsonString()}");
         }
-    }
-
-    [Fact]
-    public async Task PendingToolReturnsAnErrorResult()
-    {
-        var tool = ToolRegistry.CreateAll(ToolSpecCatalog.LoadEmbedded()).Single(t => t.ProtocolTool.Name == "Wait");
-        await using var server = McpServer.Create(new StreamServerTransport(Stream.Null, Stream.Null), new McpServerOptions());
-        var request = new RequestContext<CallToolRequestParams>(server, new JsonRpcRequest { Method = "tools/call" }, new CallToolRequestParams { Name = "Wait" });
-        var result = await tool.InvokeAsync(request);
-        Assert.True(result.IsError);
-        Assert.Equal("Error calling tool 'Wait': not available in this build yet", Assert.IsType<TextContentBlock>(Assert.Single(result.Content)).Text);
     }
 }
