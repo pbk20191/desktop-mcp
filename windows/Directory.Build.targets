@@ -8,11 +8,13 @@
           Condition="'$(PublishAot)' == 'true' and '$(RuntimeIdentifier)' != ''" />
 
   <!--
-    NativeAOT exes ship one file (plus its pdb). Referenced projects are compiled into the exe, so their
-    .pdb/.pri must not be copied next to it: keep only .xml as a related file (the property cannot be empty,
-    which would restore the default) and do not publish referenced documentation files either.
+    NativeAOT exes ship one file (plus its pdb). When publishing, referenced projects are compiled into the exe, so
+    their .pdb/.pri must not be copied next to it: keep only .xml as a related file (the property cannot be empty,
+    which would restore the default) and do not publish referenced documentation files either. dotnet build/run keep
+    the default list, so the JIT exe has the Core/Desktop/Server pdbs and stack traces keep their line numbers.
+    The .NET SDK sets _IsPublishing for dotnet publish.
   -->
-  <PropertyGroup Condition="'$(PublishAot)' == 'true'">
+  <PropertyGroup Condition="'$(PublishAot)' == 'true' and '$(_IsPublishing)' == 'true'">
     <AllowedReferenceRelatedFileExtensions>.xml</AllowedReferenceRelatedFileExtensions>
     <PublishReferencesDocumentationFiles>false</PublishReferencesDocumentationFiles>
   </PropertyGroup>

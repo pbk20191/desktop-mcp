@@ -1,7 +1,10 @@
 #Requires -Version 7
-# Starts desktop-mcp.exe over stdio and checks initialize, tools/list and one tool call, and that this
-# headless run did not load the (delay-loaded) graphics stack: d2d1, d3d11, dwrite, d3dcompiler_47.
-param([Parameter(Mandatory)][string]$Exe)
+# Starts desktop-mcp.exe over stdio and checks initialize, that tools/list equals spec/windows/tools.json, one tool
+# call, and that this headless run did not load the (delay-loaded) graphics stack: d2d1, d3d11, dwrite, d3dcompiler_47.
+param(
+    [Parameter(Mandatory)][string]$Exe,
+    [string]$Spec = (Join-Path $PSScriptRoot '../../spec/windows/tools.json')
+)
 $ErrorActionPreference = 'Stop'
 
 $utf8 = [System.Text.UTF8Encoding]::new($false)
@@ -16,6 +19,7 @@ $psi.Environment['ANONYMIZED_TELEMETRY'] = 'false'
 $process = [System.Diagnostics.Process]::Start($psi)
 # Drain stderr from the start so a chatty server never blocks on a full pipe.
 $stderrTask = $process.StandardError.ReadToEndAsync()
+$script:lastLine = $null
 
 function Send($message) {
     $process.StandardInput.WriteLine(($message | ConvertTo-Json -Compress -Depth 20))
@@ -33,7 +37,22 @@ function Receive([int]$ExpectedId) {
         $message = $line.Result | ConvertFrom-Json -Depth 50
         if ($null -eq $message.PSObject.Properties['id']) { continue } # notification
         if ($message.id -ne $ExpectedId) { throw "expected response id $ExpectedId, got $($message.id)" }
+        $script:lastLine = $line.Result
         return $message
+    }
+}
+# tools/list must equal the contract file as JSON values; the MCP SDK owns the serialisation, so not as bytes.
+function Assert-ToolsMatchSpec([string]$ResponseLine) {
+    $actual = @{}
+    foreach ($tool in [System.Text.Json.Nodes.JsonNode]::Parse($ResponseLine)['result']['tools'].AsArray()) { $actual[$tool['name'].ToString()] = $tool }
+    $expected = [System.Text.Json.Nodes.JsonNode]::Parse([IO.File]::ReadAllText((Resolve-Path $Spec).Path))['tools'].AsArray()
+    if ($actual.Count -ne $expected.Count) { throw "tools/list has $($actual.Count) tools; spec/windows/tools.json has $($expected.Count)" }
+    foreach ($tool in $expected) {
+        $name = $tool['name'].ToString()
+        if (-not $actual.ContainsKey($name)) { throw "tools/list lacks $name" }
+        if (-not [System.Text.Json.Nodes.JsonNode]::DeepEquals($tool, $actual[$name])) {
+            throw "$name differs from spec/windows/tools.json`nspec:   $($tool.ToJsonString())`nserver: $($actual[$name].ToJsonString())"
+        }
     }
 }
 
@@ -47,7 +66,7 @@ try {
 
     Send @{ jsonrpc = '2.0'; id = 2; method = 'tools/list' }
     $list = Receive 2
-    if ($list.result.tools.Count -ne 21) { throw "expected 21 tools, got $($list.result.tools.Count)" }
+    Assert-ToolsMatchSpec $script:lastLine
 
     Send @{ jsonrpc = '2.0'; id = 3; method = 'tools/call'; params = @{ name = 'Wait'; arguments = @{ duration = 0 } } }
     $call = Receive 3
@@ -58,7 +77,7 @@ try {
     $graphics = @($process.Modules | Where-Object { $_.ModuleName -in 'd2d1.dll', 'd3d11.dll', 'dwrite.dll', 'd3dcompiler_47.dll' } | ForEach-Object ModuleName)
     if ($graphics.Count -gt 0) { throw "headless run loaded the graphics stack: $($graphics -join ', ')" }
 
-    Write-Host "smoke OK: $($init.result.serverInfo.name) $($init.result.serverInfo.version), $($list.result.tools.Count) tools, graphics stack not loaded ($($process.Modules.Count) modules)"
+    Write-Host "smoke OK: $($init.result.serverInfo.name) $($init.result.serverInfo.version), $($list.result.tools.Count) tools match spec/windows/tools.json, graphics stack not loaded ($($process.Modules.Count) modules)"
 }
 finally {
     $process.StandardInput.Close()

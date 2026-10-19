@@ -25,3 +25,23 @@ foreach ($rid in $Runtimes) {
 if ($Runtimes -contains 'win-x64') {
     & (Join-Path $PSScriptRoot 'smoke-stdio.ps1') -Exe (Join-Path $root 'dist/win-x64/desktop-mcp.exe')
 }
+
+# NativeAOT activation check. xUnit runs under the JIT, so only an AOT run proves that the statically linked Win2D
+# activates. The probe's imaging step renders through Win2D and fails if Microsoft.Graphics.Canvas.dll loads.
+# It needs an x64 host and the Windows App SDK runtime (a developer machine).
+if ($Runtimes -contains 'win-x64' -and [Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'X64') {
+    $probeOut = Join-Path $root 'probes/out'
+    if (Test-Path $probeOut) { Remove-Item $probeOut -Recurse -Force }
+    dotnet publish (Join-Path $root 'probes/DesktopMcp.Probe/DesktopMcp.Probe.csproj') -c Release -r win-x64 -o $probeOut
+    if ($LASTEXITCODE -ne 0) { throw 'probe publish failed' }
+    $probeFiles = @(Get-ChildItem $probeOut -Recurse -Force | ForEach-Object { [IO.Path]::GetRelativePath($probeOut, $_.FullName) })
+    $probeExtra = @($probeFiles | Where-Object { $_ -notin 'desktop-mcp-probe.exe', 'desktop-mcp-probe.pdb' })
+    if ($probeExtra.Count -gt 0) { throw "probes/out must contain only desktop-mcp-probe.exe and its pdb; extra: [$($probeExtra -join ', ')]" }
+    $png = Join-Path ([IO.Path]::GetTempPath()) "desktop-mcp-activation-$PID.png"
+    try {
+        & (Join-Path $probeOut 'desktop-mcp-probe.exe') imaging $png
+        if ($LASTEXITCODE -ne 0) { throw "AOT activation check failed: desktop-mcp-probe imaging exited with $LASTEXITCODE" }
+        Write-Host 'AOT activation check OK: the NativeAOT probe activated the statically linked Win2D'
+    }
+    finally { Remove-Item $png -ErrorAction SilentlyContinue }
+}
