@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>DesktopMcp.Server</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="ModelContextProtocol" />
+    <ProjectReference Include="..\DesktopMcp.Core\DesktopMcp.Core.csproj" />
+    <ProjectReference Include="..\DesktopMcp.Desktop\DesktopMcp.Desktop.csproj" />
+    <InternalsVisibleTo Include="DesktopMcp.Server.Tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="$(MSBuildThisFileDirectory)..\..\..\spec\windows\tools.json" LogicalName="DesktopMcp.Server.tools.json" />
+  </ItemGroup>
+</Project>

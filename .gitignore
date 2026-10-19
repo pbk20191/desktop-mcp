@@ -5,3 +5,7 @@ xcuserdata/
 DerivedData/
 dist/
 .DS_Store
+bin/
+obj/
+.vs/
+*.user

@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>DesktopMcp.Desktop</RootNamespace>
+    <DisableRuntimeMarshalling>true</DisableRuntimeMarshalling>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\DesktopMcp.Core\DesktopMcp.Core.csproj" />
+    <InternalsVisibleTo Include="DesktopMcp.Desktop.Tests" />
+  </ItemGroup>
+</Project>

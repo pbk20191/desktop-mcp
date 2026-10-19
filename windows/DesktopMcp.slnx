@@ -1,0 +1,13 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/DesktopMcp/DesktopMcp.csproj" />
+    <Project Path="src/DesktopMcp.Core/DesktopMcp.Core.csproj" />
+    <Project Path="src/DesktopMcp.Desktop/DesktopMcp.Desktop.csproj" />
+    <Project Path="src/DesktopMcp.Server/DesktopMcp.Server.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/DesktopMcp.Core.Tests/DesktopMcp.Core.Tests.csproj" />
+    <Project Path="tests/DesktopMcp.Desktop.Tests/DesktopMcp.Desktop.Tests.csproj" />
+    <Project Path="tests/DesktopMcp.Server.Tests/DesktopMcp.Server.Tests.csproj" />
+  </Folder>
+</Solution>
