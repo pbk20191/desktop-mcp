@@ -225,18 +225,6 @@ final class ServerTests: XCTestCase {
         XCTAssertEqual(try JSONValue.parse(line)["result"]?["isError"], true)
     }
 
-    func testToolContentAndResultsEncodeAsTheProtocolExpects() throws {
-        let image = ToolContent.image(data: Data([0xff, 0xd8, 0xff]), mimeType: "image/jpeg")
-        let result = ToolCallResult(content: [.text("hi"), image], isError: false)
-        let json = try JSONValue.parse(JSONCoding.encodeString(result))
-        XCTAssertEqual(json, ["content": [["type": "text", "text": "hi"], ["type": "image", "data": "/9j/", "mimeType": "image/jpeg"]], "isError": false])
-        XCTAssertEqual(try JSONCoding.decode([ToolContent].self, from: JSONCoding.encodeString([image])), [image])
-
-        let error = JSONRPCResponse(id: .null, code: -32700, message: "Parse error").serialized()
-        XCTAssertEqual(error, #"{"error":{"code":-32700,"message":"Parse error"},"id":null,"jsonrpc":"2.0"}"#)
-        XCTAssertEqual(JSONRPCResponse(id: 1, result: EmptyResult()).serialized(), #"{"id":1,"jsonrpc":"2.0","result":{}}"#)
-    }
-
     func testParseErrorAndBatch() async throws {
         let lines = LineCollector()
         let server = await DesktopMCP.makeServer()
@@ -262,36 +250,5 @@ extension MCPServer {
         }
         guard let response = await respond(to: message, client: client) else { return nil }
         return try! JSONValue.parse(response.serialized())
-    }
-}
-
-actor RecordingObserver: ToolCallObserver {
-    var events: [String] = []
-
-    func toolSucceeded(_ tool: String, durationMs: Int, client: ClientInfo?) {
-        events.append("ok \(tool) \(client?.name ?? "-")")
-    }
-
-    func toolFailed(_ tool: String, error: String, durationMs: Int, client: ClientInfo?) {
-        events.append("fail \(tool) \(client?.name ?? "-")")
-        errors.append(error)
-    }
-
-    var errors: [String] = []
-}
-
-actor LineCollector {
-    struct Timeout: Error {}
-    private var lines: [String] = []
-
-    func append(_ line: String) { lines.append(line) }
-    func all() -> [String] { lines }
-
-    func waitFor(count: Int, timeout: TimeInterval = 5) async throws {
-        let deadline = Date().addingTimeInterval(timeout)
-        while lines.count < count {
-            if Date() > deadline { throw Timeout() }
-            try await Task.sleep(nanoseconds: 20_000_000)
-        }
     }
 }

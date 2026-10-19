@@ -1,3 +1,4 @@
+import MCP
 import XCTest
 @testable import DesktopMCPCore
 
@@ -10,7 +11,7 @@ final class AnalyticsTests: XCTestCase {
     func testEventsMatchTheOriginalPostHogPayload() async throws {
         let outbox = Outbox()
         let analytics = PostHogAnalytics(send: { await outbox.add($0) })
-        let client = ClientInfo(name: "claude-code", version: "2.1")
+        let client = Client.Info(name: "claude-code", version: "2.1")
         // Events captured before delivery starts are queued, not lost.
         await analytics.toolSucceeded("Click", durationMs: 42, client: client)
         let delivery = Task { await analytics.run() }

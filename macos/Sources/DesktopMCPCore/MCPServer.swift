@@ -1,153 +1,5 @@
 import Foundation
-
-/// One item of a tool result.
-public enum ToolContent: Equatable, Sendable {
-    case text(String)
-    case image(data: Data, mimeType: String)
-}
-
-extension ToolContent: Codable {
-    enum CodingKeys: String, CodingKey {
-        case type, text, data, mimeType
-    }
-
-    public init(from decoder: any Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        switch try container.decode(String.self, forKey: .type) {
-        case "text":
-            self = .text(try container.decode(String.self, forKey: .text))
-        case "image":
-            self = .image(data: try container.decode(Data.self, forKey: .data),
-                          mimeType: try container.decode(String.self, forKey: .mimeType))
-        case let other:
-            throw DecodingError.dataCorruptedError(forKey: .type, in: container, debugDescription: "Unknown content type '\(other)'")
-        }
-    }
-
-    public func encode(to encoder: any Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        switch self {
-        case .text(let text):
-            try container.encode("text", forKey: .type)
-            try container.encode(text, forKey: .text)
-        case .image(let data, let mimeType):
-            try container.encode("image", forKey: .type)
-            try container.encode(data, forKey: .data)  // base64, the encoder's default for Data
-            try container.encode(mimeType, forKey: .mimeType)
-        }
-    }
-}
-
-/// Raised by a tool handler to report a failure back to the client as an error result.
-public struct ToolError: Error, CustomStringConvertible, Sendable {
-    public let message: String
-    /// What telemetry may see. Defaults to the message; pass a fixed label when the message
-    /// quotes an argument (a URL, a hostname), which must stay on this machine.
-    public let telemetry: String
-
-    public init(_ message: String, telemetry: String? = nil) {
-        self.message = message
-        self.telemetry = telemetry ?? message
-    }
-
-    public var description: String { message }
-}
-
-public struct ToolAnnotations: Encodable, Sendable {
-    public var title: String
-    public var readOnly: Bool
-    public var destructive: Bool
-    public var idempotent: Bool
-    public var openWorld: Bool
-
-    enum CodingKeys: String, CodingKey {
-        case title
-        case readOnly = "readOnlyHint"
-        case destructive = "destructiveHint"
-        case idempotent = "idempotentHint"
-        case openWorld = "openWorldHint"
-    }
-}
-
-public struct Tool: Sendable {
-    public var name: String
-    public var description: String
-    public var inputSchema: JSONValue
-    public var annotations: ToolAnnotations
-    public var handler: @Sendable (ToolArguments) async throws -> [ToolContent]
-
-    var descriptor: ToolDescriptor {
-        ToolDescriptor(name: name, description: description, inputSchema: inputSchema, annotations: annotations)
-    }
-}
-
-/// Typed access to a tool call's `arguments` object, with the validation the Python server
-/// got from pydantic.
-public struct ToolArguments: Sendable {
-    public let raw: [String: JSONValue]
-
-    public init(_ raw: [String: JSONValue]) { self.raw = raw }
-
-    private func present(_ name: String) -> JSONValue? {
-        guard let value = raw[name], !value.isNull else { return nil }
-        return value
-    }
-
-    public func string(_ name: String) throws -> String? {
-        guard let value = present(name) else { return nil }
-        guard let s = value.stringValue else { throw ToolError("'\(name)' must be a string") }
-        return s
-    }
-
-    public func requiredString(_ name: String) throws -> String {
-        guard let s = try string(name) else { throw ToolError("Missing required argument '\(name)'") }
-        return s
-    }
-
-    public func int(_ name: String) throws -> Int? {
-        guard let value = present(name) else { return nil }
-        if let n = value.intValue { return n }
-        if let s = value.stringValue, let n = Int(s) { return n }
-        throw ToolError("'\(name)' must be an integer")
-    }
-
-    public func double(_ name: String) throws -> Double? {
-        guard let value = present(name) else { return nil }
-        if let n = value.doubleValue { return n }
-        if let s = value.stringValue, let n = Double(s) { return n }
-        throw ToolError("'\(name)' must be a number")
-    }
-
-    public func bool(_ name: String) throws -> Bool? {
-        guard let value = present(name) else { return nil }
-        if let b = value.boolValue { return b }
-        if let s = value.stringValue?.lowercased(), ["true", "false"].contains(s) { return s == "true" }
-        throw ToolError("'\(name)' must be a boolean")
-    }
-
-    public func choice(_ name: String, in allowed: [String], default fallback: String) throws -> String {
-        guard let s = try string(name) else { return fallback }
-        guard allowed.contains(s) else {
-            throw ToolError("'\(name)' must be one of: \(allowed.joined(separator: ", "))")
-        }
-        return s
-    }
-
-    public func intList(_ name: String) throws -> [Int]? {
-        guard let value = present(name) else { return nil }
-        guard let items = value.arrayValue else { throw ToolError("'\(name)' must be a list of integers") }
-        return try items.map { item in
-            guard let n = item.intValue else { throw ToolError("'\(name)' must be a list of integers") }
-            return n
-        }
-    }
-}
-
-/// Receives the outcome of every tool call (the PostHog analytics in the original).
-public protocol ToolCallObserver: Sendable {
-    func toolSucceeded(_ tool: String, durationMs: Int, client: ClientInfo?) async
-    func toolFailed(_ tool: String, error: String, durationMs: Int, client: ClientInfo?) async
-}
+import MCP
 
 /// Tool registry and JSON-RPC dispatch, shared by every transport and session.
 public actor MCPServer {
@@ -238,7 +90,7 @@ public actor MCPServer {
         case "ping":
             return EmptyResult()
         case "tools/list":
-            return ToolsListResult(tools: toolOrder.compactMap { tools[$0]?.descriptor })
+            return ToolsListResult(tools: toolOrder.compactMap { tools[$0].map(Self.descriptor) })
         case "tools/call":
             guard case .toolCall(let params) = request.params, let toolName = params.name else {
                 throw RPCError(code: -32602, message: "Missing tool name")
@@ -246,7 +98,8 @@ public actor MCPServer {
             guard let tool = tools[toolName] else {
                 throw RPCError(code: -32602, message: "Unknown tool: \(toolName)")
             }
-            return await call(tool, arguments: ToolArguments(params.arguments ?? [:]), client: client)
+            return await call(tool, arguments: ToolArguments(Self.sdkValues(params.arguments ?? [:])),
+                              client: client.map { Client.Info(name: $0.name, version: $0.version) })
         case "resources/list":
             return ["resources": []] as JSONValue
         case "resources/templates/list":
@@ -258,7 +111,30 @@ public actor MCPServer {
         }
     }
 
-    private func call(_ tool: Tool, arguments: ToolArguments, client: ClientInfo?) async -> ToolCallResult {
+    // MARK: Temporary shim onto the SDK-typed tools (deleted with this type in Task 3)
+
+    private static func descriptor(_ tool: Tool) -> ToolDescriptor {
+        ToolDescriptor(name: tool.name, description: tool.description,
+                       inputSchema: convert(tool.inputSchema, to: JSONValue.self) ?? .null,
+                       annotations: tool.annotations)
+    }
+
+    private static func sdkValues(_ arguments: [String: JSONValue]) -> [String: Value] {
+        convert(arguments, to: [String: Value].self) ?? [:]
+    }
+
+    /// Both types are plain JSON, so a round trip through the wire format converts one into
+    /// the other.
+    private static func convert<From: Encodable, To: Decodable>(_ value: From, to type: To.Type) -> To? {
+        do {
+            return try JSONCoding.decode(type, from: JSONCoding.encode(value))
+        } catch {
+            log("Could not convert \(From.self) to \(To.self): \(error)")
+            return nil
+        }
+    }
+
+    private func call(_ tool: Tool, arguments: ToolArguments, client: Client.Info?) async -> ToolCallResult {
         let started = DispatchTime.now()
         func elapsed() -> Int { Int((DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds) / 1_000_000) }
         let observer = self.observer

@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import MCP
 
 /// The operations behind each tool. Mirrors the Python `Desktop` service.
 public final class Desktop: Sendable {
@@ -50,7 +51,7 @@ public final class Desktop: Sendable {
         value == value.rounded() ? String(Int(value)) : String(format: "%g", value)
     }
 
-    public func snapshot(useVision: Bool) async -> [ToolContent] {
+    public func snapshot(useVision: Bool) async -> [MCP.Tool.Content] {
         let state = await self.state(useVision: useVision)
         var text = """
         Focused Window:
@@ -79,7 +80,7 @@ public final class Desktop: Sendable {
 
             """
         }
-        var content: [ToolContent] = [.text(text)]
+        var content: [MCP.Tool.Content] = [.text(text)]
         if useVision, let png = state.screenshot {
             content.append(.image(data: png, mimeType: "image/png"))
         }

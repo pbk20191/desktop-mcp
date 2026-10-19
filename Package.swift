@@ -17,6 +17,8 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-nio-http2", from: "1.35.0"),
         // Official MCP Swift SDK. 0.12.1 transitively pins swift-docc-plugin to branch: "main"; accepted.
         .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.12.1"),
+        // Already in the graph through the SDK; declared because `Transport` requires a `Logger`.
+        .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
         // Transitive (via swift-nio), capped to keep the graph loadable by Xcode 16.4's SwiftPM
         // (1.3+ manifests need a newer toolchain); macos/scripts/build-release.sh picks that Xcode.
         .package(url: "https://github.com/apple/swift-collections", "1.1.0"..<"1.3.0"),
@@ -26,6 +28,7 @@ let package = Package(
             name: "DesktopMCPCore",
             dependencies: [
                 .product(name: "MCP", package: "swift-sdk"),
+                .product(name: "Logging", package: "swift-log"),
             ],
             path: "macos/Sources/DesktopMCPCore",
             linkerSettings: [

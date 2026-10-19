@@ -1,4 +1,5 @@
 import Foundation
+import MCP
 
 // The JSON-RPC 2.0 and MCP message shapes, as Codable types. Decoding classifies each incoming
 // message (request, notification, response, or invalid) and gives the parameters of the methods
@@ -268,7 +269,7 @@ public struct ToolDescriptor: Encodable, Sendable {
 }
 
 public struct ToolCallResult: Encodable, Sendable {
-    public var content: [ToolContent]
+    public var content: [MCP.Tool.Content]
     public var isError: Bool
 }
 
