@@ -151,8 +151,7 @@ public sealed partial class ScrapeClient
             // Through a proxy there is no pin: the proxy resolves the host itself, so a DNS answer that changes after
             // validation (rebinding) can still redirect it, as with upstream behind a proxy. What can be closed is the
             // parser gap: the proxy is asked for System.Uri's host, which may differ from the urlsplit host validated
-            // above ("0x7f.1" is 127.0.0.1 to System.Uri), so that host must pass the same rule. This also covers WebProxy
-            // itself, which always sends a loopback host direct, past the proxy and with no pin.
+            // above ("0x7f.1" is 127.0.0.1 to System.Uri), so that host must pass the same rule.
             if (!SameHost(target.IdnHost, UrlParts.Parse(url).Hostname!))
                 await ResolveAllowedAsync(target.IdnHost.Trim('[', ']'), cancellationToken).ConfigureAwait(false);
             handler = new SocketsHttpHandler { UseProxy = true, Proxy = new WebProxy(proxy) };
@@ -221,7 +220,7 @@ public sealed partial class ScrapeClient
             catch (ArgumentException) { }
         }
         var text = Encoding.UTF8.GetString(body);
-        return text.StartsWith('﻿') ? text[1..] : text;
+        return text.StartsWith('\uFEFF') ? text[1..] : text;
     }
 
     private static string? MetaCharset(byte[] body)

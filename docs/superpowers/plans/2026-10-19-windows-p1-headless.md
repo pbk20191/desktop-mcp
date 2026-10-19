@@ -11,6 +11,8 @@
 
 **Tech Stack:** .NET 10 NativeAOT, ModelContextProtocol 2.2.0, System.CommandLine 2.0.12, Tomlyn 2.10.1 (source-generated), CsWinRT (Windows SDK 22621 projection: `Windows.ApplicationModel.DataTransfer`, `Windows.UI.Notifications`), hand-declared `LibraryImport`s, xUnit 2.9.3.
 
+> **Amendment (Task 11b):** CsWin32 (generated from each project's `NativeMethods.txt`) replaced the hand-declared `LibraryImport`s, and `Interop/CoreNative.cs` and `Desktop/Interop/Native.cs` no longer exist. The task steps below keep the original text as history.
+
 **Spec:** `docs/superpowers/specs/2026-10-19-windows-port-design.md`, mainly §4 (result shapes, coercion), §5 (cancellation, Job Object), §8 (CLI, config, core tools), §9 (testing), §10 (differences) and §11 (P1 scope). The upstream reference is CursorTouch/Windows-MCP at `128f2960c79b74bd2630f4dbc9d4f664f4ce89b3`; paths below such as `__main__.py:589` are relative to `src/windows_mcp/` in that tree. Every output string, error message, default and limit is copied from there unless the "Decisions" section says otherwise.
 
 ## Global Constraints
@@ -51,8 +53,9 @@ Upstream is Python on FastMCP, so some behaviour has no exact C# equivalent. Eac
     - an empty or whitespace destination counts as missing;
     - a directory loop in a copied tree is an error, checked before anything is created or deleted;
     - deletes remove symlinks and junctions as links and never enter them;
+    - delete and move act on a link itself when the path argument's final component is a symlink or junction: the parent is resolved, the link is not followed, and a delete (recursive or not) or a move, including the overwritten destination of a move, removes or renames only the link. This is a deliberate departure from upstream's `resolve()` + `rmtree`, which delete or move the target. A link moved across volumes is an error rather than a copy of its target. The overlap checks compare the link's own path, so moving a link is not refused because its target overlaps the destination; the resolved-path checks between real paths still apply. Copy, read, write, info, list and search still resolve links (upstream parity);
     - other reparse points, such as cloud placeholders, are handled as plain entries, as `rmtree` does.
-12. **FileSystem glob** (`filesystem/service.py:210, 265`). Python 3.14 `pathlib` rules: `/` or `\` separate segments, `**` matches zero or more directories (and, as the last segment, every file and directory below), wildcards are fnmatch (`*`, `?`, `[seq]`, `[!seq]`), matching is case-insensitive, symlinked directories are not followed, unreadable directories are skipped, and an absolute pattern fails with `Non-relative patterns are unsupported`. Glob does not follow junctions either; Python 3.14's `**` does, so this is stricter. The other known differences are `..` segments, a trailing separator, the on-disk spelling of matches and repeated `**`.
+12. **FileSystem glob** (`filesystem/service.py:210, 265`). Python 3.14 `pathlib` rules: `/` or `\` separate segments, `**` matches zero or more directories (and, as the last segment, every file and directory below), wildcards are fnmatch (`*`, `?`, `[seq]`, `[!seq]`, translated as CPython 3.13's `fnmatch.translate` with atomic groups, so many stars cannot backtrack catastrophically), matching is case-insensitive, symlinked directories are not followed, unreadable directories are skipped, and an absolute pattern fails with `Non-relative patterns are unsupported`. Glob does not follow junctions either; Python 3.14's `**` does, so this is stricter. The other known differences are `..` segments, a trailing separator, the on-disk spelling of matches and repeated `**`.
 13. **Registry** (`registry/service.py`). Upstream drives PowerShell cmdlets; we use `Microsoft.Win32.Registry` and reproduce what PowerShell 7 prints (pwsh is upstream's first choice): cmdlet-prefixed errors such as `Get-ItemProperty: Property <name> does not exist at path HKEY_CURRENT_USER\...`, DWORD/QWORD shown unsigned, `Set-ItemProperty`'s conversions (a DWord accepts `-1`, `42`, `0x10`; Binary accepts a single byte), and `Format-List` layout for `list` (names padded to the longest, arrays as `{a, b}`, cut after 4 items with `…`, no line wrapping). Output uses `\n` line endings (upstream's PowerShell output mixes `\r\n` and `\n`). Paths: `HKCU:`/`HKLM:` drives and `Registry::<hive>\...` provider paths. Messages were checked against pwsh 7.6.7 on 2026-10-19. Also:
     - Upstream's real error output is CLIXML text, because it captures pwsh's stderr. The port prints the clean cmdlet text instead.
     - Non-registry drives are refused.
@@ -85,6 +88,8 @@ Upstream is Python on FastMCP, so some behaviour has no exact C# equivalent. Eac
 20. **CLI location.** Spec §3 places the CLI in the exe project. It lives in `DesktopMcp.Server/Cli` so `DesktopMcp.Server.Tests` can test it; the exe's `Program.cs` is a one-line call.
 
 ## File map
+
+> **Amendment (Task 11b):** `src/DesktopMcp.Core/Interop/CoreNative.cs` and `src/DesktopMcp.Desktop/Interop/Native.cs` below were replaced by CsWin32 `NativeMethods.txt` files in both projects.
 
 ```
 windows/

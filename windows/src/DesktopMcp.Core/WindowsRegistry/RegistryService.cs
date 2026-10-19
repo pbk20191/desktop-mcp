@@ -72,11 +72,10 @@ public sealed partial class RegistryService
         try
         {
             var location = RegistryLocation.Parse(path);
+            // The only guard that keeps a hive from being deleted: a path with no subkey names the hive itself.
             if (location.SubKey.Length == 0) throw new RegistryCommandException(HiveDeleteRefused);
-            using (var key = location.Open(path, writable: false))
-            {
-                if (key.Name.Equals(location.HiveName, StringComparison.OrdinalIgnoreCase)) throw new RegistryCommandException(HiveDeleteRefused);
-            }
+            // Opening first reports a missing key with the same error as the other commands.
+            using (location.Open(path, writable: false)) { }
             using var root = RegistryKey.OpenBaseKey(location.Hive, RegistryView.Default);
             root.DeleteSubKeyTree(location.SubKey);
             return $"Registry key [{path}] deleted.";
