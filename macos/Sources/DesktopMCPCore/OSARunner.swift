@@ -58,7 +58,11 @@ public enum OSARunner {
 
     /// The Shell tool's result for an osascript-mode command, shaped like the child-process path.
     public static func run(_ source: String, timeout: Double, requested: Int, policy: Policy) async -> Shell.Result {
-        let execution = await execute(source, timeout: timeout, policy: policy)
+        result(of: await execute(source, timeout: timeout, policy: policy), timeout: timeout, requested: requested)
+    }
+
+    /// The Shell tool's text and status for a finished execution.
+    static func result(of execution: Execution, timeout: Double, requested: Int) -> Shell.Result {
         let logs = execution.logs.joined(separator: "\n")
         if execution.cancelled { return Shell.Result(output: "Command cancelled", status: -1) }
         if execution.timedOut {
@@ -73,11 +77,19 @@ public enum OSARunner {
                 prefix = "\(range.location):\(range.location + range.length): "
             }
             let kind = execution.isSyntaxError ? "syntax error" : "execution error"
-            let text = "\(prefix)\(kind): \(execution.errorMessage ?? "") (\(number))"
+            var text = "\(prefix)\(kind): \(execution.errorMessage ?? "") (\(number))"
+            if number == errAENoUserInteraction { text += "\n" + userInteractionHint }
             return Shell.Result(output: Shell.combine("", logs.isEmpty ? text : logs + "\n" + text), status: 1)
         }
         return Shell.Result(output: Shell.combine(execution.result, logs).trimmingCharacters(in: .whitespacesAndNewlines), status: 0)
     }
+
+    /// StandardAdditions' dialogs need an application host; this server is not one, so the
+    /// error gets a pointer to what works (System Events shows them on any script's behalf).
+    static let userInteractionHint = "Hint: this server cannot show dialogs itself. Address user-interface commands "
+        + "(display dialog/alert/notification, choose from list) to System Events, e.g. "
+        + "AppleScript: tell application \"System Events\" to display alert \"Title\" message \"Text\"  "
+        + "JXA: var se = Application(\"System Events\"); se.includeStandardAdditions = true; se.displayAlert(\"Title\", {message: \"Text\"})"
 
     // MARK: Language
 

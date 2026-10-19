@@ -81,6 +81,17 @@ final class OSARunnerTests: XCTestCase {
         XCTAssertEqual(failure.status, 1)
     }
 
+    func testNoUserInteractionErrorsCarryAHintTowardsSystemEvents() {
+        // Not run against a real dialog (it would need a UI host); the mapping itself is what matters.
+        var execution = OSARunner.Execution()
+        execution.errorNumber = Int(errAENoUserInteraction)
+        execution.errorMessage = "No user interaction allowed."
+        let result = OSARunner.result(of: execution, timeout: 10, requested: 10)
+        XCTAssertEqual(result.status, 1)
+        XCTAssertTrue(result.output.hasPrefix("execution error: No user interaction allowed. (-1713)\nHint: "), result.output)
+        XCTAssertTrue(result.output.contains("System Events"))
+    }
+
     func testDeniedApplicationsCannotBeSentEvents() async {
         var policy = OSARunner.Policy()
         policy.deniedBundleIDs = ["com.apple.finder"]
