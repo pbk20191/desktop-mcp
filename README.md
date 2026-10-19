@@ -10,7 +10,7 @@ Only the command name, the config directory (`~/.desktop-mcp`) and the environme
 | Port | Port of | Status | Language |
 |---|---|---|---|
 | [`macos/`](macos/) + root `Package.swift` | [CursorTouch/MacOS-MCP](https://github.com/CursorTouch/MacOS-MCP) | working, 12 tools | Swift 6 (SwiftPM) |
-| [`windows/`](windows/) | [CursorTouch/Windows-MCP](https://github.com/CursorTouch/Windows-MCP) | in progress | C# (.NET 10 NativeAOT) |
+| [`windows/`](windows/) | [CursorTouch/Windows-MCP](https://github.com/CursorTouch/Windows-MCP) | in progress, Windows 11 22H2+ | C# (.NET 10 NativeAOT) |
 | `linux/` | none upstream | idea | to be decided (Rust) |
 
 ## Layout
@@ -41,7 +41,7 @@ belongs in each port's README.
 
 Tools split into two groups, which matters for headless use:
 
-- **Core tools** work without a display: `Shell`, `Scrape`, `Wait`, and the like. They run on a
+- **Core tools** work without a display: `Shell`/`PowerShell`, `Scrape`, `Wait`, and the like. They run on a
   server or in CI as they are.
 - **Desktop tools** need a session to drive: `Snapshot`, `Click`, `Type`, `Screenshot`, `App`.
   Without a display they return an error result instead of failing to start. On a headless
@@ -51,8 +51,8 @@ Tools split into two groups, which matters for headless use:
 ## Principles shared by all ports
 
 - No runtime dependencies. Build-time packages compiled into the binary are fine.
-  The Windows port is an exception: it requires the Windows App SDK runtime (user decision, for
-  Win2D).
+  The Windows port is an exception: it requires the system Windows App SDK 2.5 runtime (user
+  decision), and ships as one exe that bootstraps it itself.
 - One root task per process; servers, telemetry and signal handling are its children, and the
   process exits by returning, never by calling `exit()`.
 - System frameworks over hand-rolled parsers and protocol code where the platform has them.
