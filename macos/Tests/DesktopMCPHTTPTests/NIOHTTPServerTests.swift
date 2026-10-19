@@ -6,10 +6,11 @@ import XCTest
 
 /// End to end over real sockets: NIOTransportServices listener, HTTP/1.1, optional TLS.
 final class NIOHTTPServerTests: XCTestCase {
-    func start(authKey: String? = nil, allowlist: [String]? = nil,
-               tls: NIOHTTPServer.TLSFiles? = nil) async throws -> (Int, Task<Void, Error>, HTTPApp) {
+    func start(authKey: String? = nil, allowlist: [String]? = nil, tls: NIOHTTPServer.TLSFiles? = nil,
+               registry: ToolRegistry? = nil) async throws -> (Int, Task<Void, Error>, HTTPApp) {
         let settings = HTTPApp.Settings(authKey: authKey, ipAllowlist: try allowlist.map(IPNetwork.parseAllowlist))
-        let app = HTTPApp(registry: await DesktopMCP.makeRegistry(), settings: settings)
+        let registry = if let registry { registry } else { await DesktopMCP.makeRegistry() }
+        let app = HTTPApp(registry: registry, settings: settings)
         let listening = try await NIOHTTPServer.bind(host: "127.0.0.1", port: 0, tls: tls)
         let task = Task { try await NIOHTTPServer.serve(listening, app: app) }
         return (try XCTUnwrap(listening.port), task, app)
@@ -112,6 +113,66 @@ final class NIOHTTPServerTests: XCTestCase {
         XCTAssertEqual(seen, 2)
     }
 
+    /// A session started with `initialize` over URLSession; its id.
+    func initializeSession(port: Int) async throws -> String {
+        let initialize = #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}"#
+        let (_, response) = try await URLSession.shared.data(for: request(
+            "http://127.0.0.1:\(port)/mcp", body: initialize,
+            headers: ["Content-Type": "application/json", "Accept": "application/json, text/event-stream"]))
+        return try XCTUnwrap((response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Mcp-Session-Id"))
+    }
+
+    /// HTTP/1.1: a client that closes its connection (FIN) while a session's tool call streams
+    /// is noticed, and the call is cancelled instead of running to its end.
+    func testClosingTheConnectionCancelsASessionToolCall() async throws {
+        let observer = RecordingObserver()
+        let registry = await DesktopMCP.makeRegistry()
+        await registry.setObserver(observer)
+        let (port, task, app) = try await start(registry: registry)
+        defer { task.cancel(); Task { await app.shutdown() } }
+        let id = try await initializeSession(port: port)
+
+        let connection = try await RawConnection(port: port)
+        defer { connection.close() }
+        let wait = #"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"Wait","arguments":{"duration":30}}}"#
+        try await connection.send(RawConnection.request("POST", sessionID: id, body: wait))
+        let head = try await connection.readHead()
+        XCTAssertTrue(head.hasPrefix("HTTP/1.1 200"), head)
+        connection.finish()
+
+        try await observer.waitFor(error: "Cancelled.", timeout: 1)
+        let events = await observer.events
+        XCTAssertEqual(events, ["fail Wait t"])
+    }
+
+    /// HTTP/1.1: a `GET` stream whose client closed the socket is let go of, so the session's
+    /// next `GET` opens instead of getting 409.
+    func testADroppedGetLetsTheNextGetOpen() async throws {
+        let (port, task, app) = try await start()
+        defer { task.cancel(); Task { await app.shutdown() } }
+        let id = try await initializeSession(port: port)
+
+        let first = try await RawConnection(port: port)
+        defer { first.close() }
+        try await first.send(RawConnection.request("GET", sessionID: id))
+        let firstHead = try await first.readHead()
+        XCTAssertTrue(firstHead.hasPrefix("HTTP/1.1 200"), firstHead)
+        first.finish()
+
+        let deadline = Date().addingTimeInterval(2)
+        var last = ""
+        while Date() < deadline {
+            let second = try await RawConnection(port: port)
+            defer { second.close() }
+            try await second.send(RawConnection.request("GET", sessionID: id))
+            last = try await second.readHead()
+            if last.hasPrefix("HTTP/1.1 200") { break }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertTrue(last.hasPrefix("HTTP/1.1 200"), last)
+        XCTAssertTrue(last.lowercased().contains("content-type: text/event-stream"), last)
+    }
+
     func testStatelessClientsStillWorkOverSockets() async throws {
         let (port, task, app) = try await start()
         defer { task.cancel(); Task { await app.shutdown() } }
@@ -210,6 +271,21 @@ final class NIOHTTPServerTests: XCTestCase {
             headers: ["Content-Type": "application/json", "Accept": "application/json"]))
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
         XCTAssertEqual(try JSON.parse(data)["id"], 1)
+    }
+
+    /// A TLS client that offers only `http/1.1` gets the HTTP/1.1 pipeline.
+    func testHTTP1IsNegotiatedOverTLS() async throws {
+        let (tls, cleanup) = try selfSignedCertificate()
+        defer { cleanup() }
+        let (port, task, _) = try await start(tls: tls)
+        defer { task.cancel() }
+        let connection = try await RawConnection(port: port, alpn: ["http/1.1"])
+        defer { connection.close() }
+        let ping = #"{"jsonrpc":"2.0","id":1,"method":"ping"}"#
+        try await connection.send("POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
+            + "Accept: application/json\r\nContent-Length: \(ping.utf8.count)\r\n\r\n" + ping)
+        let head = try await connection.readHead()
+        XCTAssertTrue(head.hasPrefix("HTTP/1.1 200"), head)
     }
 
     func testHTTP2IsNegotiatedOverTLS() async throws {

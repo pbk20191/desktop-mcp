@@ -72,15 +72,16 @@ public enum NIOHTTPServer {
                         return channel.eventLoop.makeCompletedFuture {
                             try channel.pipeline.syncOperations.addHandler(NIOSSLServerHandler(context: sslContext))
                         }.flatMap {
-                            channel.configureAsyncHTTPServerPipeline(
-                                http2Configuration: http2Configuration,
+                            // `configureAsyncHTTPServerPipeline` would install the pipelining
+                            // handler on the HTTP/1.1 path (see `http1Connection`).
+                            channel.configureHTTP2AsyncSecureUpgrade(
                                 http1ConnectionInitializer: http1Connection,
-                                http2ConnectionInitializer: { $0.eventLoop.makeSucceededVoidFuture() },
-                                http2StreamInitializer: http2Stream)
+                                http2ConnectionInitializer: http2Connection)
                         }.map { Connection(channel: channel, negotiated: $0) }
                     }
                     return channel.eventLoop.makeCompletedFuture {
-                        try channel.pipeline.syncOperations.configureHTTPServerPipeline(withErrorHandling: true)
+                        try channel.pipeline.syncOperations.configureHTTPServerPipeline(
+                            withPipeliningAssistance: false, withErrorHandling: true)
                         let wrapped = try RequestChannel(wrappingChannelSynchronously: channel)
                         return Connection(channel: channel,
                                           negotiated: channel.eventLoop.makeSucceededFuture(.http1_1(wrapped)))
@@ -100,12 +101,25 @@ public enum NIOHTTPServer {
         return configuration
     }
 
-    /// After ALPN chose HTTP/1.1: the codec is already in place, add the protocol error handler.
+    /// HTTP/1.1, plain or chosen by ALPN: codec and protocol error handler, without NIO's
+    /// pipelining assistance. `HTTPServerPipelineHandler` stops reading while a response is
+    /// pending, so a client's FIN during a streamed response (a tool call, the `GET` stream)
+    /// would never be read and the work behind it never cancelled. Requests on a connection are
+    /// already handled one at a time by `handle(_:app:)`.
     @Sendable static func http1Connection(_ channel: Channel) -> EventLoopFuture<RequestChannel> {
         channel.eventLoop.makeCompletedFuture {
-            try channel.pipeline.syncOperations.addHandler(HTTPServerProtocolErrorHandler())
+            try channel.pipeline.syncOperations.configureHTTPServerPipeline(
+                withPipeliningAssistance: false, withErrorHandling: true)
             return try RequestChannel(wrappingChannelSynchronously: channel)
         }
+    }
+
+    /// After ALPN chose HTTP/2: the HTTP/2 handler and its stream multiplexer.
+    @Sendable static func http2Connection(
+        _ channel: Channel
+    ) -> EventLoopFuture<(Void, NIOHTTP2Handler.AsyncStreamMultiplexer<RequestChannel>)> {
+        channel.configureAsyncHTTP2Pipeline(mode: .server, configuration: http2Configuration,
+                                            streamInitializer: http2Stream).map { ((), $0) }
     }
 
     /// Each HTTP/2 stream is translated to HTTP/1.1 parts; the codec also drops connection-specific
@@ -275,9 +289,19 @@ public enum NIOHTTPServer {
             // DATA frames until END_STREAM.
             try await outbound.write(.head(HTTPResponseHead(version: request.version, status: status, headers: headers)))
             let consumer = Task {
-                for await chunk in stream {
-                    try await outbound.write(.body(.byteBuffer(ByteBuffer(string: chunk))))
+                // A failed write (the client is gone) cancels this task and keeps iterating:
+                // the next `next()` sees the cancellation and terminates the stream, which
+                // stops the work behind it, even if the close callback has not run yet.
+                var failure: (any Error)?
+                for await chunk in stream where failure == nil {
+                    do {
+                        try await outbound.write(.body(.byteBuffer(ByteBuffer(string: chunk))))
+                    } catch {
+                        failure = error
+                        withUnsafeCurrentTask { $0?.cancel() }
+                    }
                 }
+                if let failure { throw failure }
             }
             // Cancelling the consumer terminates the stream, which stops the work behind it;
             // that happens when the client goes away and when the server is stopping.
