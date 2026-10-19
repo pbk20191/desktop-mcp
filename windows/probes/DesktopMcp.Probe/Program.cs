@@ -2,12 +2,13 @@ using System.Diagnostics;
 using DesktopMcp.Desktop.Dispatching;
 using DesktopMcp.Probe;
 
-// AOT probes for P0. Usage: desktop-mcp-probe dispatcher | imaging [out.png]
+// AOT probes for P0. Usage: desktop-mcp-probe dispatcher | imaging [out.png] | capture [out.png]
 var command = args.Length > 0 ? args[0] : "dispatcher";
 var ok = command switch
 {
     "dispatcher" => await ProbeDispatcherAsync(),
     "imaging" => await ProbeImagingAsync(args.Length > 1 ? args[1] : "probe-imaging.png"),
+    "capture" => await ProbeCaptureAsync(args.Length > 1 ? args[1] : "probe-capture.png"),
     _ => Fail($"unknown probe '{command}'"),
 };
 return ok ? 0 : 1;
@@ -44,6 +45,20 @@ static async Task<bool> ProbeImagingAsync(string path)
     File.WriteAllBytes(path, png);
     Console.WriteLine($"imaging: {png.Length / 1024} KB PNG in {clock.ElapsedMilliseconds} ms -> {Path.GetFullPath(path)}");
     return png.Length > 0;
+}
+
+static async Task<bool> ProbeCaptureAsync(string path)
+{
+    DesktopMcp.Desktop.AppRuntime.EnsureInitialized();
+    Console.WriteLine($"capture: supported={DesktopMcp.Desktop.Capture.GraphicsCaptureService.IsSupported}");
+    var clock = Stopwatch.StartNew();
+    var image = await new DesktopMcp.Desktop.Capture.GraphicsCaptureService().CapturePrimaryMonitorAsync(CancellationToken.None);
+    var captureMs = clock.ElapsedMilliseconds;
+    var png = await new DesktopMcp.Desktop.Imaging.Win2DRenderer().RenderPngAsync(image, 1.0, []);
+    File.WriteAllBytes(path, png);
+    Console.WriteLine($"capture: item={DesktopMcp.Desktop.Capture.GraphicsCaptureService.LastItemCreationPath}, borderSuppressed={DesktopMcp.Desktop.Capture.GraphicsCaptureService.LastBorderSuppressed}");
+    Console.WriteLine($"capture: {image.Width}x{image.Height} in {captureMs} ms, png {png.Length / 1024} KB -> {Path.GetFullPath(path)}");
+    return image.Width > 0;
 }
 
 static bool Fail(string message) { Console.Error.WriteLine(message); return false; }

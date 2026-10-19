@@ -38,17 +38,4 @@ internal static unsafe partial class Native
 
     [LibraryImport("combase.dll")]
     internal static partial int RoGetActivationFactory(nint activatableClassId, in Guid iid, out nint factory);
-
-    // d3d11
-    internal const int D3DDriverTypeHardware = 1;
-    internal const uint D3D11CreateDeviceBgraSupport = 0x20;
-    internal const uint D3D11SdkVersion = 7;
-
-    [LibraryImport("d3d11.dll")]
-    internal static partial int D3D11CreateDevice(
-        nint adapter, int driverType, nint software, uint flags, nint featureLevels, uint featureLevelCount,
-        uint sdkVersion, out nint device, out int featureLevel, out nint immediateContext);
-
-    [LibraryImport("d3d11.dll")]
-    internal static partial int CreateDirect3D11DeviceFromDXGIDevice(nint dxgiDevice, out nint graphicsDevice);
 }
