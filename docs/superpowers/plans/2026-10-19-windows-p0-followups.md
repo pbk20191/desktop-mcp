@@ -49,6 +49,16 @@ left for later phases. Each later phase's plan must pick up its section.
   - Remove the diagnostic static `LastBorderSuppressed` from the public API.
   - Call `GraphicsCaptureAccess.RequestAccessAsync(Borderless)` where available.
   - Re-check with the user watching whether a capture border appears.
+- UIA hang breaker (from desk-mcp, idea only): put a hard deadline on every UIA call, make the UIA worker replaceable when a call hangs, and block a timed-out process or HWND for about 90 s. Snapshot skips a blocked window and does not apply the 3x retry to a timeout.
+- OCR fallback in Snapshot: when UIA yields nothing for a window, run WinRT `Windows.Media.Ocr` on the captured frame in memory (tiled, with de-duplication) and report the text lines. This changes the Snapshot text, not the tool schema.
+
+## P3 (desktop act)
+
+Ideas from the desk-mcp analysis (`DigitalDog1/desk-mcp` at e6d42fc, Apache-2.0). Re-implement them; do not copy code.
+
+- Before acting on a label, look the element up again by RuntimeId and use its current centre. Return a "stale label" error if it is gone, and note it if it is disabled.
+- Check the count `SendInput` returns. When input is blocked (UIPI, elevated target), return a clear "input blocked: the target window runs elevated" error.
+- Add a short pause between moving the cursor and pressing the button, because WinForms has been seen dropping instant clicks. Add a WinForms target to the desktop tests.
 
 ## P4 (desktop control)
 
@@ -56,6 +66,11 @@ left for later phases. Each later phase's plan must pick up its section.
 - Document that `TimerHandle.Dispose` off the dispatcher thread may let one more tick run.
 - Add a `Func<Task>` overload and the `DispatcherQueueSynchronizationContext` that spec §5 describes.
 - Overlays: evaluate `AppWindow` with WinUI 3 or Composition plus Win2D before `UpdateLayeredWindow`. Check whether WinUI 3 XAML needs a `.pri` file under NativeAOT, which would break the single-exe rule.
+- Process allowlist (new config key): just before `SendInput`, check the process that owns the target window against an optional allowlist. desk-mcp's title-based allowlist is bypassed whenever no title is given, so match on the process.
+
+## P5 (HTTP)
+
+- JSONL audit log written from the SDK call filter, so every tool call is recorded with its name, arguments (with secrets redacted), result status and duration.
 
 ## P6 (release)
 
@@ -69,5 +84,11 @@ left for later phases. Each later phase's plan must pick up its section.
 - Only CsWinRT activation is routed to the static Win2D. A direct `RoGetActivationFactory` call for a `Microsoft.Graphics.Canvas.*` class fails with `REGDB_E_CLASSNOTREG`; keep any new Win2D use on the projected types.
 - `D3DCOMPILER_47.dll` is delay-loaded from System32 (it ships with the OS); confirm it is present on the supported Windows 11 builds.
 - Each exe `.pdb` is about 115 MB and the cache about 173 MB per platform; keep both out of the release assets and out of git.
+- Ship one `.mcpb` bundle per architecture: an MCP Bundle with server type "binary" pointing at `desktop-mcp.exe`, and `user_config` mapped to `DESKTOP_MCP_*` variables. Generate its version from the build so it cannot drift.
+- `desktop-mcp doctor` CLI command: report the OS build, Windows App SDK runtime, session and desktop, elevation, DPI awareness and display list. It must not inject input.
+- MSAA fallback in Snapshot for windows where UIA returns too little: walk deeper automatically.
+- Optional `Ocr` and `ReadTable` tools, off by default (user approved, 2026-10-19). They extend the upstream contract, so they live outside `spec/windows/tools.json`'s upstream set: add a section for port-specific tools, enabled through config, and list them in the README's differences.
+- Windows On-device Agent Registry (`odr.exe`, preview): do not register yet. Packaged or sparse servers run contained in a separate agent session, which cannot drive the user's desktop. Add a README note. The `.mcpb` above can be registered experimentally with `odr mcp add` under Developer Mode with agent-connector protections reduced. Reassess when ODR reaches GA or Microsoft documents user-desktop access for third-party connectors. Research notes: `odr-research.md` (session scratchpad, summarised here).
+- Rejected from desk-mcp: Chrome DevTools Protocol browser tools (an open debug port and arbitrary JS evaluation), batch execution and delta snapshots (contract changes with unproven gains), and its compact JSON tree output (our line format is about 7x smaller).
 - NOTICE line 3 is about 110 characters.
 - Spec polish: re-flow the long line in §4 and the ragged line in §5.
