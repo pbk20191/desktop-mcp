@@ -1,17 +1,4 @@
-using DesktopMcp.Core;
-using DesktopMcp.Server.Tools;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
+using DesktopMcp.Server.Cli;
 
-// P0: stdio only. The CLI (serve/install/uninstall/auth) arrives in P1, HTTP in P5.
-var builder = Host.CreateEmptyApplicationBuilder(settings: null);
-builder.Services
-    .AddMcpServer(options =>
-    {
-        options.ServerInfo = new() { Name = ServerText.Name, Version = ServerText.Version };
-        options.ServerInstructions = ServerText.Instructions;
-    })
-    .WithStdioServerTransport()
-    .WithTools(ToolRegistry.CreateAll(ToolSpecCatalog.LoadEmbedded()));
-
-await builder.Build().RunAsync();
+// The CLI (spec §8) lives in DesktopMcp.Server so it can be tested; this exe is only the composition root.
+return await CliApp.RunAsync(args);
