@@ -26,11 +26,32 @@ internal static class PathResolver
         return resolved;
     }
 
-    private static string? FinalPath(string path)
+    /// <summary>
+    /// Like <see cref="Resolve"/>, but a symbolic link or junction in the final component is not followed (Decisions
+    /// 11: delete and move act on a link itself). The parent is resolved, and the link keeps its own name.
+    /// </summary>
+    public static string ResolveKeepingLink(string path)
     {
-        // FILE_FLAG_BACKUP_SEMANTICS is required to open a directory.
+        var full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path.Length == 0 ? "." : path));
+        if (!IsLink(full)) return Resolve(full);
+        return FinalPath(full, openReparsePoint: true) ?? Path.Combine(Resolve(Path.GetDirectoryName(full)!), Path.GetFileName(full));
+    }
+
+    /// <summary>Whether <paramref name="path"/> itself is a symbolic link or junction (see DirectoryTree.IsLink).</summary>
+    public static bool IsLink(string path)
+    {
+        // FileInfo reads the attributes of the entry itself, directory or not. A missing path reports -1 (every bit).
+        var info = new FileInfo(path);
+        return (int)info.Attributes != -1 && DirectoryTree.IsLink(info);
+    }
+
+    private static string? FinalPath(string path, bool openReparsePoint = false)
+    {
+        // FILE_FLAG_BACKUP_SEMANTICS is required to open a directory; FILE_FLAG_OPEN_REPARSE_POINT opens a link itself.
+        var flags = FILE_FLAGS_AND_ATTRIBUTES.FILE_FLAG_BACKUP_SEMANTICS
+            | (openReparsePoint ? FILE_FLAGS_AND_ATTRIBUTES.FILE_FLAG_OPEN_REPARSE_POINT : 0);
         using var handle = PInvoke.CreateFile(path, 0, FILE_SHARE_MODE.FILE_SHARE_READ | FILE_SHARE_MODE.FILE_SHARE_WRITE | FILE_SHARE_MODE.FILE_SHARE_DELETE,
-            null, FILE_CREATION_DISPOSITION.OPEN_EXISTING, FILE_FLAGS_AND_ATTRIBUTES.FILE_FLAG_BACKUP_SEMANTICS, null);
+            null, FILE_CREATION_DISPOSITION.OPEN_EXISTING, flags, null);
         if (handle.IsInvalid) return null;
         var buffer = new char[1024];
         while (true)

@@ -228,6 +228,110 @@ public sealed class FileSystemServiceTests : IDisposable
         Assert.Equal("t", File.ReadAllText(P("target", "t.txt")));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void DeleteOfAJunctionRemovesOnlyTheLink(bool recursive)
+    {
+        Write(@"target\t.txt", "t");
+        Junction(P("j"), P("target"));
+        Assert.Equal($"Deleted directory: {P("j")}", _fs.DeletePath(P("j"), recursive));
+        Assert.False(Directory.Exists(P("j")));
+        Assert.Equal("t", File.ReadAllText(P("target", "t.txt")));
+    }
+
+    [SymlinkFact]
+    public void DeleteOfAFileSymlinkRemovesOnlyTheLink()
+    {
+        Write("target.txt", "t");
+        File.CreateSymbolicLink(P("link.txt"), P("target.txt"));
+        Assert.Equal($"Deleted file: {P("link.txt")}", _fs.DeletePath(P("link.txt"), false));
+        Assert.False(File.Exists(P("link.txt")));
+        Assert.Equal("t", File.ReadAllText(P("target.txt")));
+    }
+
+    [SymlinkFact]
+    public void DeleteOfADirectorySymlinkRemovesOnlyTheLink()
+    {
+        Write(@"target\t.txt", "t");
+        Directory.CreateSymbolicLink(P("link"), P("target"));
+        Assert.Equal($"Deleted directory: {P("link")}", _fs.DeletePath(P("link"), true));
+        Assert.False(Directory.Exists(P("link")));
+        Assert.Equal("t", File.ReadAllText(P("target", "t.txt")));
+    }
+
+    [Fact]
+    public void MoveOfAJunctionMovesTheLink()
+    {
+        Write(@"target\t.txt", "t");
+        Junction(P("j"), P("target"));
+        Directory.CreateDirectory(P("elsewhere"));
+        Assert.Equal($"Moved: {P("j")} -> {P("elsewhere", "j2")}", _fs.MovePath(P("j"), P("elsewhere", "j2"), false));
+        Assert.False(Directory.Exists(P("j")));
+        Assert.True(PathResolver.IsLink(P("elsewhere", "j2")));
+        Assert.Equal("t", File.ReadAllText(P("elsewhere", "j2", "t.txt")));
+        Assert.Equal(["t.txt"], Directory.EnumerateFileSystemEntries(P("target")).Select(Path.GetFileName));
+    }
+
+    [Fact]
+    public void ACrossVolumeMoveOfAJunctionNeverCopiesOrDeletesTheTarget()
+    {
+        Write(@"target\t.txt", "t");
+        Junction(P("j"), P("target"));
+        var fs = new FileSystemService(_root, () => true)
+        {
+            SameVolume = (_, _) => false,
+            MoveDirectory = (_, _) => throw new IOException("not same device"),
+        };
+        Assert.Equal("Error moving: not same device", fs.MovePath(P("j"), P("b"), false));
+        Assert.True(PathResolver.IsLink(P("j")));
+        Assert.False(Directory.Exists(P("b")));
+        Assert.Equal("t", File.ReadAllText(P("target", "t.txt")));
+    }
+
+    [Fact]
+    public void MoveOverwriteOntoAJunctionReplacesOnlyTheLink()
+    {
+        Write(@"target\t.txt", "t");
+        Junction(P("j"), P("target"));
+        Write(@"src\s.txt", "s");
+        Assert.Equal($"Moved: {P("src")} -> {P("j")}", _fs.MovePath(P("src"), P("j"), true));
+        Assert.False(PathResolver.IsLink(P("j")));
+        Assert.Equal("s", File.ReadAllText(P("j", "s.txt")));
+        Assert.Equal("t", File.ReadAllText(P("target", "t.txt")));
+    }
+
+    [Fact]
+    public void MovingAJunctionOntoItsOwnTargetIsNotAnOverlap()
+    {
+        // The link and its target are different entries: the overwrite replaces the target, as the user asked.
+        Write(@"target\t.txt", "t");
+        Junction(P("j"), P("target"));
+        Assert.Equal($"Moved: {P("j")} -> {P("target")}", _fs.MovePath(P("j"), P("target"), true));
+        Assert.False(Directory.Exists(P("j")));
+        Assert.True(PathResolver.IsLink(P("target")));
+    }
+
+    [Fact]
+    public void CopyAndInfoStillFollowAJunction()
+    {
+        Write(@"target\t.txt", "t");
+        Junction(P("j"), P("target"));
+        Assert.StartsWith($"Path: {P("target")}\nType: Directory", _fs.GetFileInfo(P("j")));
+        Assert.Equal($"Copied directory: {P("target")} -> {P("copy")}", _fs.CopyPath(P("j"), P("copy"), false, CancellationToken.None));
+    }
+
+    [Fact]
+    public void AnOverlapBetweenRealPathsIsStillRefusedThroughALinkedParent()
+    {
+        // x\a reached through the junction xj: the parent resolves, so the overlap check sees the real paths.
+        Write(@"x\a\y.txt", "y");
+        Junction(P("xj"), P("x"));
+        Assert.Equal($"Error moving: Destination {P("x")} contains the source {P("x", "a")}; overwriting it would delete the source.",
+            _fs.MovePath(P("xj", "a"), P("x"), true));
+        Assert.Equal("y", File.ReadAllText(P("x", "a", "y.txt")));
+    }
+
     /// <summary>A fact that is skipped when this process cannot create a symbolic link (it needs Developer Mode or elevation).</summary>
     private sealed class SymlinkFactAttribute : FactAttribute
     {

@@ -102,8 +102,9 @@ public sealed class FileSystemService(string defaultDirectory, Func<bool> isElev
 
     public string MovePath(string source, string destination, bool overwrite)
     {
-        var src = PathResolver.Resolve(source);
-        var dst = PathResolver.Resolve(destination);
+        // Decisions 11: a link in the final component is moved, or replaced, as a link; its target is never touched.
+        var src = PathResolver.ResolveKeepingLink(source);
+        var dst = PathResolver.ResolveKeepingLink(destination);
         if (!Exists(src)) return $"Error: Source not found: {src}";
         if (Exists(dst) && !overwrite) return $"Error: Destination already exists: {dst}. Set overwrite=True to replace.";
         // Decisions 11: moving a path onto itself changes nothing.
@@ -114,14 +115,11 @@ public sealed class FileSystemService(string defaultDirectory, Func<bool> isElev
             // A move between volumes may fall back to copying, which walks the source and fails on a directory loop.
             // The source is listed here, before anything is created or deleted, so a loop leaves the destination as
             // it was. A rename on one volume does not walk the tree and needs no listing.
+            // A link is renamed, never walked: a failed rename across volumes is an error, not a copy of its target.
             var isDirectory = Directory.Exists(src);
-            var tree = isDirectory && !SameVolume(src, dst) ? ListTree(src, CancellationToken.None) : null;
+            var tree = isDirectory && !PathResolver.IsLink(src) && !SameVolume(src, dst) ? ListTree(src, CancellationToken.None) : null;
             Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
-            if (Exists(dst))
-            {
-                if (Directory.Exists(dst)) DirectoryTree.Delete(dst);
-                else File.Delete(dst);
-            }
+            if (Exists(dst)) DeleteEntry(dst);
             if (isDirectory) MoveTree(src, tree, dst);
             else File.Move(src, dst);
             return $"Moved: {src} -> {dst}";
@@ -138,7 +136,8 @@ public sealed class FileSystemService(string defaultDirectory, Func<bool> isElev
 
     public string DeletePath(string path, bool recursive)
     {
-        var target = PathResolver.Resolve(path);
+        // Decisions 11: a link in the final component is deleted as a link, recursive or not; its target survives.
+        var target = PathResolver.ResolveKeepingLink(path);
         if (!Exists(target)) return $"Error: Path not found: {target}";
         try
         {
@@ -147,7 +146,11 @@ public sealed class FileSystemService(string defaultDirectory, Func<bool> isElev
                 File.Delete(target);
                 return $"Deleted file: {target}";
             }
-            if (!recursive)
+            if (PathResolver.IsLink(target))
+            {
+                Directory.Delete(target);
+            }
+            else if (!recursive)
             {
                 if (Directory.EnumerateFileSystemEntries(target).Any())
                     return $"Error: Directory is not empty: {target}. Set recursive=True to delete non-empty directories.";
@@ -333,6 +336,14 @@ public sealed class FileSystemService(string defaultDirectory, Func<bool> isElev
     private static string Stamp(DateTime time) => time.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
 
     private static bool Exists(string path) => File.Exists(path) || Directory.Exists(path);
+
+    // Removes an existing entry for an overwrite: a link as a link, a directory as a tree, a file as a file.
+    private static void DeleteEntry(string path)
+    {
+        if (File.Exists(path)) File.Delete(path);
+        else if (PathResolver.IsLink(path)) Directory.Delete(path);
+        else DirectoryTree.Delete(path);
+    }
 
     // Python maps sharing and lock violations to PermissionError as well.
     private static bool IsPermissionError(Exception e) =>
