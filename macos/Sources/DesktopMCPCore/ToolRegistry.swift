@@ -56,7 +56,7 @@ public actor ToolRegistry {
         let server = Server(name: name, version: version, instructions: instructions,
                             capabilities: .init(tools: .init(listChanged: false)))
         let client = Locked<Client.Info?>(nil)
-        let inFlight = Locked<[UUID: Task<[MCP.Tool.Content], Error>]>([:])
+        let inFlight = Locked(ToolCalls())
 
         await server
             .withMethodHandler(ListTools.self) { _ in
@@ -86,13 +86,13 @@ public actor ToolRegistry {
     /// A `notifications/cancelled` cancels the request task, which the cancellation handler
     /// forwards.
     static func call(_ tool: Tool, arguments: ToolArguments, client: Client.Info?, observer: ToolCallObserver?,
-                     inFlight: Locked<[UUID: Task<[MCP.Tool.Content], Error>]>) async -> CallTool.Result {
+                     inFlight: Locked<ToolCalls>) async -> CallTool.Result {
         let started = DispatchTime.now()
         func elapsed() -> Int { Int((DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds) / 1_000_000) }
         let id = UUID()
         let task = Task { try await tool.handler(arguments) }
-        inFlight.withLock { $0[id] = task }
-        defer { inFlight.withLock { $0[id] = nil } }
+        if !inFlight.withLock({ $0.register(task, id: id) }) { task.cancel() }
+        defer { inFlight.withLock { $0.tasks[id] = nil } }
         do {
             let content = try await withTaskCancellationHandler {
                 try await task.value
@@ -116,7 +116,7 @@ public actor ToolRegistry {
 /// A server started by `ToolRegistry.start(on:)`, with the tool calls it is running.
 public struct StartedServer: Sendable {
     public let server: MCP.Server
-    let inFlight: Locked<[UUID: Task<[MCP.Tool.Content], Error>]>
+    let inFlight: Locked<ToolCalls>
 
     public func waitUntilCompleted() async {
         await server.waitUntilCompleted()
@@ -124,7 +124,29 @@ public struct StartedServer: Sendable {
 
     /// Cancels every tool call in flight, then stops the server (which disconnects the transport).
     public func shutdown() async {
-        inFlight.withLock { $0.values.forEach { $0.cancel() } }
+        // Cancelled outside the lock: `cancel()` runs cancellation handlers synchronously.
+        let running = inFlight.withLock { $0.close() }
+        running.forEach { $0.cancel() }
         await server.stop()
+    }
+}
+
+/// The tool calls one started server is running. Once closed (shut down), a call that got past
+/// the tool lookup but had not registered yet is refused, and its caller cancels it at once.
+struct ToolCalls {
+    var tasks: [UUID: Task<[MCP.Tool.Content], Error>] = [:]
+    private(set) var closed = false
+
+    /// False when closed: the caller must cancel `task` itself.
+    mutating func register(_ task: Task<[MCP.Tool.Content], Error>, id: UUID) -> Bool {
+        guard !closed else { return false }
+        tasks[id] = task
+        return true
+    }
+
+    /// Closes the set and hands back the tasks still running, for the caller to cancel.
+    mutating func close() -> [Task<[MCP.Tool.Content], Error>] {
+        closed = true
+        return Array(tasks.values)
     }
 }

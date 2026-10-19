@@ -59,6 +59,14 @@ final class ToolRegistryTests: XCTestCase {
         } catch let error as MCPError {
             XCTAssertEqual(error.code, -32602)
         }
+
+        // The SDK prefixes every standard error message ("Invalid params: …"); the old server's
+        // exact text travels as `data.detail`.
+        let reply = try JSON.parse(try await exchangeRaw(await DesktopMCP.makeRegistry(),
+                                                         #"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"Nope"}}"#))
+        XCTAssertEqual(reply["error"]?["code"], -32602)
+        XCTAssertEqual(reply["error"]?["message"], "Invalid params: Unknown tool: Nope")
+        XCTAssertEqual(reply["error"]?["data"]?["detail"], "Unknown tool: Nope")
     }
 
     func testArgumentsThatAreNotAnObjectGetAnError() async throws {
@@ -160,6 +168,15 @@ final class ToolRegistryTests: XCTestCase {
         let ended = Date()
         try await observer.waitFor(error: "Cancelled.", timeout: 2)
         XCTAssertLessThan(Date().timeIntervalSince(ended), 2)
+
+        // A call that registers after shutdown (it was past the tool lookup) is cancelled at once.
+        let waitTool = try XCTUnwrap(DesktopMCP.tools(Desktop()).first { $0.name == "Wait" })
+        let late = Date()
+        let result = await ToolRegistry.call(waitTool, arguments: ToolArguments(["duration": 30]), client: nil,
+                                             observer: nil, inFlight: started.inFlight)
+        XCTAssertLessThan(Date().timeIntervalSince(late), 2)
+        XCTAssertEqual(result.isError, true)
+        XCTAssertEqual(result.content, [.text("Cancelled.")])
 
         // The server is gone, so the client gives up its pending request on disconnect.
         await client.disconnect()
