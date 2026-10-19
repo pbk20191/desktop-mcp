@@ -59,3 +59,9 @@ EnumDisplaySettings
 ENUM_DISPLAY_SETTINGS_MODE
 GetDpiForMonitor
 GetSystemMetrics
+// Virtual desktops (documented manager; the internal one is declared by hand in VirtualDesktops/)
+VirtualDesktopManager
+IVirtualDesktopManager
+IServiceProvider
+IObjectArray
+CoCreateInstance
