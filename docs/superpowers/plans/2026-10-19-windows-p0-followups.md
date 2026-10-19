@@ -7,7 +7,7 @@ left for later phases. Each later phase's plan must pick up its section.
 
 All other P1 items are done (see docs/superpowers/plans/2026-10-19-windows-p1-headless.md).
 
-- Run the smoke test once on a machine without the Windows App SDK runtime (for example Windows Sandbox) to back the lazy-initialisation claim in spec §10. Copy `windows/dist/win-x64/desktop-mcp.exe`, `windows/scripts/smoke-stdio.ps1` and `spec/windows/tools.json` in, install PowerShell 7, and run `pwsh smoke-stdio.ps1 -Exe .\desktop-mcp.exe -Spec .\tools.json`. Needs the user.
+- Windows Sandbox run (2026-10-20, OS build 26100, no Windows App SDK runtime): the server started and passed initialize, the 21-tool contract comparison, Wait and the five headless tools. That backs the lazy-initialisation claim in spec §10. The run then failed at the kill-on-close check: `ping … outlived the server`. See the P4 item on job inheritance.
 
 ## P1 leftovers (minor review findings deferred from the P1 tasks)
 
@@ -82,6 +82,17 @@ Ideas from the desk-mcp analysis (`DigitalDog1/desk-mcp` at e6d42fc, Apache-2.0)
 - `Coercion.JsonList` returns non-arrays: the `loc`/`region` callers must check `ValueKind`, or `JsonList` must reject them.
 
 ## P4 (desktop control)
+
+- **Kill-on-close job inheritance (low priority; user decision, 2026-10-20).** In Windows Sandbox (build 26100), `AssignProcessToJobObject` on the server succeeds, but processes it starts afterwards do not join the job. This holds for `Process.Start` with or without a console and with or without redirection. So PowerShell children and their descendants outlive the server, and the smoke script's ping check fails there. On the dev host (build 26220) and on any host where the job is inherited, the check passes.
+  - Still unknown:
+    - whether this happens on ordinary 24H2 (26100) machines or only in the Sandbox;
+    - whether a process created inside the job, rather than one assigned to it after it started, passes the job on to its children.
+  - Next steps:
+    - Reproduce on a real 26100 machine or VM.
+    - Try creating the PowerShell child with `STARTUPINFOEX` + `PROC_THREAD_ATTRIBUTE_JOB_LIST`, or with `CREATE_SUSPENDED` + `AssignProcessToJobObject` + `ResumeThread`. Both go through CsWin32 `CreateProcess`, because `ProcessStartInfo` has no job option. Then check whether its grandchildren stay in the job.
+    - If they do not, add a tree-kill of the PowerShell child's descendants when the server exits.
+    - Make the smoke script detect a host where job inheritance does not work and report the ping check as a warning there.
+  - The diagnostic scripts were throwaway (session scratchpad `jobprobe\probe*.ps1`).
 
 - Catch and log exceptions thrown from dispatcher timer ticks. Today they may fail-fast the process.
 - Document that `TimerHandle.Dispose` off the dispatcher thread may let one more tick run.

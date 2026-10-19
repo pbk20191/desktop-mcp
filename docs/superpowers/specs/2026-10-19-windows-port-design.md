@@ -505,8 +505,11 @@ TimeoutException 0x80131505 The operation has timed out.`, `clipboard: SystemCli
 WinRt (WinRT: TimeoutException 0x80131505: The WinRT clipboard did not respond within 5 s.)`
 (`LastWinRtError` is never reset, so the timeout most likely comes from the write after the MTA
 hang, which then fell back to Win32, while the read went through WinRT; this is an inference, not
-measured); toast probe: shown. The smoke test on a machine without the Windows App SDK runtime
-(Windows Sandbox) was not run yet; it is a follow-up that needs the user.
+measured); toast probe: shown. Windows Sandbox (build 26100, no Windows App SDK runtime, 2026-10-20):
+the server started and passed initialize, the contract comparison, Wait and the headless tools,
+which backs the lazy-initialisation claim in §10. The kill-on-close check failed there, because
+processes the server starts after it joins its job are not placed in that job on that host. The
+P4 follow-up "Kill-on-close job inheritance" tracks this.
 
 ## 10. Differences from upstream (for the Windows README)
 
