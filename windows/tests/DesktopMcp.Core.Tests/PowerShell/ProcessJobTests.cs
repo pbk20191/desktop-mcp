@@ -1,6 +1,8 @@
 using System.Diagnostics;
-using DesktopMcp.Core.Interop;
 using DesktopMcp.Core.PowerShell;
+using Microsoft.Win32.SafeHandles;
+using Windows.Win32;
+using Windows.Win32.Foundation;
 
 namespace DesktopMcp.Core.Tests;
 
@@ -25,13 +27,13 @@ public class ProcessJobTests
             Assert.NotEqual(0, job);
             try
             {
-                Assert.True(CoreNative.AssignProcessToJobObject(job, child.Handle));
-                Assert.True(CoreNative.IsProcessInJob(child.Handle, job, out var inJob));
+                Assert.True(PInvoke.AssignProcessToJobObject(new SafeFileHandle(job, ownsHandle: false), child.SafeHandle));
+                Assert.True(PInvoke.IsProcessInJob(child.SafeHandle, new SafeFileHandle(job, ownsHandle: false), out var inJob));
                 Assert.True(inJob);
             }
             finally
             {
-                CoreNative.CloseHandle(job);
+                PInvoke.CloseHandle((HANDLE)job);
             }
             Assert.True(child.WaitForExit(5000), "the child outlived its kill-on-close job");
         }

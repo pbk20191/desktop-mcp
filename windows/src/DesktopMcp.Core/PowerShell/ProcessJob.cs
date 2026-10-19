@@ -1,4 +1,6 @@
-using DesktopMcp.Core.Interop;
+using Windows.Win32;
+using Windows.Win32.Foundation;
+using Windows.Win32.System.JobObjects;
 
 namespace DesktopMcp.Core.PowerShell;
 
@@ -19,9 +21,9 @@ public static unsafe class ProcessJob
             if (_job != 0) return true;
             var job = CreateKillOnCloseJob();
             if (job == 0) return false;
-            if (!CoreNative.AssignProcessToJobObject(job, CoreNative.GetCurrentProcess()))
+            if (!PInvoke.AssignProcessToJobObject((HANDLE)job, PInvoke.GetCurrentProcess()))
             {
-                CoreNative.CloseHandle(job);
+                PInvoke.CloseHandle((HANDLE)job);
                 return false;
             }
             // Never closed: the handle closes when this process exits, and the job then kills what is left in it.
@@ -33,14 +35,14 @@ public static unsafe class ProcessJob
     /// <summary>A new job that kills its processes when its last handle closes, or 0 on failure.</summary>
     internal static nint CreateKillOnCloseJob()
     {
-        var job = CoreNative.CreateJobObject(0, 0);
-        if (job == 0) return 0;
-        var info = new CoreNative.JobObjectExtendedLimitInformation();
-        info.BasicLimitInformation.LimitFlags = CoreNative.JobObjectLimitKillOnJobClose;
-        if (!CoreNative.SetInformationJobObject(job, CoreNative.JobObjectExtendedLimitInformationClass, &info,
-                (uint)sizeof(CoreNative.JobObjectExtendedLimitInformation)))
+        var job = PInvoke.CreateJobObject(null, default(PCWSTR));
+        if (job.IsNull) return 0;
+        var info = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (!PInvoke.SetInformationJobObject(job, JOBOBJECTINFOCLASS.JobObjectExtendedLimitInformation, &info,
+                (uint)sizeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION)))
         {
-            CoreNative.CloseHandle(job);
+            PInvoke.CloseHandle(job);
             return 0;
         }
         return job;

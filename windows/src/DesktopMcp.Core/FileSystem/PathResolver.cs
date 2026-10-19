@@ -1,4 +1,5 @@
-using DesktopMcp.Core.Interop;
+using Windows.Win32;
+using Windows.Win32.Storage.FileSystem;
 
 namespace DesktopMcp.Core.FileSystem;
 
@@ -25,15 +26,16 @@ internal static class PathResolver
         return resolved;
     }
 
-    private static unsafe string? FinalPath(string path)
+    private static string? FinalPath(string path)
     {
-        using var handle = CoreNative.CreateFile(path, 0, CoreNative.FileShareAll, 0, CoreNative.OpenExisting, CoreNative.FileFlagBackupSemantics, 0);
+        // FILE_FLAG_BACKUP_SEMANTICS is required to open a directory.
+        using var handle = PInvoke.CreateFile(path, 0, FILE_SHARE_MODE.FILE_SHARE_READ | FILE_SHARE_MODE.FILE_SHARE_WRITE | FILE_SHARE_MODE.FILE_SHARE_DELETE,
+            null, FILE_CREATION_DISPOSITION.OPEN_EXISTING, FILE_FLAGS_AND_ATTRIBUTES.FILE_FLAG_BACKUP_SEMANTICS, null);
         if (handle.IsInvalid) return null;
         var buffer = new char[1024];
         while (true)
         {
-            uint length;
-            fixed (char* pointer = buffer) length = CoreNative.GetFinalPathNameByHandle(handle, pointer, (uint)buffer.Length, 0);
+            var length = PInvoke.GetFinalPathNameByHandle(handle, buffer, GETFINALPATHNAMEBYHANDLE_FLAGS.FILE_NAME_NORMALIZED);
             if (length == 0) return null;
             if (length < buffer.Length) return StripPrefix(new string(buffer, 0, (int)length));
             buffer = new char[length];

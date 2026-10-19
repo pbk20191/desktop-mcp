@@ -1,5 +1,7 @@
 using System.Runtime.InteropServices;
-using DesktopMcp.Core.Interop;
+using Windows.Wdk.System.SystemInformation;
+using Windows.Win32.Foundation;
+using Windows.Win32.System.WindowsProgramming;
 
 namespace DesktopMcp.Core.Processes;
 
@@ -30,13 +32,14 @@ internal static unsafe class ProcessSnapshot
             var buffer = (byte*)NativeMemory.Alloc(size);
             try
             {
-                var status = CoreNative.NtQuerySystemInformation(CoreNative.SystemProcessInformationClass, buffer, size, out var needed);
-                if (status == CoreNative.StatusInfoLengthMismatch)
+                uint needed = 0;
+                var status = Windows.Wdk.PInvoke.NtQuerySystemInformation(SYSTEM_INFORMATION_CLASS.SystemProcessInformation, buffer, size, ref needed);
+                if (status == NTSTATUS.STATUS_INFO_LENGTH_MISMATCH)
                 {
                     size = Math.Max(size, needed) + BufferSlack;
                     continue;
                 }
-                if (status < 0) throw new InvalidOperationException($"NtQuerySystemInformation failed with NTSTATUS 0x{status:X8}.");
+                if (status.Value < 0) throw new InvalidOperationException($"NtQuerySystemInformation failed with NTSTATUS 0x{status.Value:X8}.");
                 return Parse(buffer);
             }
             finally
@@ -49,18 +52,32 @@ internal static unsafe class ProcessSnapshot
     private static List<ProcessEntry> Parse(byte* buffer)
     {
         var processes = new List<ProcessEntry>();
-        for (var entry = (CoreNative.SystemProcessInformation*)buffer; ; )
+        for (var entry = (SYSTEM_PROCESS_INFORMATION*)buffer; ; )
         {
-            var pid = (int)entry->UniqueProcessId;
+            var pid = (int)(nint)entry->UniqueProcessId;
             // The kernel leaves PID 0's image name empty; psutil calls it "System Idle Process".
             var name = pid == 0 ? "System Idle Process"
-                : entry->ImageName.Buffer == null ? ""
-                : new string(entry->ImageName.Buffer, 0, entry->ImageName.Length / sizeof(char));
-            processes.Add(new ProcessEntry(pid, name, entry->CreateTime, entry->KernelTime + entry->UserTime, (long)entry->WorkingSetSize));
+                : entry->ImageName.Buffer.Value == null ? ""
+                : new string(entry->ImageName.Buffer.Value, 0, entry->ImageName.Length / sizeof(char));
+            var times = (ProcessTimes*)&entry->Reserved1;
+            processes.Add(new ProcessEntry(pid, name, times->CreateTime, times->KernelTime + times->UserTime, (long)entry->WorkingSetSize));
             if (entry->NextEntryOffset == 0) break;
-            entry = (CoreNative.SystemProcessInformation*)((byte*)entry + entry->NextEntryOffset);
+            entry = (SYSTEM_PROCESS_INFORMATION*)((byte*)entry + entry->NextEntryOffset);
         }
         processes.Sort((a, b) => a.Pid.CompareTo(b.Pid));
         return processes;
+    }
+
+    /// <summary>
+    /// The undocumented fields that winternl.h, and so the Win32 metadata's SYSTEM_PROCESS_INFORMATION, hides in its
+    /// 48-byte Reserved1 (the WDK metadata has no fuller struct): WorkingSetPrivateSize, HardFaultCount,
+    /// NumberOfThreadsHighWatermark and CycleTime, then the three times psutil reads.
+    /// </summary>
+    [StructLayout(LayoutKind.Explicit, Size = 48)]
+    private struct ProcessTimes
+    {
+        [FieldOffset(24)] public long CreateTime;   // FILETIME ticks
+        [FieldOffset(32)] public long UserTime;     // 100 ns units
+        [FieldOffset(40)] public long KernelTime;
     }
 }

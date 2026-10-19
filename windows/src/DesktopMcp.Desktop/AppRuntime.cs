@@ -1,5 +1,7 @@
 using System.Runtime.InteropServices;
-using DesktopMcp.Desktop.Interop;
+using Windows.Win32;
+using Windows.Win32.Foundation;
+using Windows.Win32.Storage.Packaging.Appx;
 using Framework = Microsoft.WindowsAppSDK.Runtime.Packages.Framework;
 using Release = Microsoft.WindowsAppSDK.Release;
 using RuntimeVersion = Microsoft.WindowsAppSDK.Runtime.Version;
@@ -41,19 +43,26 @@ public static class AppRuntime
         }
     }
 
-    private static string AddFrameworkDependency()
+    private static unsafe string AddFrameworkDependency()
     {
-        int hresult;
-        nint dependencyId = 0, fullName = 0;
+        HRESULT hresult;
+        PWSTR dependencyId = default, fullName = default;
         try
         {
-            hresult = Native.TryCreatePackageDependency(
-                0, Framework.PackageFamilyName, RuntimeVersion.UInt64, CurrentArchitecture(),
-                Native.PackageDependencyLifetimeKindProcess, null, Native.CreatePackageDependencyOptionsNone, out dependencyId);
-            if (hresult >= 0)
-                hresult = Native.AddPackageDependency(dependencyId, Native.PackageDependencyRankDefault, Native.AddPackageDependencyOptionsNone, out _, out fullName);
-            if (hresult >= 0)
-                return Marshal.PtrToStringUni(fullName) ?? Framework.PackageFamilyName;
+            var minVersion = default(PACKAGE_VERSION);
+            minVersion.Version = RuntimeVersion.UInt64;
+            hresult = PInvoke.TryCreatePackageDependency(
+                default, Framework.PackageFamilyName, minVersion, CurrentArchitecture(),
+                PackageDependencyLifetimeKind.PackageDependencyLifetimeKind_Process, null,
+                CreatePackageDependencyOptions.CreatePackageDependencyOptions_None, out dependencyId);
+            if (hresult.Succeeded)
+            {
+                PACKAGEDEPENDENCY_CONTEXT context;
+                hresult = PInvoke.AddPackageDependency(dependencyId, (int)PInvoke.PACKAGE_DEPENDENCY_RANK_DEFAULT,
+                    AddPackageDependencyOptions.AddPackageDependencyOptions_None, &context, &fullName);
+            }
+            if (hresult.Succeeded)
+                return fullName.ToString() ?? Framework.PackageFamilyName;
         }
         catch (EntryPointNotFoundException e)
         {
@@ -62,21 +71,21 @@ public static class AppRuntime
         }
         finally
         {
-            var heap = Native.GetProcessHeap();
-            if (fullName != 0) Native.HeapFree(heap, 0, fullName);
-            if (dependencyId != 0) Native.HeapFree(heap, 0, dependencyId);
+            var heap = PInvoke.GetProcessHeap();
+            if (fullName.Value != null) PInvoke.HeapFree(heap, 0, fullName);
+            if (dependencyId.Value != null) PInvoke.HeapFree(heap, 0, dependencyId);
         }
         throw new InvalidOperationException(
             $"The Windows App SDK runtime {RuntimeVersion.DotQuadString} or later ({Framework.PackageFamilyName}, {Release.Major}.{Release.Minor}, " +
             $"{RuntimeInformation.ProcessArchitecture.ToString().ToLowerInvariant()}) is not installed. " +
-            $"Install the Windows App SDK {Release.Major}.{Release.Minor} runtime from {DownloadsPage} (HRESULT 0x{hresult:X8}).");
+            $"Install the Windows App SDK {Release.Major}.{Release.Minor} runtime from {DownloadsPage} (HRESULT 0x{hresult.Value:X8}).");
     }
 
-    private static Native.PackageDependencyProcessorArchitectures CurrentArchitecture() => RuntimeInformation.ProcessArchitecture switch
+    private static PackageDependencyProcessorArchitectures CurrentArchitecture() => RuntimeInformation.ProcessArchitecture switch
     {
-        Architecture.X64 => Native.PackageDependencyProcessorArchitectures.X64,
-        Architecture.Arm64 => Native.PackageDependencyProcessorArchitectures.Arm64,
-        Architecture.X86 => Native.PackageDependencyProcessorArchitectures.X86,
+        Architecture.X64 => PackageDependencyProcessorArchitectures.PackageDependencyProcessorArchitectures_X64,
+        Architecture.Arm64 => PackageDependencyProcessorArchitectures.PackageDependencyProcessorArchitectures_Arm64,
+        Architecture.X86 => PackageDependencyProcessorArchitectures.PackageDependencyProcessorArchitectures_X86,
         var other => throw new PlatformNotSupportedException($"The Windows App SDK runtime has no {other} build."),
     };
 }

@@ -16,6 +16,8 @@
     <PackageVersion Include="Tomlyn" Version="2.10.1" />
     <!-- Published 2026-09-08 (2.0.13 is newer than two weeks). AOT probe on 2026-10-19: zero warnings. -->
     <PackageVersion Include="System.CommandLine" Version="2.0.12" />
+    <!-- Published 2026-10-05 (0.3.355 and later are newer than two weeks). Source generator only: Win32/WDK bindings from metadata. -->
+    <PackageVersion Include="Microsoft.Windows.CsWin32" Version="0.3.347" />
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageVersion Include="xunit" Version="2.9.3" />
     <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.4" />

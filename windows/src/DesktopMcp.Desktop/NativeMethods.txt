@@ -1,0 +1,12 @@
+// OS Dynamic Dependencies (appmodel.h, Windows 11 22H2+)
+TryCreatePackageDependency
+AddPackageDependency
+PACKAGE_DEPENDENCY_RANK_DEFAULT
+// Frees the strings the Dynamic Dependencies API allocates on the process heap
+GetProcessHeap
+HeapFree
+// HSTRINGs for the static Win2D activation hook
+WindowsCreateString
+WindowsDeleteString
+// Monitors
+MonitorFromPoint

@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
-using DesktopMcp.Desktop.Interop;
+using Windows.Win32;
+using Windows.Win32.Graphics.Gdi;
 using Microsoft.UI.Windowing;
 
 namespace DesktopMcp.Desktop.Tests;
@@ -32,7 +33,7 @@ public partial class AppRuntimeTests
     public void PrimaryDisplayIdMatchesTheMonitorInterop()
     {
         AppRuntime.EnsureInitialized();
-        var monitor = Native.MonitorFromPoint(default, Native.MonitorDefaultToPrimary);
+        var monitor = PInvoke.MonitorFromPoint(default, MONITOR_FROM_FLAGS.MONITOR_DEFAULTTOPRIMARY);
         Assert.Equal(Microsoft.UI.Win32Interop.GetDisplayIdFromMonitor(monitor).Value, DisplayArea.Primary.DisplayId.Value);
     }
 

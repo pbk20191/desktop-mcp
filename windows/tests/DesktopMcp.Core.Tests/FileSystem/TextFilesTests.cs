@@ -1,6 +1,6 @@
 using System.Text;
 using DesktopMcp.Core.FileSystem;
-using DesktopMcp.Core.Interop;
+using Windows.Win32;
 
 namespace DesktopMcp.Core.Tests;
 
@@ -62,10 +62,10 @@ public sealed class TextFilesTests : IDisposable
     [InlineData("mbcs")]
     [InlineData("ansi")]
     [InlineData("dbcs")]
-    public void MbcsIsTheAnsiCodePage(string name) => Assert.Equal((int)CoreNative.GetACP(), TextEncodings.Get(name).Encoding.CodePage);
+    public void MbcsIsTheAnsiCodePage(string name) => Assert.Equal((int)PInvoke.GetACP(), TextEncodings.Get(name).Encoding.CodePage);
 
     [Fact]
-    public void OemIsTheOemCodePage() => Assert.Equal((int)CoreNative.GetOEMCP(), TextEncodings.Get("oem").Encoding.CodePage);
+    public void OemIsTheOemCodePage() => Assert.Equal((int)PInvoke.GetOEMCP(), TextEncodings.Get("oem").Encoding.CodePage);
 
     [Fact]
     public void Utf7EncodesLikePython()

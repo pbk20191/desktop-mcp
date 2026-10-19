@@ -1,6 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
-using DesktopMcp.Desktop.Interop;
+using Windows.Win32;
 
 namespace DesktopMcp.Desktop.Imaging;
 
@@ -45,13 +45,10 @@ internal static unsafe partial class Win2DStaticActivation
     /// <summary>Gets the class factory from the linked shim and returns it as the requested interface (CsWinRT owns the reference).</summary>
     private static IntPtr Activate(string typeName, Guid iid)
     {
-        IntPtr hstring;
-        fixed (char* chars = typeName)
-            Marshal.ThrowExceptionForHR(Native.WindowsCreateString(chars, (uint)typeName.Length, &hstring));
         IntPtr factory;
         int hr;
-        try { hr = DllGetActivationFactory(hstring, &factory); }
-        finally { Native.WindowsDeleteString(hstring); }
+        PInvoke.WindowsCreateString(typeName, (uint)typeName.Length, out var hstring).ThrowOnFailure();
+        using (hstring) hr = DllGetActivationFactory(hstring.DangerousGetHandle(), &factory);
         Marshal.ThrowExceptionForHR(hr);
         try
         {

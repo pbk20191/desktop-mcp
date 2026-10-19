@@ -1,8 +1,11 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
-using DesktopMcp.Core.Interop;
 using DesktopMcp.Core.Text;
+using Windows.Win32;
+using Windows.Win32.Foundation;
+using Windows.Win32.System.Threading;
+using FILETIME = System.Runtime.InteropServices.ComTypes.FILETIME;
 
 namespace DesktopMcp.Core.Processes;
 
@@ -83,23 +86,19 @@ public sealed class ProcessService
     private static KillOutcome Terminate(ProcessEntry process)
     {
         if (process.Pid == 0) return KillOutcome.Denied;   // psutil refuses PID 0 with AccessDenied
-        var handle = CoreNative.OpenProcess(CoreNative.ProcessTerminate | CoreNative.ProcessQueryLimitedInformation, false, (uint)process.Pid);
-        if (handle == 0) return Marshal.GetLastPInvokeError() == ErrorAccessDenied ? KillOutcome.Denied : KillOutcome.Gone;
-        try
-        {
-            if (!CoreNative.GetProcessTimes(handle, out var created, out _, out _, out _)) return KillOutcome.Denied;
-            if (created != process.CreateTime) return KillOutcome.Gone;
-            if (CoreNative.GetExitCodeProcess(handle, out var exitCode) && exitCode != CoreNative.StillActive) return KillOutcome.Gone;
-            // Like psutil, ERROR_ACCESS_DENIED here means the process is already exiting.
-            return CoreNative.TerminateProcess(handle, SigTerm) || Marshal.GetLastPInvokeError() == ErrorAccessDenied
-                ? KillOutcome.Killed
-                : KillOutcome.Denied;
-        }
-        finally
-        {
-            CoreNative.CloseHandle(handle);
-        }
+        using var handle = PInvoke.OpenProcess_SafeHandle(
+            PROCESS_ACCESS_RIGHTS.PROCESS_TERMINATE | PROCESS_ACCESS_RIGHTS.PROCESS_QUERY_LIMITED_INFORMATION, false, (uint)process.Pid);
+        if (handle.IsInvalid) return Marshal.GetLastPInvokeError() == ErrorAccessDenied ? KillOutcome.Denied : KillOutcome.Gone;
+        if (!PInvoke.GetProcessTimes(handle, out var created, out _, out _, out _)) return KillOutcome.Denied;
+        if (Ticks(created) != process.CreateTime) return KillOutcome.Gone;
+        if (PInvoke.GetExitCodeProcess(handle, out var exitCode) && exitCode != (uint)NTSTATUS.STILL_ACTIVE) return KillOutcome.Gone;
+        // Like psutil, ERROR_ACCESS_DENIED here means the process is already exiting.
+        return PInvoke.TerminateProcess(handle, SigTerm) || Marshal.GetLastPInvokeError() == ErrorAccessDenied
+            ? KillOutcome.Killed
+            : KillOutcome.Denied;
     }
+
+    private static long Ticks(FILETIME time) => (long)((ulong)(uint)time.dwHighDateTime << 32 | (uint)time.dwLowDateTime);
 
     // Two snapshots CpuSampleInterval apart. A process is matched by PID and creation time, so a reused PID reads 0.
     private static async Task<IReadOnlyList<ProcessRow>> SampleAsync(CancellationToken cancellationToken)

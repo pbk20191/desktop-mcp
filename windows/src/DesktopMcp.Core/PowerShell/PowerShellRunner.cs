@@ -1,7 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Text;
-using DesktopMcp.Core.Interop;
+using Windows.Win32;
 
 namespace DesktopMcp.Core.PowerShell;
 
@@ -155,7 +155,7 @@ public sealed class PowerShellRunner
     {
         // Ctrl+Break first. The child has its own hidden console (CREATE_NO_WINDOW), so this usually fails, as it does
         // upstream; the result is ignored.
-        _ = CoreNative.GenerateConsoleCtrlEvent(CoreNative.CtrlBreakEvent, (uint)process.Id);
+        _ = PInvoke.GenerateConsoleCtrlEvent(PInvoke.CTRL_BREAK_EVENT, (uint)process.Id);
         if (await WaitForExitAsync(process, GracePeriod).ConfigureAwait(false)) return;
         try { process.Kill(entireProcessTree: true); }
         catch (Exception e) when (e is InvalidOperationException or Win32Exception or NotSupportedException) { }
