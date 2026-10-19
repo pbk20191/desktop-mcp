@@ -67,36 +67,27 @@ public struct StdioBridge: Sendable {
     /// At EOF the `GET` listener is cancelled and the forwarded requests run to their end. A
     /// failed write cancels everything: nobody is left to read what the rest would write.
     public func run(input: FileHandle, output: @escaping @Sendable (String) async -> Bool) async {
+        await run(input: input, discardingGroup: true, output: output)
+    }
+
+    /// `discardingGroup: false` forces the macOS 13 path of `Concurrency.forEachConcurrently`,
+    /// so a test can show it reaps finished lines there too.
+    func run(input: FileHandle, discardingGroup: Bool,
+             output: @escaping @Sendable (String) async -> Bool) async {
         let (failures, failed) = AsyncStream<Void>.makeStream()
         let write: @Sendable (String) async -> Void = { line in
             if !(await output(line)) { failed.yield() }
         }
         await withTaskGroup(of: Void.self) { outer in
             outer.addTask {
-                await withTaskGroup(of: Void.self) { group in
-                    func dispatch(_ bytes: [UInt8]) {
-                        let line = String(decoding: bytes, as: UTF8.self)
-                        guard !line.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-                        group.addTask {
-                            await forward(line, output: write)
-                            await followSession(output: write)
-                        }
-                    }
-                    var buffer: [UInt8] = []
-                    for await chunk in Self.chunks(of: input) {
-                        for byte in chunk {
-                            if byte == 0x0A {
-                                dispatch(buffer)
-                                buffer.removeAll(keepingCapacity: true)
-                            } else {
-                                buffer.append(byte)
-                            }
-                        }
-                    }
-                    if !buffer.isEmpty, !Task.isCancelled { dispatch(buffer) }
-                    // The group now waits for the forwarded requests, but not for the listener.
-                    await state.close()
+                // A child per line, reaped as it finishes: a long session forwards many lines.
+                // This returns at EOF only once every forwarded request has finished.
+                await Concurrency.forEachConcurrently(Self.lines(of: input), discardingGroup: discardingGroup) { line in
+                    await forward(line, output: write)
+                    await followSession(output: write)
                 }
+                // The requests are done; the listener is not waited for, it is cancelled.
+                await state.close()
             }
             outer.addTask {
                 for await _ in failures { return }
@@ -296,18 +287,42 @@ public struct StdioBridge: Sendable {
         return payload.replacingOccurrences(of: "\r", with: "").replacingOccurrences(of: "\n", with: " ")
     }
 
-    /// The handle's data as it arrives. Unlike `FileHandle.bytes`, which only notices cancellation
-    /// when the next byte arrives, this ends as soon as the consuming task is cancelled.
-    static func chunks(of input: FileHandle) -> AsyncStream<Data> {
+    /// The non-blank lines of `input` as they arrive, until it closes, split on LF only (a CR
+    /// before it is JSON whitespace and travels with the message); a last line without a newline
+    /// counts at EOF. Unlike `FileHandle.bytes`, which only notices cancellation when the next
+    /// byte arrives, this ends as soon as the consuming task is cancelled: the handler is
+    /// removed, nothing more is read and an unfinished line is dropped.
+    static func lines(of input: FileHandle) -> AsyncStream<String> {
         AsyncStream(bufferingPolicy: .unbounded) { continuation in
+            // The handler runs on one serial queue, but the closure must be Sendable.
+            let buffer = Locked<[UInt8]>([])
+            @Sendable func emit(_ bytes: [UInt8]) {
+                let line = String(decoding: bytes, as: UTF8.self)
+                guard !line.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+                continuation.yield(line)
+            }
             input.readabilityHandler = { handle in
                 let data = handle.availableData
                 if data.isEmpty {
                     handle.readabilityHandler = nil
+                    let rest = buffer.withLock { $0 }
+                    if !rest.isEmpty { emit(rest) }
                     continuation.finish()
-                } else {
-                    continuation.yield(data)
+                    return
                 }
+                let complete: [[UInt8]] = buffer.withLock { pending in
+                    var lines: [[UInt8]] = []
+                    for byte in data {
+                        if byte == 0x0A {
+                            lines.append(pending)
+                            pending.removeAll(keepingCapacity: true)
+                        } else {
+                            pending.append(byte)
+                        }
+                    }
+                    return lines
+                }
+                for line in complete { emit(line) }
             }
             continuation.onTermination = { _ in input.readabilityHandler = nil }
         }

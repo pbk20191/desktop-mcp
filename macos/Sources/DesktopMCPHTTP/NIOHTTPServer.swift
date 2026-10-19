@@ -138,7 +138,7 @@ public enum NIOHTTPServer {
         let outcome: Result<Void, any Error>
         do {
             try await listening.channel.executeThenClose { inbound in
-                try await forEachConcurrently(inbound) { connection in await handle(connection, app: app) }
+                try await Concurrency.forEachConcurrently(inbound) { connection in await handle(connection, app: app) }
             }
             outcome = .success(())
         } catch {
@@ -146,46 +146,6 @@ public enum NIOHTTPServer {
         }
         try? await listening.group.shutdownGracefully()
         try outcome.get()
-    }
-
-    /// Runs `body` for every element of `source` as a child task of the caller, without waiting
-    /// for one element's work before taking the next, and without keeping finished children
-    /// around. Ends when `source` ends and all work is done; cancellation cancels the work.
-    ///
-    /// macOS 14 has `DiscardingTaskGroup` for this. A plain task group keeps a finished child
-    /// until `next()` is called, and the loop that reads `source` cannot also sit in `next()`,
-    /// so on macOS 13 reading `source` is done by children as well: one child owns the (non
-    /// Sendable) iterator and relays elements, one child at a time takes the next element, and
-    /// the body only ever awaits `next()`, which reaps whatever finished.
-    static func forEachConcurrently<Source: AsyncSequence & Sendable>(
-        _ source: Source, discardingGroup: Bool = true, _ body: @escaping @Sendable (Source.Element) async -> Void
-    ) async throws where Source.Element: Sendable {
-        if discardingGroup, #available(macOS 14.0, *) {
-            try await withThrowingDiscardingTaskGroup { group in
-                for try await element in source {
-                    group.addTask { await body(element) }
-                }
-            }
-            return
-        }
-        try await withThrowingTaskGroup(of: ServeEvent<Source.Element>.self) { group in
-            let (elements, relay) = AsyncStream.makeStream(of: Source.Element.self)
-            group.addTask {
-                defer { relay.finish() }
-                for try await element in source { relay.yield(element) }
-                return .handled
-            }
-            group.addTask { var next = elements.makeAsyncIterator(); return .took(await next.next()) }
-            while let event = try await group.next() {
-                switch event {
-                case .took(let element?):
-                    group.addTask { await body(element); return .handled }
-                    group.addTask { var next = elements.makeAsyncIterator(); return .took(await next.next()) }
-                case .took(nil), .handled:
-                    break
-                }
-            }
-        }
     }
 
     static func handle(_ connection: Connection, app: HTTPApp) async {
@@ -202,7 +162,7 @@ public enum NIOHTTPServer {
                 await handle(channel, app: app)
             case .http2((_, let multiplexer)):
                 // Each stream is a child of the connection's task.
-                try await forEachConcurrently(multiplexer.inbound) { stream in await handle(stream, app: app) }
+                try await Concurrency.forEachConcurrently(multiplexer.inbound) { stream in await handle(stream, app: app) }
             }
         } catch {
             // A failed TLS handshake or an unexpected ALPN result: the channel is already closed.
@@ -316,12 +276,4 @@ public enum NIOHTTPServer {
             return keepAlive
         }
     }
-}
-
-/// What a child of `NIOHTTPServer.forEachConcurrently` reports back on macOS 13.
-enum ServeEvent<Element: Sendable>: Sendable {
-    /// The next element, or nil when the source has ended.
-    case took(Element?)
-    /// Work for one element finished (or the relay ended).
-    case handled
 }

@@ -128,6 +128,38 @@ final class StdioBridgeTests: XCTestCase {
         XCTAssertEqual(replays, 1)
     }
 
+    /// A long session forwards many lines; on macOS 13 each line's child must be reaped as it
+    /// finishes, and `run` must still end at EOF once the last one has.
+    func testManyLinesAreForwardedAndRunEndsAtEOFOnTheMacOS13Path() async throws {
+        let requests = Locked(0)
+        StubHTTP.respond { _ in
+            requests.withLock { $0 += 1 }
+            return (202, [:], [])
+        }
+        let bridge = stubBridge()
+        let pipe = Pipe()
+        let written = Locked<[String]>([])
+        let started = Date()
+        let running = Task {
+            await bridge.run(input: pipe.fileHandleForReading, discardingGroup: false) { line in
+                written.withLock { $0.append(line) }
+                return true
+            }
+        }
+        let notification = #"{"jsonrpc":"2.0","method":"notifications/initialized"}"#
+        let input = Data(String(repeating: notification + "\n", count: 2_000).utf8)
+        // More than a pipe buffer holds: write off the cooperative pool while `run` drains it.
+        let writer = pipe.fileHandleForWriting
+        Thread.detachNewThread {
+            writer.write(input)
+            try? writer.close()
+        }
+        await running.value
+        XCTAssertLessThan(Date().timeIntervalSince(started), 5)
+        XCTAssertEqual(requests.current, 2_000)
+        XCTAssertEqual(written.current, [])
+    }
+
     func testParserHandlesCRLFAndSplitBoundaries() {
         let stream = "event: message\r\ndata: {\"a\":\r\ndata: \"\u{E9}\"}\r\n\r\n: keep-alive\r\n\r\nid: 2\r\ndata: \r\n\r\ndata: x\r\n\r\ndata:y"
         var parser = SSEParser()
