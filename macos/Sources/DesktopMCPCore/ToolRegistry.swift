@@ -84,15 +84,18 @@ public actor ToolRegistry {
     /// The handler runs in a task of its own, tracked in `inFlight`, because `Server.stop()`
     /// does not cancel the request tasks it spawned: `StartedServer.shutdown()` cancels these.
     /// A `notifications/cancelled` cancels the request task, which the cancellation handler
-    /// forwards.
+    /// forwards. A request that carries a `RequestHandle` (HTTP sessions, where one server
+    /// serves many connections) is registered under it, so `StartedServer.cancel(request:)`
+    /// can end it when its connection drops.
     static func call(_ tool: Tool, arguments: ToolArguments, client: Client.Info?, observer: ToolCallObserver?,
                      inFlight: Locked<ToolCalls>) async -> CallTool.Result {
         let started = DispatchTime.now()
         func elapsed() -> Int { Int((DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds) / 1_000_000) }
         let id = UUID()
+        let handle = Server.currentHandlerContext?.httpContext?.header(RequestHandle.header)
         let task = Task { try await tool.handler(arguments) }
-        if !inFlight.withLock({ $0.register(task, id: id) }) { task.cancel() }
-        defer { inFlight.withLock { $0.tasks[id] = nil } }
+        if !inFlight.withLock({ $0.register(task, id: id, handle: handle) }) { task.cancel() }
+        defer { inFlight.withLock { $0.unregister(id: id, handle: handle) } }
         do {
             let content = try await withTaskCancellationHandler {
                 try await task.value
@@ -129,19 +132,59 @@ public struct StartedServer: Sendable {
         running.forEach { $0.cancel() }
         await server.stop()
     }
+
+    /// Cancels the tool call that was started for the request carrying this handle
+    /// (`x-desktop-mcp-request` header). A call that has not registered yet is cancelled
+    /// as soon as it does. Idempotent; unknown handles are ignored.
+    public func cancel(request handle: String) async {
+        // Cancelled outside the lock, as in `shutdown()`.
+        let task = inFlight.withLock { $0.cancel(handle: handle) }
+        task?.cancel()
+    }
+}
+
+/// The header that names one HTTP request to the tool call it starts. The app sets it on the
+/// `MCP.HTTPRequest` it hands a session's transport, and cancels by it when the connection
+/// that sent the request closes: a session's server outlives any one connection, so stopping
+/// the server is not an option.
+public enum RequestHandle {
+    public static let header = "x-desktop-mcp-request"
 }
 
 /// The tool calls one started server is running. Once closed (shut down), a call that got past
 /// the tool lookup but had not registered yet is refused, and its caller cancels it at once.
+/// The same goes for a call whose request handle was cancelled before it registered: the
+/// connection can drop while the request is still on its way to the tool.
 struct ToolCalls {
     var tasks: [UUID: Task<[MCP.Tool.Content], Error>] = [:]
+    var byHandle: [String: UUID] = [:]
+    var cancelledEarly: Set<String> = []
     private(set) var closed = false
 
-    /// False when closed: the caller must cancel `task` itself.
-    mutating func register(_ task: Task<[MCP.Tool.Content], Error>, id: UUID) -> Bool {
+    /// False when closed, or when `handle` was cancelled before this call registered: the
+    /// caller must cancel `task` itself.
+    mutating func register(_ task: Task<[MCP.Tool.Content], Error>, id: UUID, handle: String? = nil) -> Bool {
         guard !closed else { return false }
+        if let handle {
+            guard cancelledEarly.remove(handle) == nil else { return false }
+            byHandle[handle] = id
+        }
         tasks[id] = task
         return true
+    }
+
+    /// Forgets a finished call.
+    mutating func unregister(id: UUID, handle: String?) {
+        tasks[id] = nil
+        if let handle, byHandle[handle] == id { byHandle[handle] = nil }
+    }
+
+    /// The task registered under `handle`, for the caller to cancel; when there is none yet,
+    /// marks the handle so the call is refused when it registers.
+    mutating func cancel(handle: String) -> Task<[MCP.Tool.Content], Error>? {
+        if let id = byHandle[handle], let task = tasks[id] { return task }
+        if !closed { cancelledEarly.insert(handle) }
+        return nil
     }
 
     /// Closes the set and hands back the tasks still running, for the caller to cancel.

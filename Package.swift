@@ -66,7 +66,9 @@ let package = Package(
             ],
             path: "macos/Sources/desktop-mcp"
         ),
-        .testTarget(name: "DesktopMCPCoreTests", dependencies: ["DesktopMCPCore", .product(name: "MCP", package: "swift-sdk")], path: "macos/Tests/DesktopMCPCoreTests"),
+        .testTarget(name: "DesktopMCPCoreTests", dependencies: ["DesktopMCPCore", .product(name: "MCP", package: "swift-sdk"),
+                                                                 .product(name: "Logging", package: "swift-log")],
+                    path: "macos/Tests/DesktopMCPCoreTests"),
         .testTarget(name: "DesktopMCPHTTPTests", dependencies: ["DesktopMCPHTTP", "DesktopMCPCore", .product(name: "MCP", package: "swift-sdk")], path: "macos/Tests/DesktopMCPHTTPTests"),
     ],
     swiftLanguageModes: [.v6]

@@ -182,4 +182,59 @@ final class ToolRegistryTests: XCTestCase {
         await client.disconnect()
         _ = await wait.value
     }
+
+    func testCancelByRequestHandleEndsOnlyThatCall() async throws {
+        let observer = RecordingObserver()
+        let registry = await DesktopMCP.makeRegistry()
+        await registry.setObserver(observer)
+        let (clientA, startedA) = try await connect(registry, clientName: "A", handle: "a")
+        let (clientB, startedB) = try await connect(registry, clientName: "B", handle: "b")
+        let contextA = try await clientA.send(CallTool.request(.init(name: "Wait", arguments: ["duration": 30])))
+        let contextB = try await clientB.send(CallTool.request(.init(name: "Wait", arguments: ["duration": 30])))
+        let waitA = Task { try await contextA.value }
+        let waitB = Task { try? await contextB.value }
+        try await Task.sleep(for: .milliseconds(200))
+
+        // Both servers are asked, so only the handle decides which call ends.
+        let cancelled = Date()
+        await startedA.cancel(request: "a")
+        await startedB.cancel(request: "a")
+        let result = try await waitA.value
+        XCTAssertLessThan(Date().timeIntervalSince(cancelled), 2)
+        XCTAssertEqual(result.isError, true)
+        XCTAssertEqual(result.content, [.text("Cancelled.")])
+
+        try await Task.sleep(for: .seconds(1))
+        let events = await observer.events
+        XCTAssertEqual(events, ["fail Wait A"], "the call with handle b must still be running")
+
+        await startedA.shutdown()
+        await startedB.shutdown()
+        await clientA.disconnect()
+        await clientB.disconnect()
+        _ = await waitB.value
+    }
+
+    func testCancelBeforeRegistrationStillCancels() async throws {
+        let (client, started) = try await connect(await DesktopMCP.makeRegistry(), handle: "x")
+        defer { Task { await started.shutdown() } }
+
+        // The connection dropped before the call reached the tool: it must still not run.
+        await started.cancel(request: "x")
+        let sent = Date()
+        let result = try await client.callTool(name: "Wait", arguments: ["duration": 30])
+        XCTAssertLessThan(Date().timeIntervalSince(sent), 2)
+        XCTAssertEqual(result.isError, true)
+        XCTAssertEqual(result.content, [.text("Cancelled.")])
+    }
+
+    func testCallsWithoutAHandleAreUnaffectedByCancelByHandle() async throws {
+        let (client, started) = try await connect(await DesktopMCP.makeRegistry())
+        defer { Task { await started.shutdown() } }
+
+        await started.cancel(request: "nope")
+        let result = try await client.callTool(name: "Wait", arguments: ["duration": 0])
+        XCTAssertNotEqual(result.isError, true)
+        XCTAssertTrue(text(result.content)?.hasPrefix("Waited") == true, "\(result.content)")
+    }
 }

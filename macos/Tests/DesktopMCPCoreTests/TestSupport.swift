@@ -1,4 +1,5 @@
 import Foundation
+import Logging
 import MCP
 @testable import DesktopMCPCore
 
@@ -74,4 +75,52 @@ func exchangeRaw(_ registry: ToolRegistry, _ json: String) async throws -> Strin
     await started.shutdown()
     guard let reply else { throw NoReply() }
     return String(decoding: reply, as: UTF8.self)
+}
+
+/// An in-memory server transport that carries HTTP context, as the HTTP transports do: every
+/// request reports the same `RequestHandle.header`, so a test can address its tool calls with
+/// `StartedServer.cancel(request:)` without running an HTTP server.
+actor ContextualTransport: Transport, HTTPContextProviding {
+    private let inner: InMemoryTransport
+    private let handle: String
+
+    init(wrapping inner: InMemoryTransport, handle: String) {
+        self.inner = inner
+        self.handle = handle
+    }
+
+    nonisolated var logger: Logger { inner.logger }
+    func connect() async throws { try await inner.connect() }
+    func disconnect() async { await inner.disconnect() }
+    func send(_ data: Data) async throws { try await inner.send(data) }
+
+    /// `receive()` is synchronous but the inner transport's is isolated to that actor, so a
+    /// task forwards the inner stream.
+    func receive() -> AsyncThrowingStream<Data, Swift.Error> {
+        let (stream, continuation) = AsyncThrowingStream<Data, Swift.Error>.makeStream()
+        let inner = inner
+        let pump = Task {
+            do {
+                for try await data in await inner.receive() { continuation.yield(data) }
+                continuation.finish()
+            } catch {
+                continuation.finish(throwing: error)
+            }
+        }
+        continuation.onTermination = { _ in pump.cancel() }
+        return stream
+    }
+
+    func httpRequestContext(for id: ID) async -> MCP.HTTPRequest? {
+        MCP.HTTPRequest(method: "POST", headers: [RequestHandle.header: handle])
+    }
+}
+
+/// `connect(_:clientName:)`, but the server's transport tags every request with `handle`.
+func connect(_ registry: ToolRegistry, clientName: String = "test", handle: String) async throws -> (Client, StartedServer) {
+    let pair = await InMemoryTransport.createConnectedPair()
+    let started = try await registry.start(on: ContextualTransport(wrapping: pair.server, handle: handle))
+    let client = Client(name: clientName, version: "0")
+    _ = try await client.connect(transport: pair.client)
+    return (client, started)
 }
