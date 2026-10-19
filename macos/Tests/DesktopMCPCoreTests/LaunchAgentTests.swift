@@ -35,7 +35,9 @@ final class LaunchAgentTests: XCTestCase {
         XCTAssertThrowsError(try LaunchAgent.validateTransport("stdio"))
         XCTAssertThrowsError(try LaunchAgent.validateTransport("websocket"))
         XCTAssertNoThrow(try LaunchAgent.validateTransport("streamable-http"))
-        XCTAssertNoThrow(try LaunchAgent.validateTransport("sse"))
+        XCTAssertThrowsError(try LaunchAgent.validateTransport("sse")) { error in
+            XCTAssertTrue("\(error)".contains("streamable-http"), "\(error)")
+        }
     }
 
     func testFreePortSkipsAPortSomethingElseIsListeningOn() throws {

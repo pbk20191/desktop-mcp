@@ -15,6 +15,8 @@ public struct ServePlan: Equatable, Sendable {
     /// Non-fatal notes for the log.
     public var warnings: [String] = []
 
+    public static let legacyTransportWarning = "transport \"sse\" is no longer supported; serving streamable-http (POST /mcp) instead. Re-run `desktop-mcp install` or `desktop-mcp auth` to update the stored setting."
+
     public static let environmentKeys = (
         authKey: "DESKTOP_MCP_AUTH_KEY",
         ipAllowlist: "DESKTOP_MCP_IP_ALLOWLIST",
@@ -53,7 +55,14 @@ public struct ServePlan: Equatable, Sendable {
             text.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         }
 
-        let transport = cli.transport ?? config.server.transport
+        var transport = cli.transport ?? config.server.transport
+        var warnings = config.warnings
+        if transport == "sse" {
+            // A Launch Agent plist from an older version still passes `--transport sse`; rejecting
+            // it would crash-loop the agent under KeepAlive.
+            transport = "streamable-http"
+            if !warnings.contains(legacyTransportWarning) { warnings.append(legacyTransportWarning) }
+        }
         guard DesktopMCPConfig.transports.contains(transport) else {
             throw ConfigErrorText("Invalid transport: \(transport)")
         }
@@ -99,6 +108,7 @@ public struct ServePlan: Equatable, Sendable {
             allowInsecureRemote: allowInsecureRemote, ipAllowlist: allowlist,
             tls: certificate.flatMap { c in privateKey.map { (c, $0) } },
             oauth: oauth, excludedTools: excluded)
+        plan.warnings = warnings
         if transport == "stdio" && (authKey != nil || !allowlist.isEmpty) {
             plan.warnings.append("auth_key / ip_allowlist have no effect on stdio transport")
         }

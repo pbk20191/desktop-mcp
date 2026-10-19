@@ -27,7 +27,7 @@ struct CLIError: Error, CustomStringConvertible {
 }
 
 enum TransportChoice: String, ExpressibleByArgument, CaseIterable {
-    case stdio, sse
+    case stdio
     case streamableHTTP = "streamable-http"
 }
 
@@ -38,13 +38,16 @@ struct Serve: AsyncParsableCommand {
         abstract: "Run the MCP server. The default command.",
         discussion: "Values not given here come from the config file (~/.desktop-mcp/config.toml), then defaults.")
 
-    @Option(help: "The transport layer used by the MCP server. (default: stdio)")
-    var transport: TransportChoice?
+    /// Raw text, not `TransportChoice`: a Launch Agent installed by an older version still runs
+    /// `serve --transport sse`, which `ServePlan.resolve` maps instead of the parser rejecting it
+    /// (a rejection would crash-loop the agent under KeepAlive).
+    @Option(help: "The transport layer used by the MCP server: stdio|streamable-http. (default: stdio)")
+    var transport: String?
 
-    @Option(help: "Host to bind the SSE/Streamable HTTP server. (default: localhost)")
+    @Option(help: "Host to bind the Streamable HTTP server. (default: localhost)")
     var host: String?
 
-    @Option(help: "Port to bind the SSE/Streamable HTTP server. (default: 8000)")
+    @Option(help: "Port to bind the Streamable HTTP server. (default: 8000)")
     var port: Int?
 
     @Flag(help: "Enable verbose logging for troubleshooting.")
@@ -104,7 +107,7 @@ struct Serve: AsyncParsableCommand {
             throw CLIError(error)
         }
         var values = ServePlan.CommandLineValues()
-        values.transport = transport?.rawValue
+        values.transport = transport
         values.host = host
         values.port = port
         values.authKey = authKey
@@ -197,10 +200,6 @@ struct Serve: AsyncParsableCommand {
             + (plan.tls != nil ? " (TLS; HTTP/2 or HTTP/1.1 via ALPN)" : "")
             + (plan.authKey != nil ? " (auth key required)" : "")
             + (plan.oauth != nil ? " (OAuth enabled)" : ""))
-        if plan.transport == "sse" {
-            log("Warning: the HTTP+SSE transport is deprecated since MCP 2025-03-26 and may be removed; "
-                + "switch clients to streamable-http (POST /mcp).")
-        }
         if debug { log("IP allowlist: \(plan.ipAllowlist.isEmpty ? "none" : plan.ipAllowlist.map(\.description).joined(separator: ", "))") }
         try await NIOHTTPServer.serve(listening, app: app)
     }
@@ -234,7 +233,7 @@ struct Auth: ParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Generate an auth key (and optionally TLS certs) and save to ~/.desktop-mcp/config.toml.")
 
-    @Option(help: "Transport mode to configure. Saved to config.toml. (sse is deprecated since MCP 2025-03-26)")
+    @Option(help: "Transport mode to configure. Saved to config.toml.")
     var transport: TransportChoice = .streamableHTTP
 
     @Option(help: "Host to bind the server to.")
@@ -293,14 +292,9 @@ struct Auth: ParsableCommand {
         print("\n─── Start the server ───")
         print("  \(executable) serve")
         let headers = ["Authorization": "Bearer \(key)"]
-        if transport == .sse {
-            print("\n─── Client config (SSE) ───")
-            print(clientConfig(ClientConfig.Server(type: "sse", url: "\(scheme)://\(host):\(port)/sse", headers: headers)))
-        } else {
-            print("\n─── Client config (Streamable HTTP) ───")
-            print(clientConfig(ClientConfig.Server(type: "http", url: "\(scheme)://\(host):\(port)/mcp/", headers: headers)))
-            print(Install.claudeDesktopNote(executable: executable, url: "\(scheme)://\(host):\(port)/mcp/", authKey: key))
-        }
+        print("\n─── Client config (Streamable HTTP) ───")
+        print(clientConfig(ClientConfig.Server(type: "http", url: "\(scheme)://\(host):\(port)/mcp/", headers: headers)))
+        print(Install.claudeDesktopNote(executable: executable, url: "\(scheme)://\(host):\(port)/mcp/", authKey: key))
     }
 
     func clientConfig(_ server: ClientConfig.Server) -> String {

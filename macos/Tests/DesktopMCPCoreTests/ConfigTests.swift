@@ -75,6 +75,26 @@ final class ConfigTests: XCTestCase {
         XCTAssertEqual(config.sourcePath, url.path)
     }
 
+    func testLegacySSETransportIsMappedWithAWarning() throws {
+        let config = try DesktopMCPConfig.load(try file("[server]\ntransport = \"sse\"\n"))
+        XCTAssertEqual(config.server.transport, "streamable-http")
+        XCTAssertEqual(config.warnings, [ServePlan.legacyTransportWarning])
+    }
+
+    func testPlanMapsLegacySSEFromTheCommandLine() throws {
+        var cli = ServePlan.CommandLineValues()
+        cli.transport = "sse"
+        let plan = try ServePlan.resolve(cli, environment: [:], config: DesktopMCPConfig())
+        XCTAssertEqual(plan.transport, "streamable-http")
+        XCTAssertTrue(plan.warnings.contains(ServePlan.legacyTransportWarning))
+    }
+
+    func testPlanStillRejectsUnknownTransports() {
+        var cli = ServePlan.CommandLineValues()
+        cli.transport = "carrier-pigeon"
+        XCTAssertThrowsError(try ServePlan.resolve(cli, environment: [:], config: DesktopMCPConfig()))
+    }
+
     func testLoadRejectsBadValues() throws {
         XCTAssertThrowsError(try DesktopMCPConfig.load(try file("[server]\ntransport = \"websocket\"\n")))
         XCTAssertThrowsError(try DesktopMCPConfig.load(try file("[server]\nallow_insecure_remote = \"yes\"\n")))
@@ -86,14 +106,14 @@ final class ConfigTests: XCTestCase {
     func testWriteOnlyNonDefaultsAndRoundTrip() throws {
         var config = DesktopMCPConfig()
         XCTAssertEqual(config.serialized(), "")
-        config.server.transport = "sse"
+        config.server.transport = "streamable-http"
         config.server.host = "0.0.0.0"
         config.server.authKey = "k\"ey"
         config.security.ipAllowlist = ["10.0.0.0/8"]
         config.tools.exclude = ["Shell", "Scrape"]
         XCTAssertEqual(config.serialized(), """
         [server]
-        transport = "sse"
+        transport = "streamable-http"
         host = "0.0.0.0"
         auth_key = "k\\"ey"
 
@@ -117,7 +137,7 @@ final class ConfigTests: XCTestCase {
 
     func testPlanPrecedenceCommandLineThenEnvironmentThenConfig() throws {
         var config = DesktopMCPConfig()
-        config.server.transport = "sse"
+        config.server.transport = "streamable-http"
         config.server.port = 9000
         config.server.authKey = "from-config"
         config.security.ipAllowlist = ["10.0.0.0/8"]
@@ -127,7 +147,7 @@ final class ConfigTests: XCTestCase {
         cli.port = 7000
         let env = [ServePlan.environmentKeys.authKey: "from-env", ServePlan.environmentKeys.excludeTools: "Scrape,Shell"]
         let plan = try ServePlan.resolve(cli, environment: env, config: config)
-        XCTAssertEqual(plan.transport, "sse")
+        XCTAssertEqual(plan.transport, "streamable-http")
         XCTAssertEqual(plan.port, 7000)
         XCTAssertEqual(plan.host, "localhost")
         XCTAssertEqual(plan.authKey, "from-env")
@@ -147,7 +167,7 @@ final class ConfigTests: XCTestCase {
         let blank = try ServePlan.resolve(cli, environment: [ServePlan.environmentKeys.ipAllowlist: ""], config: config)
         XCTAssertEqual(blank.authKey, "from-config")
         XCTAssertEqual(blank.ipAllowlist.map(\.description), ["10.0.0.0/8"])
-        cli.transport = "sse"
+        cli.transport = "streamable-http"
         cli.host = "0.0.0.0"
         XCTAssertThrowsError(try ServePlan.resolve(cli, environment: [:], config: DesktopMCPConfig()))
     }

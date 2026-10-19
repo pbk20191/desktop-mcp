@@ -11,7 +11,7 @@ public enum LaunchAgent {
     /// Also the code signing identifier, so TCC and launchd agree on who this is.
     public static let label = "com.desktop-mcp.server"
     /// Transports a background service can offer; stdio needs a parent process to talk to.
-    public static let transports: Set<String> = ["sse", "streamable-http"]
+    public static let transports: Set<String> = ["streamable-http"]
 
     public static func plistURL(home: URL) -> URL {
         home.appendingPathComponent("Library/LaunchAgents/\(label).plist")
@@ -29,8 +29,8 @@ public enum LaunchAgent {
     public static func validateTransport(_ transport: String) throws {
         guard transports.contains(transport) else {
             throw ConfigErrorText(transport == "stdio"
-                ? "stdio is not supported as a service; use --transport streamable-http (or sse)."
-                : "Invalid transport: \(transport)")
+                ? "stdio is not supported as a service; use --transport streamable-http."
+                : "Invalid transport: \(transport)" + (transport == "sse" ? " (sse was removed; use streamable-http)" : ""))
         }
     }
 

@@ -27,7 +27,8 @@ final class StdioBridgeTests: XCTestCase {
         let sse = try LaunchAgent.plist(
             programArguments: LaunchAgent.programArguments(executable: "/x", transport: "sse", host: "::1", port: 1),
             logDirectory: URL(fileURLWithPath: "/tmp"))
-        XCTAssertThrowsError(try StdioBridge.Target.installed(plist: sse, config: config))
+        // An agent installed by an older version still says sse; it serves /mcp anyway.
+        XCTAssertEqual(try StdioBridge.Target.installed(plist: sse, config: config).url.absoluteString, "https://[::1]:1/mcp")
         XCTAssertThrowsError(try StdioBridge.Target.installed(plist: Data("nope".utf8), config: config))
     }
 

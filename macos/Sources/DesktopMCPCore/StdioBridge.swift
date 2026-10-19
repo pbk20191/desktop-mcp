@@ -26,7 +26,8 @@ public struct StdioBridge: Sendable {
                 return arguments[index + 1]
             }
             let transport = value(after: "--transport") ?? "streamable-http"
-            guard transport == "streamable-http" else {
+            // An agent installed with `--transport sse` maps it to streamable-http itself.
+            guard transport == "streamable-http" || transport == "sse" else {
                 throw ConfigErrorText("connect supports streamable-http only; the installed agent runs \(transport).")
             }
             let host = value(after: "--host") ?? "127.0.0.1"

@@ -88,13 +88,12 @@ struct Install: ParsableCommand {
         // `auth` applies and must be sent.
         let config = (try? DesktopMCPConfig.load(DesktopMCPConfig.discover(explicit: nil))) ?? DesktopMCPConfig()
         let scheme = config.server.sslCertfile != nil ? "https" : "http"
-        let path = transport == .sse ? "/sse" : "/mcp/"
-        let url = "\(scheme)://\(host):\(port)\(path)"
+        let url = "\(scheme)://\(host):\(port)/mcp/"
         let headers = config.server.authKey.map { ["Authorization": "Bearer \($0)"] }
-        let server = ClientConfig.Server(type: transport == .sse ? "sse" : "http", url: url, headers: headers)
-        print("\n─── Client config (\(transport == .sse ? "SSE" : "Streamable HTTP")) ───")
+        let server = ClientConfig.Server(type: "http", url: url, headers: headers)
+        print("\n─── Client config (Streamable HTTP) ───")
         print(JSONCoding.encodeString(ClientConfig(mcpServers: ["desktop-mcp": server]), pretty: true))
-        print("\nClaude Code: claude mcp add --transport \(transport == .sse ? "sse" : "http") desktop-mcp \(url)"
+        print("\nClaude Code: claude mcp add --transport http desktop-mcp \(url)"
               + (config.server.authKey.map { " --header \"Authorization: Bearer \($0)\"" } ?? ""))
         print(Self.claudeDesktopNote(executable: executable, url: nil, authKey: nil))
         print("\nPermissions: the agent asks for Accessibility on its first start; grant it to \"desktop-mcp\" in "
