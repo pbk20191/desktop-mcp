@@ -48,7 +48,7 @@ Run `desktop-mcp permissions` to check the current state and trigger the system 
 | `Shortcut` | e.g. `command+shift+t` |
 | `Wait` | Waits for N seconds |
 | `App` | launch / switch / resize / move |
-| `Shell` | `bash -c` or `osascript` |
+| `Shell` | `bash -c`, or `osascript` for AppleScript / JXA (see below) |
 | `Scrape` | Fetches a URL and converts it to Markdown (private, loopback, and other internal addresses are blocked) |
 | `Desktop` | Creates a new Mission Control Space |
 | `Notification` | Shows a notification banner |
@@ -139,6 +139,7 @@ As in the original, anonymous usage events go to the original project's (CursorT
 
 - **`install` finds the binary by its own path**, not by searching `$PATH` for `macos-mcp` or `uvx`, and prints the client config and the matching `claude mcp add` line afterwards.
 - **`connect` is a built-in stdio-to-HTTP bridge**, replacing the `mcp-remote` (Node) bridge the original's README suggests for Claude Desktop.
+- **`Shell` with `mode: osascript` can run JXA.** Start the source with `#!/usr/bin/osascript -l JavaScript` or `// language: JavaScript` and it runs as JavaScript (`osascript -l JavaScript`); anything else is AppleScript, as in the original. Each call is its own `osascript` process, so scripts from several clients run concurrently, dialogs (`display alert`, ...) work, and a timeout kills the script.
 - **`Type` doesn't depend on the input source.** The original sent US-layout key codes, so typing English while the Korean input source was active produced Hangul jamo. This port injects every character as Unicode, and while typing it temporarily switches to an ASCII layout and restores the previous input source afterwards.
 - **`Click` with `clicks=2` sends a real double-click** (click state 1 followed by 2).
 - **`Scrape` parses HTML with the system parser** (libxml2 through Foundation's `XMLDocument`), so broken markup is repaired the way libxml2 does it rather than the way Python's `html.parser` does, and HTML 4 entities are decoded while HTML5-only names (such as `&check;`) are left as written. The contents of `<script>` and `<style>` are dropped; the original's markdownify `strip` option kept their text.
