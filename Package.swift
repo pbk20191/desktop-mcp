@@ -20,8 +20,9 @@ let package = Package(
         .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.12.1"),
         // Already in the graph through the SDK; declared because `Transport` requires a `Logger`.
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
-        // Transitive (via swift-nio), capped to keep the graph loadable by Xcode 16.4's SwiftPM
-        // (1.3+ manifests need a newer toolchain); macos/scripts/build-release.sh picks that Xcode.
+        // Transitive (via swift-nio), capped to keep the graph loadable by Xcode 16.4's SwiftPM:
+        // the 1.3-1.6 manifests fail SwiftPM 6.1's language-mode check and 1.7+ needs tools 6.2.
+        // macos/scripts/build-release.sh picks that Xcode.
         .package(url: "https://github.com/apple/swift-collections", "1.1.0"..<"1.3.0"),
     ],
     targets: [

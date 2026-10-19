@@ -13,7 +13,7 @@ A Swift port of [CursorTouch/MacOS-MCP](https://github.com/CursorTouch/MacOS-MCP
 macos/scripts/build-release.sh    # → macos/dist/desktop-mcp (universal, ad-hoc signed)
 ```
 
-Requires Xcode 16 / Swift 6.0 or newer to build. Build releases with **Xcode 16** (Swift 6.1): the output is a single file, `macos/dist/desktop-mcp`, that runs on macOS 13 and later. The script picks an Xcode 16 under `/Applications` by itself; point `DEVELOPER_DIR` at one elsewhere (`DEVELOPER_DIR=/path/to/Xcode-16.4.app/Contents/Developer macos/scripts/build-release.sh`). With Swift 6.2+ toolchains (Xcode 26 and later) the compiled dependencies link against a Span runtime shim that macOS 26 ships but macOS 13–15 do not, so the script also emits `macos/dist/libswiftCompatibilitySpan.dylib`; keep the two files in the same directory in that case. `Package.swift` caps the transitive `swift-collections` dependency below 1.3 because newer manifests do not load in SwiftPM 6.1; every toolchain resolves to the same pinned versions.
+Requires Xcode 16.3 / Swift 6.1 or newer to build. Build releases with **Xcode 16** (Swift 6.1): the output is a single file, `macos/dist/desktop-mcp`, that runs on macOS 13 and later. The script picks an Xcode 16 under `/Applications` by itself; point `DEVELOPER_DIR` at one elsewhere (`DEVELOPER_DIR=/path/to/Xcode-16.4.app/Contents/Developer macos/scripts/build-release.sh`). With Swift 6.2+ toolchains (Xcode 26 and later) the compiled dependencies link against a Span runtime shim that macOS 26 ships but macOS 13–15 do not, so the script also emits `macos/dist/libswiftCompatibilitySpan.dylib`; keep the two files in the same directory in that case. `Package.swift` caps the transitive `swift-collections` dependency below 1.3 because newer manifests do not load in SwiftPM 6.1; every toolchain resolves to the same pinned versions.
 
 Add it to your MCP client config:
 
@@ -111,6 +111,7 @@ Endpoints:
 - `/sse` is gone (404). A stored `transport = "sse"` in `config.toml`, or a Launch Agent plist that still says `--transport sse`, is served as streamable-http with the warning `transport "sse" is no longer supported; serving streamable-http (POST /mcp) instead. Re-run `desktop-mcp install` or `desktop-mcp auth` to update the stored setting.` The `--transport` option of `install` and `auth` accepts only `stdio|streamable-http`.
 - With OAuth: `/.well-known/oauth-authorization-server`, `/oauth/authorize`, `/oauth/token` (and `/oauth/register`, which refuses).
 - JSON-RPC error messages carry the SDK's prefix: an unknown tool is `-32602` with the message `Invalid params: Unknown tool: <name>` (the exact original text is in `error.data.detail`).
+- A string argument that is a `data:` URL reaches the tool rebuilt by the SDK in the plain `data:<type>,<text>` form when its bytes are UTF-8 (otherwise as base64), so base64 or percent-escaped data URLs change: `Type` with `text` `data:text/html;base64,PGgxPkhpPC9oMT4=` types `data:text/html,<h1>Hi</h1>`.
 
 Example config file:
 

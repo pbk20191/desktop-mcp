@@ -10,7 +10,7 @@ import NIOTransportServices
 /// HTTP/1.1; TLS connections negotiate HTTP/2 or HTTP/1.1 through ALPN. An HTTP/2 stream is
 /// presented to the request code exactly like an HTTP/1.1 connection, so one handler serves
 /// both. Each connection (and each HTTP/2 stream) is handled in its own task; when a client
-/// disconnects or resets a stream, the work it was waiting for (a tool call, an SSE stream) is
+/// disconnects or resets a stream, the work it was waiting for (such as a tool call) is
 /// cancelled.
 ///
 /// `bind` creates an event loop group of its own for the listener; `serve` shuts it down when
