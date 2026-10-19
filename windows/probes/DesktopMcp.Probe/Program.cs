@@ -46,7 +46,7 @@ static async Task<bool> ProbeImagingAsync(string path)
     var png = await new DesktopMcp.Desktop.Imaging.Win2DRenderer().RenderPngAsync(new(width, height, bgra), 0.75, annotations);
     File.WriteAllBytes(path, png);
     Console.WriteLine($"imaging: {png.Length / 1024} KB PNG in {clock.ElapsedMilliseconds} ms -> {Path.GetFullPath(path)}");
-    return png.Length > 0;
+    return png.Length > 0 && CheckWin2DLinkage("imaging");
 }
 
 static async Task<bool> ProbeCaptureAsync(string path)
@@ -60,7 +60,16 @@ static async Task<bool> ProbeCaptureAsync(string path)
     File.WriteAllBytes(path, png);
     Console.WriteLine($"capture: borderSuppressed={DesktopMcp.Desktop.Capture.GraphicsCaptureService.LastBorderSuppressed}");
     Console.WriteLine($"capture: {image.Width}x{image.Height} in {captureMs} ms, png {png.Length / 1024} KB -> {Path.GetFullPath(path)}");
-    return image.Width > 0;
+    return image.Width > 0 && CheckWin2DLinkage("capture");
+}
+
+// NativeAOT: Win2D is linked into the exe, so its DLL must never load. JIT: the package's DLL is expected.
+static bool CheckWin2DLinkage(string probe)
+{
+    var aot = !System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported;
+    var dllLoaded = BootstrapProbe.IsCanvasDllLoaded();
+    Console.WriteLine($"{probe}: nativeAot={aot}, Microsoft.Graphics.Canvas.dll loaded={dllLoaded}");
+    return !aot || !dllLoaded;
 }
 
 static bool Fail(string message) { Console.Error.WriteLine(message); return false; }

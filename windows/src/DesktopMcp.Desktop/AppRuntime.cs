@@ -30,6 +30,8 @@ public static class AppRuntime
         {
             if (_initialized)
                 return;
+            // NativeAOT publishes link Win2D statically: route its activation before any Win2D type is used.
+            Imaging.Win2DStaticActivation.Install();
             PackageFullName = AddFrameworkDependency();
             _initialized = true;
         }

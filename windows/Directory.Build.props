@@ -17,12 +17,17 @@
     <WindowsPackageType>None</WindowsPackageType>
     <WindowsAppSDKSelfContained>false</WindowsAppSDKSelfContained>
     <WindowsAppSdkBootstrapInitialize>false</WindowsAppSdkBootstrapInitialize>
+    <!-- No MRT resources (no XAML, no .resw): do not generate the empty <Project>.pri files that the SDK's MSIX
+         build tools (through Microsoft.WindowsAppSDK.Base) would otherwise put next to every output. -->
+    <AppxGeneratePriEnabled>false</AppxGeneratePriEnabled>
   </PropertyGroup>
 
   <!--
-    Until Win2D is removed: Win2D depends on WinUI, which brings Foundation (the bootstrap DLL and projections)
-    and WebView2. Exclude their assets in every project that sees DesktopMcp.Desktop; NuGet takes the union of
-    asset flags across dependency paths, so the exclusion must be on a direct reference in each project.
+    Win2D (Microsoft.Graphics.Win2D, linked statically into the NativeAOT exes) depends on WinUI, which brings
+    Foundation (the bootstrap DLL, its auto-initializer and projections) and WebView2 (WebView2Loader.dll and
+    its projection). None of them is used; Win2D's projection only needs WinUI types for its XAML controls,
+    which we never touch. Exclude their assets in every project that sees DesktopMcp.Desktop: NuGet takes the
+    union of asset flags across dependency paths, so the exclusion must be on a direct reference in each project.
   -->
   <ItemGroup Condition="'$(MSBuildProjectName)' != 'DesktopMcp.Core' and '$(MSBuildProjectName)' != 'DesktopMcp.Core.Tests'">
     <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" ExcludeAssets="all" PrivateAssets="all" />

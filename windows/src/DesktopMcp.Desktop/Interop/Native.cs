@@ -53,6 +53,13 @@ internal static unsafe partial class Native
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool HeapFree(nint heap, uint flags, nint memory);
 
+    // combase: HSTRINGs for the static Win2D activation hook
+    [LibraryImport("api-ms-win-core-winrt-string-l1-1-0.dll")]
+    internal static partial int WindowsCreateString(char* sourceString, uint length, nint* hstring);
+
+    [LibraryImport("api-ms-win-core-winrt-string-l1-1-0.dll")]
+    internal static partial int WindowsDeleteString(nint hstring);
+
     // user32: monitors
     [StructLayout(LayoutKind.Sequential)]
     internal struct Point { public int X, Y; }

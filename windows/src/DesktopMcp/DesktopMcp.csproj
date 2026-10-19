@@ -7,6 +7,8 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <OptimizationPreference>Size</OptimizationPreference>
     <EventSourceSupport>false</EventSourceSupport>
+    <!-- The Web SDK is used for Kestrel/hosting only; there are no static web assets, so no endpoints manifest. -->
+    <StaticWebAssetsEnabled>false</StaticWebAssetsEnabled>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\DesktopMcp.Server\DesktopMcp.Server.csproj" />

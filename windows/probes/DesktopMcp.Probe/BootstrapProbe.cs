@@ -35,6 +35,9 @@ internal static partial class BootstrapProbe
         return ok;
     }
 
+    /// <summary>Whether Win2D's Microsoft.Graphics.Canvas.dll is loaded in this process.</summary>
+    public static bool IsCanvasDllLoaded() => GetModuleHandleW("Microsoft.Graphics.Canvas.dll") != 0;
+
     /// <summary>The calling thread's COM apartment (CoGetApartmentType), e.g. "STA" or "MTA (implicit)".</summary>
     public static string DescribeApartment()
     {

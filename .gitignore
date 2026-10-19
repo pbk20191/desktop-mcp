@@ -10,3 +10,4 @@ obj/
 .vs/
 *.user
 windows/probes/out/
+windows/.deps/
