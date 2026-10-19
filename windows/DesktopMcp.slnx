@@ -10,4 +10,7 @@
     <Project Path="tests/DesktopMcp.Desktop.Tests/DesktopMcp.Desktop.Tests.csproj" />
     <Project Path="tests/DesktopMcp.Server.Tests/DesktopMcp.Server.Tests.csproj" />
   </Folder>
+  <Folder Name="/probes/">
+    <Project Path="probes/DesktopMcp.Probe/DesktopMcp.Probe.csproj" />
+  </Folder>
 </Solution>

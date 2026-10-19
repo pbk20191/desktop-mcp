@@ -9,3 +9,4 @@ bin/
 obj/
 .vs/
 *.user
+windows/probes/out/
