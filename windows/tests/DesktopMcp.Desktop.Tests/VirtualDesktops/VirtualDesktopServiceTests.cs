@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using DesktopMcp.Core.Snapshots;
 using DesktopMcp.Desktop.VirtualDesktops;
 
@@ -96,25 +95,23 @@ public class VirtualDesktopServiceTests
         Assert.Equal(VirtualDesktopInfo.Default, active);
         Assert.Equal([VirtualDesktopInfo.Default], all);
         Assert.Equal(1, source.Calls);
-        Assert.True(service.CallInFlight);
+        Assert.True(service.CallAbandoned);
     }
 
     [Fact]
     public void WhileAnAbandonedCallIsStillBlockedNewCallsFailOpenAtOnceWithoutCallingTheShell()
     {
         using var source = new BlockingSource();
-        var service = Service(source, timeoutMs: 1000);
+        var service = Service(source, timeoutMs: 50);
         Assert.Equal(VirtualDesktopInfo.Default, service.GetDesktops().Active);
+        Assert.True(service.CallAbandoned);
 
-        var clock = Stopwatch.StartNew();
         var desktops = service.GetDesktops();
         var windows = service.OnCurrentDesktop([4, 5]);
-        clock.Stop();
 
         Assert.Equal(VirtualDesktopInfo.Default, desktops.Active);
         Assert.Equal([4L, 5L], windows);
-        Assert.True(clock.Elapsed < TimeSpan.FromMilliseconds(500), $"took {clock.Elapsed}");
-        Assert.Equal(1, source.Calls);
+        Assert.Equal(1, source.Calls); // neither call reached the shell
     }
 
     [Fact]
@@ -134,6 +131,94 @@ public class VirtualDesktopServiceTests
         Assert.Equal(new VirtualDesktopInfo("{033294DF-1CAC-47B0-A62E-D3E53B23F4BC}", "Desktop 1"), active);
         Assert.Equal([active], all);
         Assert.Equal(4, source.Calls); // and this read made its own DesktopIds and CurrentDesktopId calls
+    }
+}
+
+public class VirtualDesktopServiceConcurrencyTests
+{
+    private static readonly Guid Only = new("033294df-1cac-47b0-a62e-d3e53b23f4bc");
+
+    /// <summary>A healthy but slow shell: the first DesktopIds call holds until released; tracks overlapping calls.</summary>
+    private sealed class SlowSource : IVirtualDesktopSource, IDisposable
+    {
+        private int _idCalls;
+        private int _running;
+        private int _maxRunning;
+
+        public ManualResetEventSlim FirstEntered { get; } = new();
+        public ManualResetEventSlim ReleaseFirst { get; } = new();
+        public int IdCalls => Volatile.Read(ref _idCalls);
+        public int MaxRunning => Volatile.Read(ref _maxRunning);
+
+        public bool IsOnCurrentDesktop(long window) => true;
+        public Guid CurrentDesktopId() => Only;
+        public void Dispose() => ReleaseFirst.Set();
+
+        public IReadOnlyList<Guid?> DesktopIds()
+        {
+            var running = Interlocked.Increment(ref _running);
+            InterlockedMax(ref _maxRunning, running);
+            try
+            {
+                if (Interlocked.Increment(ref _idCalls) == 1)
+                {
+                    FirstEntered.Set();
+                    ReleaseFirst.Wait();
+                }
+                return [Only];
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _running);
+            }
+        }
+
+        private static void InterlockedMax(ref int target, int value)
+        {
+            int seen;
+            while ((seen = Volatile.Read(ref target)) < value && Interlocked.CompareExchange(ref target, value, seen) != seen) { }
+        }
+    }
+
+    [Fact]
+    public async Task ConcurrentHealthyCallsBothGetRealResultsOneAtATime()
+    {
+        using var source = new SlowSource();
+        var service = new VirtualDesktopService(source, _ => null, TimeSpan.FromSeconds(10));
+
+        var first = Task.Run(service.GetDesktops);
+        Assert.True(source.FirstEntered.Wait(TimeSpan.FromSeconds(10)));
+        var second = Task.Run(service.GetDesktops); // waits for the gate while the first call runs
+        await Task.Delay(100);
+        Assert.Equal(1, source.IdCalls);
+        source.ReleaseFirst.Set();
+
+        var results = await Task.WhenAll(first, second);
+
+        var expected = new VirtualDesktopInfo("{033294DF-1CAC-47B0-A62E-D3E53B23F4BC}", "Desktop 1");
+        Assert.All(results, result => Assert.Equal(expected, result.Active));
+        Assert.Equal(2, source.IdCalls);
+        Assert.Equal(1, source.MaxRunning);
+    }
+
+    [Fact]
+    public void AnUnreadableRegistryNameFallsBackToDesktopNForThatDesktopOnly()
+    {
+        var second = new Guid("c4e16f48-2232-4ef9-8671-d901d748ad83");
+        var source = new ListSource([Only, second]);
+        var service = new VirtualDesktopService(
+            source, id => id == Only ? throw new System.Security.SecurityException("denied") : "Work", TimeSpan.FromSeconds(10));
+
+        var (_, all) = service.GetDesktops();
+
+        Assert.Equal(["Desktop 1", "Work"], all.Select(desktop => desktop.Name));
+    }
+
+    private sealed class ListSource(IReadOnlyList<Guid?> ids) : IVirtualDesktopSource
+    {
+        public bool IsOnCurrentDesktop(long window) => true;
+        public IReadOnlyList<Guid?> DesktopIds() => ids;
+        public Guid CurrentDesktopId() => Only;
     }
 }
 

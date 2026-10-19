@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.Marshalling;
 using DesktopMcp.Core.Snapshots;
@@ -37,8 +38,17 @@ internal interface IVirtualDesktopSource
 /// upstream vdm/core.py:370-689. The documented IVirtualDesktopManager filters windows; the undocumented
 /// IVirtualDesktopManagerInternal lists desktops, named from the registry or "Desktop N" (spec §6). Every call goes to
 /// Explorer, so each is bounded by <see cref="CallTimeout"/> and fails open (spec §12: names only affect the report).
-/// At most one shell call is in flight per service: while one is running, including one abandoned after its deadline
-/// because Explorer hangs, a new call returns its fallback at once instead of blocking another thread-pool thread.
+/// <para>
+/// At most one shell call is in flight per service. A call waits for the previous one within its own deadline, so
+/// concurrent healthy callers (spec §5 runs ungated tools such as Snapshot concurrently) all get real results. Only while
+/// a call is abandoned (its caller gave up at the deadline and it is still blocked in Explorer) does a new call return its
+/// fallback at once, without calling the shell or blocking another thread-pool thread.
+/// </para>
+/// <para>
+/// If Explorer hangs for good rather than dying, the service stays degraded: it returns the fallbacks, holding the one
+/// pool thread of the abandoned call, until Explorer answers or restarts. The gate is per instance, so the service must
+/// be a singleton (one instance shared by every caller) for the one-call bound to hold process-wide.
+/// </para>
 /// </summary>
 public sealed class VirtualDesktopService : IVirtualDesktops
 {
@@ -49,7 +59,8 @@ public sealed class VirtualDesktopService : IVirtualDesktops
     private readonly IVirtualDesktopSource _source;
     private readonly Func<Guid, string?> _registryName;
     private readonly TimeSpan _timeout;
-    private int _inFlight;
+    private readonly SemaphoreSlim _gate = new(1, 1);
+    private Task? _abandoned;
 
     public VirtualDesktopService() : this(new ShellVirtualDesktops(), ReadRegistryName, CallTimeout)
     {
@@ -63,7 +74,10 @@ public sealed class VirtualDesktopService : IVirtualDesktops
     }
 
     /// <summary>True while a shell call runs, including one abandoned after its deadline.</summary>
-    internal bool CallInFlight => Volatile.Read(ref _inFlight) != 0;
+    internal bool CallInFlight => _gate.CurrentCount == 0 || Volatile.Read(ref _abandoned) is not null;
+
+    /// <summary>True while a call whose caller gave up is still running; new calls fall back at once.</summary>
+    internal bool CallAbandoned => Volatile.Read(ref _abandoned) is not null;
 
     public IReadOnlyList<long> OnCurrentDesktop(IReadOnlyList<long> windows) =>
         Bounded(() => windows.Where(window =>
@@ -86,7 +100,7 @@ public sealed class VirtualDesktopService : IVirtualDesktops
         for (var i = 0; i < ids.Count; i++)
         {
             if (ids[i] is not { } id) continue;
-            var name = _registryName(id);
+            var name = RegistryName(id);
             all.Add(new VirtualDesktopInfo(Format(id), string.IsNullOrEmpty(name) ? $"Desktop {i + 1}" : name));
         }
         var current = Format(_source.CurrentDesktopId());
@@ -94,30 +108,61 @@ public sealed class VirtualDesktopService : IVirtualDesktops
         return (active, all);
     }
 
-    // upstream vdm/core.py:434-447.
+    // upstream vdm/core.py:434-447: an unreadable name (SecurityException, IOException, ...) falls back to "Desktop N"
+    // for that desktop only.
+    private string? RegistryName(Guid id)
+    {
+        try { return _registryName(id); }
+        catch (Exception) { return null; }
+    }
+
     private static string? ReadRegistryName(Guid id)
     {
         using var key = Registry.CurrentUser.OpenSubKey($@"{DesktopsKey}\{Format(id)}");
         return key?.GetValue("Name") as string;
     }
 
-    // Preflight F3: one call in flight at most, so a hung Explorer holds one pool thread per service, not two per Snapshot.
+    // Preflight F3 as ruled in the Task 9 fix round: one call in flight at most; wait for the gate within the deadline;
+    // fall back at once only while a call is abandoned.
     private T Bounded<T>(Func<T> read, T fallback)
     {
-        if (Interlocked.CompareExchange(ref _inFlight, 1, 0) != 0) return fallback;
-        var task = Task.Run(() =>
-        {
-            try { return read(); }
-            finally { Volatile.Write(ref _inFlight, 0); }
-        });
+        if (CallAbandoned) return fallback;
+        var start = Stopwatch.GetTimestamp();
+        if (!_gate.Wait(_timeout)) return fallback;
+        Task<T> task;
         try
         {
-            return task.Wait(_timeout) ? task.Result : fallback;
+            task = Task.Run(read);
+        }
+        catch
+        {
+            _gate.Release();
+            throw;
+        }
+        // Runs when the call finishes, however late: clear this call's abandonment, then let the next call in.
+        task.ContinueWith(
+            finished =>
+            {
+                Interlocked.CompareExchange(ref _abandoned, null, finished);
+                _gate.Release();
+            },
+            CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+
+        var remaining = _timeout - Stopwatch.GetElapsedTime(start);
+        try
+        {
+            if (task.Wait(remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero)) return task.Result;
         }
         catch (AggregateException)
         {
             return fallback;
         }
+
+        // Give up on the still-running call. If it finished after the wait but before the flag was set, its continuation
+        // may already have run; IsCompleted is true by then, so clear the flag here instead.
+        Interlocked.CompareExchange(ref _abandoned, task, null);
+        if (task.IsCompleted) Interlocked.CompareExchange(ref _abandoned, null, task);
+        return fallback;
     }
 }
 
