@@ -17,22 +17,29 @@ final class StdioBridgeServerTests: XCTestCase {
         StdioBridge(target: .init(url: URL(string: "http://127.0.0.1:\(port)/mcp")!, authKey: authKey))
     }
 
+    /// Every line `bridge` hands back for `line`.
+    func forward(_ line: String, through bridge: StdioBridge) async -> [String] {
+        let collector = LineCollector()
+        await bridge.forward(line) { await collector.append($0) }
+        return await collector.all()
+    }
+
     func testRequestsComeBackAsOneLineEachAndNotificationsAreSilent() async throws {
         let (port, task) = try await start(authKey: "k")
         defer { task.cancel() }
         let bridge = bridge(port: port, authKey: "k")
 
-        let initialize = await bridge.forward(#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}"#)
+        let initialize = await forward(#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}"#, through: bridge)
         XCTAssertEqual(initialize.count, 1)
         let reply = try JSON.parse(initialize[0])
         XCTAssertEqual(reply["id"]?.intValue, 1)
         XCTAssertEqual(reply["result"]?["serverInfo"]?["name"]?.stringValue, "desktop-mcp")
         XCTAssertFalse(initialize[0].contains("\n"))
 
-        let notified = await bridge.forward(#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
+        let notified = await forward(#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#, through: bridge)
         XCTAssertEqual(notified, [])
 
-        let tools = await bridge.forward(#"{"jsonrpc":"2.0","id":"two","method":"tools/list"}"#)
+        let tools = await forward(#"{"jsonrpc":"2.0","id":"two","method":"tools/list"}"#, through: bridge)
         XCTAssertEqual(tools.count, 1)
         XCTAssertEqual(try JSON.parse(tools[0])["result"]?["tools"]?.arrayValue?.count, 12)
     }
@@ -41,7 +48,7 @@ final class StdioBridgeServerTests: XCTestCase {
         let (port, task) = try await start(authKey: "k")
         defer { task.cancel() }
         let wrongKey = bridge(port: port, authKey: "nope")
-        let lines = await wrongKey.forward(#"{"jsonrpc":"2.0","id":7,"method":"ping"}"#)
+        let lines = await forward(#"{"jsonrpc":"2.0","id":7,"method":"ping"}"#, through: wrongKey)
         XCTAssertEqual(lines.count, 1)
         let reply = try JSON.parse(lines[0])
         XCTAssertEqual(reply["id"]?.intValue, 7)
@@ -49,12 +56,12 @@ final class StdioBridgeServerTests: XCTestCase {
         XCTAssertTrue(reply["error"]?["message"]?.stringValue?.contains("401") == true, lines[0])
 
         // A notification that fails has nobody to answer; nothing is written.
-        let silent = await wrongKey.forward(#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
+        let silent = await forward(#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#, through: wrongKey)
         XCTAssertEqual(silent, [])
 
         task.cancel()
         try? await task.value
-        let gone = await wrongKey.forward(#"{"jsonrpc":"2.0","id":8,"method":"ping"}"#)
+        let gone = await forward(#"{"jsonrpc":"2.0","id":8,"method":"ping"}"#, through: wrongKey)
         XCTAssertEqual(try JSON.parse(gone[0])["error"]?["code"]?.intValue, -32000)
     }
 

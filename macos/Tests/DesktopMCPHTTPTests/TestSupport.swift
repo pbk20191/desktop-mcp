@@ -10,6 +10,13 @@ extension Value {
     subscript(key: String) -> Value? { objectValue?[key] }
 }
 
+actor LineCollector {
+    private var lines: [String] = []
+
+    func append(_ line: String) { lines.append(line) }
+    func all() -> [String] { lines }
+}
+
 /// An SDK `Client` that re-initialises when the server answers 404 (what the TypeScript SDK
 /// clients do by spec; the Swift SDK 0.12.1 client does not: it forgets the session id and
 /// throws "Session expired"). Delete it once the SDK client recovers on its own.

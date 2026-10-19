@@ -46,13 +46,13 @@ public struct StdioBridge: Sendable {
     let session: URLSession
     let state = State()
 
-    /// A tool call can legitimately take minutes (Wait, Shell), so the session's inactivity
-    /// timeout is generous; the server ends the response when the call does.
+    /// No inactivity timeout: a tool call can take minutes (Wait, Shell) and a session stream
+    /// can stay silent for hours; the server ends the response when the call does.
     public init(target: Target, session: URLSession? = nil) {
         self.target = target
         self.session = session ?? {
             let configuration = URLSessionConfiguration.ephemeral
-            configuration.timeoutIntervalForRequest = 3600
+            configuration.timeoutIntervalForRequest = 0
             configuration.timeoutIntervalForResource = 24 * 3600
             return URLSession(configuration: configuration)
         }()
@@ -65,9 +65,7 @@ public struct StdioBridge: Sendable {
             func dispatch(_ bytes: [UInt8]) {
                 let line = String(decoding: bytes, as: UTF8.self)
                 guard !line.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-                group.addTask {
-                    for reply in await forward(line) { await output(reply) }
-                }
+                group.addTask { await forward(line, output: output) }
             }
             var buffer: [UInt8] = []
             for await chunk in Self.chunks(of: input) {
@@ -84,10 +82,11 @@ public struct StdioBridge: Sendable {
         }
     }
 
-    /// One message in, zero or more messages out: nothing for notifications and responses
-    /// (HTTP 202), the reply for a request, or a JSON-RPC error carrying the HTTP failure when
-    /// the server could not be reached or refused the request.
-    public func forward(_ line: String) async -> [String] {
+    /// One message in, zero or more messages out, each handed to `output` as soon as it is
+    /// complete: nothing for notifications and responses (HTTP 202), the reply for a request
+    /// (after whatever the server sends first on its event stream), or a JSON-RPC error carrying
+    /// the HTTP failure when the server could not be reached or refused the request.
+    public func forward(_ line: String, output: @Sendable (String) async -> Void) async {
         let body = line.trimmingCharacters(in: .whitespaces)
         var request = URLRequest(url: target.url)
         request.httpMethod = "POST"
@@ -96,27 +95,63 @@ public struct StdioBridge: Sendable {
         request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
         if let key = target.authKey { request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization") }
         if let sessionID = await state.sessionID { request.setValue(sessionID, forHTTPHeaderField: "Mcp-Session-Id") }
+        let id = Self.requestID(in: body)
+        var answered = false
+        func emit(_ payload: String) async {
+            let reply = Self.singleLine(payload)
+            if let id, !answered, Self.isResponse(reply, to: id) { answered = true }
+            await output(reply)
+        }
         do {
-            let (data, response) = try await session.data(for: request)
+            let (bytes, response) = try await session.bytes(for: request)
             guard let http = response as? HTTPURLResponse else { throw Failure("not an HTTP response") }
             if let sessionID = http.value(forHTTPHeaderField: "Mcp-Session-Id") { await state.remember(sessionID) }
             guard (200..<300).contains(http.statusCode) else {
-                let text = String(decoding: data.prefix(500), as: UTF8.self)
+                var head: [UInt8] = []
+                for try await byte in bytes {
+                    head.append(byte)
+                    if head.count == 500 { break }
+                }
+                let text = String(decoding: head, as: UTF8.self)
                 throw Failure("HTTP \(http.statusCode)\(text.isEmpty ? "" : ": \(text)")")
             }
-            if http.statusCode == 202 || data.isEmpty { return [] }
-            let text = String(decoding: data, as: UTF8.self)
+            if http.statusCode == 202 { return }
             let isEventStream = (http.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased().hasPrefix("text/event-stream")
-            return (isEventStream ? SSE.dataPayloads(text) : [text]).map(Self.singleLine)
+            if isEventStream {
+                // Lines end at "\n" only: `AsyncLineSequence` also ends them at CR, NEL, U+2028 and
+                // U+2029, which a JSON string may carry unescaped.
+                var parser = SSEParser()
+                var pendingLine: [UInt8] = []
+                for try await byte in bytes {
+                    pendingLine.append(byte)
+                    guard byte == 0x0A else { continue }
+                    for payload in parser.feed(pendingLine) { await emit(payload) }
+                    pendingLine.removeAll(keepingCapacity: true)
+                }
+                _ = parser.feed(pendingLine)
+                if let payload = parser.finish() { await emit(payload) }
+            } else {
+                var data: [UInt8] = []
+                for try await byte in bytes { data.append(byte) }
+                if !data.isEmpty { await emit(String(decoding: data, as: UTF8.self)) }
+            }
         } catch {
             let message = "desktop-mcp connect: \(target.url.absoluteString): \((error as? Failure)?.description ?? error.localizedDescription)"
-            guard let id = Self.requestID(in: body) else {
-                log(message)  // a notification or response: nobody is waiting for an answer
-                return []
+            // Nobody waits for an answer to a notification or a response, and a request whose
+            // reply already went out must not get a second one when the stream breaks after it.
+            guard let id, !answered else {
+                log(message)
+                return
             }
             let reply: Value = ["jsonrpc": "2.0", "id": id, "error": ["code": -32000, "message": .string(message)]]
-            return [JSONCoding.encodeString(reply)]
+            await output(JSONCoding.encodeString(reply))
         }
+    }
+
+    /// Whether `text` is the response (result or error) to the request with `id`.
+    static func isResponse(_ text: String, to id: Value) -> Bool {
+        guard let message = try? JSONCoding.decode(Value.self, from: text), let object = message.objectValue else { return false }
+        return object["method"] == nil && object["id"] == id
     }
 
     /// The id when `text` is a single request (has a method and a non-null id).
@@ -176,28 +211,60 @@ public enum SSE {
     /// The `data` of each event, lines joined with "\n"; comments, ids and event names are
     /// dropped, and a trailing event without a blank line still counts.
     public static func dataPayloads(_ text: String) -> [String] {
-        var payloads: [String] = []
-        var current: [String]? = nil
-        func flush() {
-            // An empty payload carries nothing to forward: the stateful transport's priming
-            // event (`data: ` before each reply) would otherwise become an empty stdout line.
-            if let lines = current {
-                let payload = lines.joined(separator: "\n")
-                if !payload.isEmpty { payloads.append(payload) }
-            }
-            current = nil
-        }
-        // "\r\n" is a single Character in Swift, so both line endings are matched as one unit.
-        for line in text.split(omittingEmptySubsequences: false, whereSeparator: { $0 == "\n" || $0 == "\r\n" }) {
-            if line.isEmpty { flush(); continue }
-            if line.hasPrefix(":") { continue }
-            guard line.hasPrefix("data:") else { continue }
-            var value = line.dropFirst(5)
-            if value.hasPrefix(" ") { value = value.dropFirst() }
-            current = (current ?? []) + [String(value)]
-        }
-        flush()
+        var parser = SSEParser()
+        var payloads = parser.feed(text.utf8)
+        if let last = parser.finish() { payloads.append(last) }
         return payloads
+    }
+}
+
+/// An incremental reader for the subset of Server-Sent Events the MCP transports use: a line
+/// ends at "\n" (a "\r" before it is dropped), only `data` fields are kept, and a blank line
+/// ends the event. Bytes may be split anywhere, inside a line or a UTF-8 sequence included.
+public struct SSEParser {
+    private var line: [UInt8] = []
+    private var data: [String]? = nil
+
+    public init() {}
+
+    /// Feeds bytes; returns the non-empty `data` payloads of events completed by them.
+    public mutating func feed(_ bytes: some Sequence<UInt8>) -> [String] {
+        var payloads: [String] = []
+        for byte in bytes {
+            guard byte == 0x0A else {
+                line.append(byte)
+                continue
+            }
+            if let payload = endLine() { payloads.append(payload) }
+        }
+        return payloads
+    }
+
+    /// A trailing event without its blank line, if any.
+    public mutating func finish() -> String? {
+        if !line.isEmpty { _ = endLine() }
+        return endEvent()
+    }
+
+    /// Takes in the buffered line; the event's payload when it was the blank line ending one.
+    private mutating func endLine() -> String? {
+        if line.last == 0x0D { line.removeLast() }
+        defer { line.removeAll(keepingCapacity: true) }
+        if line.isEmpty { return endEvent() }
+        let text = String(decoding: line, as: UTF8.self)
+        guard text.hasPrefix("data:") else { return nil }  // comments, ids, event names
+        var value = text.dropFirst(5)
+        if value.hasPrefix(" ") { value = value.dropFirst() }
+        data = (data ?? []) + [String(value)]
+        return nil
+    }
+
+    /// An empty payload carries nothing to forward: the stateful transport's priming event
+    /// (`data: ` before each reply) would otherwise become an empty stdout line.
+    private mutating func endEvent() -> String? {
+        defer { data = nil }
+        guard let payload = data?.joined(separator: "\n"), !payload.isEmpty else { return nil }
+        return payload
     }
 }
 

@@ -40,8 +40,13 @@ actor RecordingObserver: ToolCallObserver {
 actor LineCollector {
     struct Timeout: Error {}
     private var lines: [String] = []
+    /// When each line arrived, for tests about streaming.
+    private(set) var arrivals: [Date] = []
 
-    func append(_ line: String) { lines.append(line) }
+    func append(_ line: String) {
+        lines.append(line)
+        arrivals.append(Date())
+    }
     func all() -> [String] { lines }
 
     func waitFor(count: Int, timeout: TimeInterval = 5) async throws {
@@ -123,4 +128,66 @@ func connect(_ registry: ToolRegistry, clientName: String = "test", handle: Stri
     let client = Client(name: clientName, version: "0")
     _ = try await client.connect(transport: pair.client)
     return (client, started)
+}
+
+/// A `URLProtocol` that answers every request from the script set with `respond`, delivering the
+/// body in timed chunks so a test can watch a streamed response arrive. Tests run serially, so
+/// one script at a time is enough.
+final class StubHTTP: URLProtocol {
+    typealias Chunk = (delay: TimeInterval, bytes: Data)
+    typealias Response = (status: Int, headers: [String: String], chunks: [Chunk])
+
+    private static let script = Locked<(@Sendable (URLRequest) -> Response)?>(nil)
+    /// Chunks still to deliver. Only touched on the loading thread: `startLoading`, `stopLoading`
+    /// and the delayed `deliverNext` all run on its run loop, as `URLProtocol` requires.
+    private var pending: [Chunk] = []
+
+    /// Every later request is answered with `answer(request)`; each chunk is delivered after its
+    /// delay (counted from the previous chunk), then loading finishes.
+    static func respond(_ answer: @escaping @Sendable (URLRequest) -> Response) { script.current = answer }
+
+    /// A session whose every request goes to the script.
+    static func session() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StubHTTP.self]
+        return URLSession(configuration: configuration)
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let answer = Self.script.current, let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        let response = answer(request)
+        guard let http = HTTPURLResponse(url: url, statusCode: response.status, httpVersion: "HTTP/1.1",
+                                         headerFields: response.headers) else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        client?.urlProtocol(self, didReceive: http, cacheStoragePolicy: .notAllowed)
+        pending = response.chunks
+        scheduleNext()
+    }
+
+    override func stopLoading() {
+        pending = []
+        NSObject.cancelPreviousPerformRequests(withTarget: self)
+    }
+
+    private func scheduleNext() {
+        perform(#selector(deliverNext), with: nil, afterDelay: pending.first?.delay ?? 0,
+                inModes: [.default, .common])
+    }
+
+    @objc private func deliverNext() {
+        if pending.isEmpty {
+            client?.urlProtocolDidFinishLoading(self)
+            return
+        }
+        client?.urlProtocol(self, didLoad: pending.removeFirst().bytes)
+        scheduleNext()
+    }
 }
