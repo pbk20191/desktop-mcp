@@ -71,12 +71,16 @@ public static class AppRuntime
         throw new InvalidOperationException(InstallHint(call, hresult.Value));
     }
 
-    /// <summary>"Install the Windows App SDK x.y runtime from &lt;downloads page&gt;"; shared with <c>ComErrors</c> for REGDB_E_CLASSNOTREG.</summary>
-    internal static string InstallHint() => $"Install the Windows App SDK {Release.Major}.{Release.Minor} runtime from {DownloadsPage}";
+    /// <summary>
+    /// "Install the Windows App SDK x.y runtime (a.b.c.d) or later from &lt;downloads page&gt;", naming the minimum version;
+    /// shared with <c>ComErrors</c> for REGDB_E_CLASSNOTREG.
+    /// </summary>
+    internal static string InstallHint() =>
+        $"Install the Windows App SDK {Release.Major}.{Release.Minor} runtime ({RuntimeVersion.DotQuadString}) or later from {DownloadsPage}";
 
-    /// <summary>The message for a failed <paramref name="call"/>; it names the minimum runtime version "or later".</summary>
+    /// <summary>The message for a failed <paramref name="call"/>, ending with <see cref="InstallHint()"/>.</summary>
     internal static string InstallHint(string call, int hresult) =>
-        $"The Windows App SDK runtime {RuntimeVersion.DotQuadString} or later ({Framework.PackageFamilyName}, {Release.Major}.{Release.Minor}, " +
+        $"The Windows App SDK runtime ({Framework.PackageFamilyName}, " +
         $"{RuntimeInformation.ProcessArchitecture.ToString().ToLowerInvariant()}) is not installed: {call} failed with HRESULT 0x{hresult:X8}. " +
         $"{InstallHint()}.";
 

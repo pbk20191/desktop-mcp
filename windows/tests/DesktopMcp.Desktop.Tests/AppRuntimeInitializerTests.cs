@@ -5,24 +5,30 @@ public class AppRuntimeInitializerTests
     [Fact]
     public void ConcurrentFirstCallsAddTheDependencyOnce()
     {
+        const string fullName = "Microsoft.WindowsAppRuntime.2_2.5.1.0_x64__8wekyb3d8bbwe";
         var calls = 0;
+        using var entered = new CountdownEvent(8);
+        using var release = new ManualResetEventSlim();
         var initializer = new AppRuntimeInitializer(() => true, () => { }, () =>
         {
             Interlocked.Increment(ref calls);
-            Thread.Sleep(50);
-            return "Microsoft.WindowsAppRuntime.2_2.5.1.0_x64__8wekyb3d8bbwe";
+            Assert.True(release.Wait(TimeSpan.FromSeconds(10)));
+            return fullName;
         });
-        using var start = new Barrier(8);
-        var threads = Enumerable.Range(0, 8).Select(_ => new Thread(() =>
+        var seen = new string?[8];
+        var threads = Enumerable.Range(0, 8).Select(n => new Thread(() =>
         {
-            start.SignalAndWait();
+            entered.Signal();
             initializer.EnsureInitialized();
+            seen[n] = initializer.PackageFullName;
         })).ToArray();
         foreach (var thread in threads) thread.Start();
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(10)));
+        release.Set();
         foreach (var thread in threads) Assert.True(thread.Join(TimeSpan.FromSeconds(10)));
 
         Assert.Equal(1, calls);
-        Assert.Equal("Microsoft.WindowsAppRuntime.2_2.5.1.0_x64__8wekyb3d8bbwe", initializer.PackageFullName);
+        Assert.All(seen, name => Assert.Equal(fullName, name));
     }
 
     [Fact]
@@ -50,7 +56,8 @@ public class AppRuntimeInitializerTests
     public void TheInstallHintNamesTheFailingCallAndTheMinimumVersion()
     {
         var hint = AppRuntime.InstallHint("AddPackageDependency", unchecked((int)0x80670016));
-        Assert.Contains(" or later (Microsoft.WindowsAppRuntime.", hint);
+        Assert.Contains(") or later from ", hint);
+        Assert.Contains("(Microsoft.WindowsAppRuntime.", hint);
         Assert.Contains("AddPackageDependency failed with HRESULT 0x80670016", hint);
         Assert.EndsWith($"from {AppRuntime.DownloadsPage}.", hint);
     }

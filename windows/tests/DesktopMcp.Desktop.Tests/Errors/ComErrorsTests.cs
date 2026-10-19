@@ -79,6 +79,7 @@ public class ComErrorsTests
     {
         var message = ComErrors.Translate("Screen capture", new COMException("x", unchecked((int)0x80040154))).Message;
         Assert.Contains(AppRuntime.InstallHint(), message);
+        Assert.Contains(") or later from https://", message);
         Assert.EndsWith("(HRESULT 0x80040154)", message);
     }
 
