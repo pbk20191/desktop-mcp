@@ -77,6 +77,11 @@ actor SessionStore {
             return .error(statusCode: 500, .internalError("Could not start the MCP server"))
         }
         creating -= 1
+        guard !closed else {
+            // `shutdown()` ran while the server was starting: it has already ended the others.
+            await started.shutdown()
+            return .error(statusCode: 503, .internalError("The server is shutting down"))
+        }
         let now = Date()
         // Filed before the request is handled, so the end of its stream finds the session.
         sessions[id] = Session(started: started, transport: transport, createdAt: now, lastRequestAt: now, inFlight: 1)
