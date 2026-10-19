@@ -7,7 +7,6 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <OptimizationPreference>Size</OptimizationPreference>
     <EventSourceSupport>false</EventSourceSupport>
-    <UseSystemResourceKeys>true</UseSystemResourceKeys>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\DesktopMcp.Server\DesktopMcp.Server.csproj" />

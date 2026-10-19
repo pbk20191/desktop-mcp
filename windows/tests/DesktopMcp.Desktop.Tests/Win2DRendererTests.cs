@@ -2,6 +2,7 @@ using DesktopMcp.Desktop.Imaging;
 
 namespace DesktopMcp.Desktop.Tests;
 
+[Trait("Category", "Desktop")]
 public class Win2DRendererTests
 {
     private static readonly (byte R, byte G, byte B, byte A) Gray = (0x80, 0x80, 0x80, 0xFF);

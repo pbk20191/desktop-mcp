@@ -2,6 +2,7 @@ using DesktopMcp.Desktop.Dispatching;
 
 namespace DesktopMcp.Desktop.Tests;
 
+[Trait("Category", "Desktop")]
 public class DispatcherQueueThreadTests
 {
     [Fact]

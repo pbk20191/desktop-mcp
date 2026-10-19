@@ -10,8 +10,9 @@ Upstream baseline: [CursorTouch/Windows-MCP](https://github.com/CursorTouch/Wind
 Ship `windows/`, a port of CursorTouch/Windows-MCP that reaches full parity with upstream: all 21
 tools, the `serve`/`install`/`uninstall`/`auth` CLI, the `config.toml` format, the stdio,
 Streamable HTTP and legacy HTTP+SSE transports, bearer auth, IP allowlist, CORS, TLS, OAuth 2.0 +
-PKCE, the desktop-control feature and telemetry. It ships as one NativeAOT `desktop-mcp.exe` per
-architecture (win-x64, win-arm64). It needs the Windows App SDK 2.5 runtime, but no Python,
+PKCE, the desktop-control feature and telemetry. It ships as a NativeAOT `desktop-mcp.exe` per
+architecture (win-x64, win-arm64), with two companion DLLs (`Microsoft.Graphics.Canvas.dll`,
+`Microsoft.WindowsAppRuntime.Bootstrap.dll`) next to it. It needs the Windows App SDK 2.5 runtime, but no Python,
 PowerShell 5.1 or other external tools.
 
 Parity means the tool **contract** (names, parameters, schemas, descriptions, annotations) matches
@@ -450,8 +451,9 @@ xUnit runs under the JIT, so AOT-only failures are caught by the smoke step.
 
 - **Naming**: `desktop-mcp`, `~/.desktop-mcp`, `DESKTOP_MCP_*`. No Python, uv, PowerShell 5.1,
   mkcert or openssl needed.
-- **Installation**: the Windows App SDK 2.5 runtime must be installed. If it is missing, startup
-  fails with an error that says where to get it. `Microsoft.Graphics.Canvas.dll` and
+- **Installation**: the Windows App SDK 2.5 runtime must be installed. The runtime is initialised lazily by the
+  desktop services: if it is missing, the server still starts and headless tools work, while desktop
+  tools return an error result that says how to install the runtime. `Microsoft.Graphics.Canvas.dll` and
   `Microsoft.WindowsAppRuntime.Bootstrap.dll` ship next to `desktop-mcp.exe`.
 - **Output cleanups**: no stray indentation in Snapshot/Screenshot text; labels shown in the UI
   tree text; a plain text result instead of a JSON-encoded array when there is no image; Scroll
