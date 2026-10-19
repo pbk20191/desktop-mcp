@@ -432,7 +432,8 @@ uses System.Text.Json source generation.
 - **Scrape**: `HttpClient` over `SocketsHttpHandler` whose `ConnectCallback` connects only to the
   address that passed validation; http/https only, no URL credentials, private, loopback,
   link-local, multicast, reserved and unspecified addresses blocked (with the Fake-IP DNS message
-  for 198.18.0.0/15 and 2001:2::/48); at most 5 requests (4 redirects), as upstream, with
+  for 198.18.0.0/15 and 2001:2::/48); `100.64.0.0/10` (CGNAT) and `fec0::/10` are also blocked,
+  stricter than upstream (P1 plan, Decisions 16); at most 5 requests (4 redirects), as upstream, with
   redirects followed manually and re-validated; 10 s timeout. HTML is converted by a C# port of the
   macOS port's `HTMLToMarkdown.swift`. `use_dom` reads DOM text nodes from the last snapshot.
   `use_sampling` calls the SDK's `SampleAsync` with upstream's system prompt and `max_tokens` 2048,
@@ -501,9 +502,10 @@ not loaded, 45 modules; the PowerShell grandchild died with the server; a second
 config file excluding Registry listed the other 20 tools); AOT activation check OK; clipboard
 probe: `clipboard: Win32: OK`, `clipboard: WinRT on STA: OK`, `clipboard: WinRT on MTA:
 TimeoutException 0x80131505 The operation has timed out.`, `clipboard: SystemClipboard OK through
-WinRt (WinRT: TimeoutException 0x80131505: The WinRT clipboard did not respond within 5 s.)` (after
-the MTA hang, the WinRT write timed out on STA and the Win32 fallback carried it; the read went
-through WinRT); toast probe: shown. The smoke test on a machine without the Windows App SDK runtime
+WinRt (WinRT: TimeoutException 0x80131505: The WinRT clipboard did not respond within 5 s.)`
+(`LastWinRtError` is never reset, so the timeout most likely comes from the write after the MTA
+hang, which then fell back to Win32, while the read went through WinRT; this is an inference, not
+measured); toast probe: shown. The smoke test on a machine without the Windows App SDK runtime
 (Windows Sandbox) was not run yet; it is a follow-up that needs the user.
 
 ## 10. Differences from upstream (for the Windows README)

@@ -7,7 +7,7 @@ left for later phases. Each later phase's plan must pick up its section.
 
 All other P1 items are done (see docs/superpowers/plans/2026-10-19-windows-p1-headless.md).
 
-- Run the smoke test once on a machine without the Windows App SDK runtime (for example Windows Sandbox) to back the lazy-initialisation claim in spec §10. Copy `windows/dist/win-x64/desktop-mcp.exe`, `windows/scripts/smoke-stdio.ps1` and `spec/windows/tools.json` in, install PowerShell 7, and run `pwsh smoke-stdio.ps1 -Exe .\desktop-mcp.exe -Spec .	ools.json`. Needs the user.
+- Run the smoke test once on a machine without the Windows App SDK runtime (for example Windows Sandbox) to back the lazy-initialisation claim in spec §10. Copy `windows/dist/win-x64/desktop-mcp.exe`, `windows/scripts/smoke-stdio.ps1` and `spec/windows/tools.json` in, install PowerShell 7, and run `pwsh smoke-stdio.ps1 -Exe .\desktop-mcp.exe -Spec .\tools.json`. Needs the user.
 
 ## P1 leftovers (minor review findings deferred from the P1 tasks)
 
@@ -25,6 +25,13 @@ All other P1 items are done (see docs/superpowers/plans/2026-10-19-windows-p1-he
 - Notification: two thread-pool hops per call; the timeout text uses the current culture (use the invariant culture); a `COMException` with an empty message gives a blank error.
 - HTML to Markdown: dropped end-tag counts never expire (clear them when the element at `MaxDepth` pops); the `Children` property copies on each access; deep lists can make the Markdown about 10x the input, so consider bounding the returned text.
 - Scrape: delete the false comment that `WebProxy` bypasses loopback; write the literal U+FEFF in `ScrapeClient.cs` as an escape; the `ScrapeException` doc overclaims (a mid-body `IOException`/`InvalidDataException` escapes); 4xx bodies are read before the throw; add tests for gzip over the cap, the timeout, an http to https redirect, SNI and several resolved addresses.
+- CLI: the split help text for `--control`/`--no-control` differs from upstream's; System.CommandLine's RootCommand adds `--version` and `-?`/`-h`.
+- Clipboard: abandoned STA work can land after cancellation, and an abandoned WinRT `SetText` can land after the Win32 fallback write (a race).
+- Config: `Reason()` depends on Tomlyn's message text; `ConfigFile.SourcePath` is not made absolute.
+- ServePlan does not re-check the CLI's transport and policy choices.
+- FileSystem: `GetMaxByteCount` throws `OverflowException`; a cross-root same-volume move (subst, UNC) with a junction loop now fails where a rename would work.
+- Registry: Win32 `IOException` text appears in the OS language.
+- Process: `kill` can kill the server's own process (upstream parity); no tests for `force` string coercion or PID 0 and 4.
 - Tests and probes still hand-declare a few imports (`AppRuntimeTests`' `GetModuleHandleW`, the probes); `ProcessJobTests` uses throwaway `SafeFileHandle` wrappers.
 
 ## P2 (desktop read: UIA, tree, Snapshot, capture, Screenshot)
@@ -69,7 +76,6 @@ Ideas from the desk-mcp analysis (`DigitalDog1/desk-mcp` at e6d42fc, Apache-2.0)
 - Before acting on a label, look the element up again by RuntimeId and use its current centre. Return a "stale label" error if it is gone, and note it if it is disabled.
 - Check the count `SendInput` returns. When input is blocked (UIPI, elevated target), return a clear "input blocked: the target window runs elevated" error.
 - Add a short pause between moving the cursor and pressing the button, because WinForms has been seen dropping instant clicks. Add a WinForms target to the desktop tests.
-
 - `Coercion.JsonList` returns non-arrays: the `loc`/`region` callers must check `ValueKind`, or `JsonList` must reject them.
 
 ## P4 (desktop control)
