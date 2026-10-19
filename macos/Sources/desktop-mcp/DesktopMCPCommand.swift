@@ -126,6 +126,7 @@ struct Serve: AsyncParsableCommand {
         let plan = try plan()
         plan.warnings.forEach { log($0) }
         if let maxTimeout { setenv(Shell.maxTimeoutEnv, String(maxTimeout), 1) }
+        OSARunner.trace.withLock { $0 = self.debug }
 
         // Without Accessibility only Shell/Scrape/Wait/Notification work; keep serving so the
         // client gets useful errors instead of a dead server, and let the system prompt once.

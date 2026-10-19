@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import DesktopMCPCore
 
@@ -79,6 +80,38 @@ final class OSARunnerTests: XCTestCase {
         let failure = await Self.run("// language: JavaScript\nthrow new Error(\"js boom\")")
         XCTAssertEqual(failure.output, "execution error: Error: Error: js boom (-2700)")
         XCTAssertEqual(failure.status, 1)
+    }
+
+    func testNonInteractiveEventsToTheCurrentApplicationStayInProcess() async {
+        // `path to` is a StandardAdditions command handled inside this process.
+        let execution = await OSARunner.execute("POSIX path of (path to home folder)", timeout: 10, policy: .init())
+        XCTAssertNil(execution.errorNumber, execution.errorMessage ?? "")
+        XCTAssertTrue(execution.result.hasSuffix("/"), execution.result)
+        let event = execution.events.first
+        XCTAssertEqual(execution.events.count, 1)
+        XCTAssertTrue(event?.pid == nil || event?.pid == getpid(), "\(String(describing: event))")
+        XCTAssertEqual(event?.relayedToSystemEvents, false)
+    }
+
+    func testSystemEventsIsAddressedByPidAndLaunchedIfNeeded() throws {
+        let address = try XCTUnwrap(OSARunner.applicationAddress(bundleID: "com.apple.systemevents", launchTimeout: 15))
+        XCTAssertEqual(address.descriptorType, typeKernelProcessID)
+        let pid = address.data.withUnsafeBytes { $0.loadUnaligned(as: pid_t.self) }
+        XCTAssertEqual(NSRunningApplication(processIdentifier: pid)?.bundleIdentifier, "com.apple.systemevents")
+        XCTAssertNil(OSARunner.applicationAddress(bundleID: "com.example.does-not-exist", launchTimeout: 1))
+    }
+
+    func testUserInterfaceCommandsAreRelayedToSystemEvents() {
+        // Decided without showing anything: the dialog itself would need a user.
+        for (cls, id) in [("syso", "dlog"), ("syso", "disA"), ("gtqp", "chlt"), ("syso", "stdf"), ("syso", "stfl"), ("syso", "nwfl")] {
+            XCTAssertEqual(OSARunner.relayTarget(eventClass: OSARunner.fourCC(cls), eventID: OSARunner.fourCC(id)),
+                           "com.apple.systemevents", id)
+        }
+        XCTAssertNil(OSARunner.relayTarget(eventClass: OSARunner.fourCC("ears"), eventID: OSARunner.fourCC("ffdr")))  // path to
+        XCTAssertNil(OSARunner.relayTarget(eventClass: OSARunner.fourCC("syso"), eventID: OSARunner.fourCC("beep")))
+        XCTAssertNil(OSARunner.relayTarget(eventClass: OSARunner.fourCC("syso"), eventID: OSARunner.fourCC("notf")))  // System Events refuses
+        XCTAssertNil(OSARunner.relayTarget(eventClass: OSARunner.fourCC("syso"), eventID: OSARunner.fourCC("chlt")))  // wrong class
+        XCTAssertEqual(OSARunner.fourCC(OSARunner.fourCC("disA")), "disA")
     }
 
     func testNoUserInteractionErrorsCarryAHintTowardsSystemEvents() {
