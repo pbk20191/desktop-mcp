@@ -160,6 +160,15 @@ public struct ToolArguments: Sendable {
             return n
         }
     }
+
+    public func stringList(_ name: String) throws -> [String]? {
+        guard let value = present(name) else { return nil }
+        guard let items = value.arrayValue else { throw ToolError("\(name) must be a list of strings") }
+        return try items.map { item in
+            guard let s = text(item) else { throw ToolError("\(name) must be a list of strings") }
+            return s
+        }
+    }
 }
 
 /// Receives the outcome of every tool call (the PostHog analytics in the original).
@@ -224,6 +233,10 @@ public enum DesktopMCP {
             return ["anyOf": [["type": "array", "items": ["type": "integer"]], ["type": "null"]], "default": nil]
         }
         return ["type": "array", "items": ["type": "integer"]]
+    }
+
+    static func stringArray() -> Value {
+        ["type": "array", "items": ["type": "string"]]
     }
 
     static func point(_ args: ToolArguments, _ name: String, message: String) throws -> (Int, Int)? {
@@ -430,6 +443,8 @@ public enum DesktopMCP {
                                                     sound: try args.string("sound"))
                     return [.text(text)]
                 }),
+
+            OpenTool.tool(workspace: SystemWorkspace()),
         ]
     }
 }

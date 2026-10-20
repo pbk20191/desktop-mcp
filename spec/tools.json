@@ -433,6 +433,44 @@
         "type": "object"
       },
       "name": "Notification"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false,
+        "title": "Open"
+      },
+      "description": "Opens a file, folder or URL with the default application, or with the application given by 'app' (name or bundle id). mode='reveal' shows an existing file or folder in Finder instead.",
+      "inputSchema": {
+        "properties": {
+          "app": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mode": {
+            "default": "open",
+            "enum": [
+              "open",
+              "reveal"
+            ],
+            "type": "string"
+          },
+          "target": {
+            "description": "Absolute path, ~-path, or URL",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target"
+        ],
+        "type": "object"
+      },
+      "name": "Open"
     }
   ]
 }

@@ -36,7 +36,7 @@ final class NIOHTTPServerTests: XCTestCase {
         let headers = ["Content-Type": "application/json", "Authorization": "Bearer k", "Accept": "application/json"]
         let (data, response) = try await URLSession.shared.data(for: request(url, body: body, headers: headers))
         XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
-        XCTAssertEqual(try JSON.parse(data)["result"]?["tools"]?.arrayValue?.count, 12)
+        XCTAssertEqual(try JSON.parse(data)["result"]?["tools"]?.arrayValue?.count, 13)
     }
 
     func testSDKClientOverHTTP() async throws {
@@ -54,7 +54,7 @@ final class NIOHTTPServerTests: XCTestCase {
         defer { Task { await client.disconnect() } }
 
         let tools = try await client.listTools().tools
-        XCTAssertEqual(tools.count, 12)
+        XCTAssertEqual(tools.count, 13)
         let waited = try await client.callTool(name: "Wait", arguments: ["duration": 0])
         XCTAssertNotEqual(waited.isError, true)
         let clicked = try await client.callTool(name: "Click", arguments: ["loc": [1]])

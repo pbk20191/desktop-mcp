@@ -36,7 +36,7 @@ final class ToolRegistryTests: XCTestCase {
         let (client, started) = try await connect(await DesktopMCP.makeRegistry(excluding: ["Shell", "Scrape"]))
         defer { Task { await started.shutdown() } }
         let names = try await client.listTools().tools.map(\.name)
-        XCTAssertEqual(names.count, 10)
+        XCTAssertEqual(names.count, 11)
         XCTAssertFalse(names.contains("Shell"))
         XCTAssertFalse(names.contains("Scrape"))
     }

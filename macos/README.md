@@ -52,6 +52,7 @@ Run `desktop-mcp permissions` to check the current state and trigger the system 
 | `Scrape` | Fetches a URL and converts it to Markdown (private, loopback, and other internal addresses are blocked) |
 | `Desktop` | Creates a new Mission Control Space |
 | `Notification` | Shows a notification banner |
+| `Open` | Opens a file or URL (optionally with an app), or reveals a path in Finder |
 
 ## Commands and options
 
