@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using DesktopMcp.Core.Config;
 using DesktopMcp.Server.Http;
@@ -30,8 +31,12 @@ public class TlsTests
     {
         using var pem = TestCertificate.Create();
         await using var rig = await HttpRig.StartAsync(new ServeArguments { Transport = "streamable-http", SslCertfile = pem.CertPath, SslKeyfile = pem.KeyPath });
-        await using var client = await rig.ConnectAsync(HttpTransportMode.StreamableHttp, http: HttpRig.PinnedClient(pem.Thumbprint, HttpVersion.Version20));
+        // The SDK builds its own requests, so the pinned client forces HTTP/2 on each and records what was negotiated.
+        var negotiated = new ConcurrentQueue<Version>();
+        await using var client = await rig.ConnectAsync(HttpTransportMode.StreamableHttp, http: HttpRig.PinnedClient(pem.Thumbprint, HttpVersion.Version20, negotiated));
         Assert.Equal(21, (await client.ListToolsAsync()).Count);
+        Assert.NotEmpty(negotiated);
+        Assert.All(negotiated, version => Assert.Equal(HttpVersion.Version20, version));
     }
 
     [Fact]
@@ -52,6 +57,20 @@ public class TlsTests
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         Assert.Equal(1, await HttpServer.RunAsync(plan, ToolServices.CreateDefault(), timeout.Token, announce: error));
         Assert.StartsWith("Error: Could not load the TLS certificate", error.ToString());
+        Assert.Single(error.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries));
+    }
+
+    /// <summary>A certificate Kestrel would refuse at start (client-auth-only EKU) is the one Error: line, not a crash.</summary>
+    [Fact]
+    public async Task AClientAuthOnlyCertificateStopsServeWithOneError()
+    {
+        using var pem = TestCertificate.Create(enhancedKeyUsage: "1.3.6.1.5.5.7.3.2");
+        var error = new StringWriter();
+        var plan = HttpRig.Plan(new ServeArguments { Transport = "streamable-http", Host = "127.0.0.1", Port = 0, SslCertfile = pem.CertPath, SslKeyfile = pem.KeyPath });
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        Assert.Equal(1, await HttpServer.RunAsync(plan, ToolServices.CreateDefault(), timeout.Token, announce: error));
+        Assert.StartsWith("Error: Could not load the TLS certificate", error.ToString());
+        Assert.Contains("not valid for server authentication", error.ToString());
         Assert.Single(error.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries));
     }
 }

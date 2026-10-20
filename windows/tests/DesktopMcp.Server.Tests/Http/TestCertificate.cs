@@ -29,9 +29,10 @@ internal sealed class TestCertificate : IDisposable
 
     /// <summary>
     /// Creates the pair; with <paramref name="encryptKey"/> the key is written as an encrypted PKCS#8 PEM (password
-    /// <c>pw</c>).
+    /// <c>pw</c>); with <paramref name="enhancedKeyUsage"/> the certificate carries an Extended Key Usage extension
+    /// listing only that OID.
     /// </summary>
-    public static TestCertificate Create(string commonName = "localhost", bool encryptKey = false)
+    public static TestCertificate Create(string commonName = "localhost", bool encryptKey = false, string? enhancedKeyUsage = null)
     {
         var folder = Path.Combine(Path.GetTempPath(), $"dmcp-tls-{Guid.NewGuid():N}");
         Directory.CreateDirectory(folder);
@@ -44,6 +45,8 @@ internal sealed class TestCertificate : IDisposable
             names.AddIpAddress(IPAddress.Loopback);
             names.AddIpAddress(IPAddress.IPv6Loopback);
             request.CertificateExtensions.Add(names.Build());
+            if (enhancedKeyUsage is not null)
+                request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(new OidCollection { new Oid(enhancedKeyUsage) }, critical: false));
             var now = DateTimeOffset.UtcNow;
             using var certificate = request.CreateSelfSigned(now.AddDays(-1), now.AddDays(1));
             File.WriteAllText(Path.Combine(folder, "cert.pem"), certificate.ExportCertificatePem());

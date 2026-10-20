@@ -37,6 +37,26 @@ public class TlsCertificateTests
     public void AnEncryptedKeyIsAConfigError()
     {
         using var pem = TestCertificate.Create(encryptKey: true);
-        Assert.Throws<ConfigException>(() => TlsCertificate.Load(pem.CertPath, pem.KeyPath));
+        Assert.Equal($"Could not load the TLS certificate '{pem.CertPath}' with key '{pem.KeyPath}': encrypted private keys are not supported; decrypt the key first.",
+            Assert.Throws<ConfigException>(() => TlsCertificate.Load(pem.CertPath, pem.KeyPath)).Message);
     }
+
+    /// <summary>Kestrel refuses a certificate whose Extended Key Usage leaves out Server Authentication; refuse it first.</summary>
+    [Fact]
+    public void AClientAuthOnlyCertificateIsAConfigError()
+    {
+        using var pem = TestCertificate.Create(enhancedKeyUsage: ClientAuthentication);
+        Assert.Equal($"Could not load the TLS certificate '{pem.CertPath}' with key '{pem.KeyPath}': the certificate is not valid for server authentication (its Extended Key Usage lacks 1.3.6.1.5.5.7.3.1).",
+            Assert.Throws<ConfigException>(() => TlsCertificate.Load(pem.CertPath, pem.KeyPath)).Message);
+    }
+
+    [Fact]
+    public void AServerAuthCertificateLoads()
+    {
+        using var pem = TestCertificate.Create(enhancedKeyUsage: TlsCertificate.ServerAuthenticationOid);
+        using var certificate = TlsCertificate.Load(pem.CertPath, pem.KeyPath);
+        Assert.Equal(pem.Thumbprint, certificate.Thumbprint);
+    }
+
+    private const string ClientAuthentication = "1.3.6.1.5.5.7.3.2";
 }

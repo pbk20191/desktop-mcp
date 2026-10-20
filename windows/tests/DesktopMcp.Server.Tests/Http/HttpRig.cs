@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
@@ -64,13 +65,15 @@ public sealed class HttpRig : IAsyncDisposable
     /// <summary>
     /// A client for the HTTPS server that trusts only the certificate whose thumbprint is <paramref name="thumbprint"/>
     /// (no other certificate, and nothing about the process-wide validation, changes). With <paramref name="version"/>,
-    /// every request uses exactly that HTTP version.
+    /// every request, including those the SDK builds itself, is sent with exactly that HTTP version, and each response's
+    /// version is added to <paramref name="negotiated"/> when it is given. Without it the client negotiates as usual.
     /// </summary>
-    public static HttpClient PinnedClient(string thumbprint, Version? version = null)
+    public static HttpClient PinnedClient(string thumbprint, Version? version = null, ConcurrentQueue<Version>? negotiated = null)
     {
-        var handler = new SocketsHttpHandler { UseProxy = false };
-        handler.SslOptions.RemoteCertificateValidationCallback = (_, certificate, _, _) =>
+        var sockets = new SocketsHttpHandler { UseProxy = false };
+        sockets.SslOptions.RemoteCertificateValidationCallback = (_, certificate, _, _) =>
             certificate is not null && string.Equals(certificate.GetCertHashString(), thumbprint, StringComparison.OrdinalIgnoreCase);
+        HttpMessageHandler handler = version is null ? sockets : new ExactVersionHandler(version, negotiated) { InnerHandler = sockets };
         var client = new HttpClient(handler) { Timeout = Timeout };
         if (version is not null)
         {
@@ -161,7 +164,16 @@ public sealed class HttpRig : IAsyncDisposable
             AdditionalHeaders = headers,
         }, http ?? Http, loggerFactory: null, ownsHttpClient: http is not null);
         using var timeout = new CancellationTokenSource(Timeout);
-        return await McpClient.CreateAsync(transport, options, cancellationToken: timeout.Token);
+        try
+        {
+            return await McpClient.CreateAsync(transport, options, cancellationToken: timeout.Token);
+        }
+        catch
+        {
+            // Disposes the given client too (the transport owns it).
+            await transport.DisposeAsync();
+            throw;
+        }
     }
 
     /// <summary>
@@ -279,6 +291,22 @@ public sealed class HttpRig : IAsyncDisposable
         {
             stop.Dispose();
         }
+    }
+}
+
+/// <summary>
+/// Sends every request with exactly <c>version</c> (<see cref="HttpClient.DefaultRequestVersion"/> covers only the
+/// requests HttpClient builds itself, not those passed to SendAsync) and records each response's version.
+/// </summary>
+internal sealed class ExactVersionHandler(Version version, ConcurrentQueue<Version>? negotiated) : DelegatingHandler
+{
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        request.Version = version;
+        request.VersionPolicy = HttpVersionPolicy.RequestVersionExact;
+        var response = await base.SendAsync(request, cancellationToken);
+        negotiated?.Enqueue(response.Version);
+        return response;
     }
 }
 
