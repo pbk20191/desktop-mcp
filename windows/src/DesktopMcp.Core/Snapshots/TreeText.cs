@@ -32,11 +32,11 @@ public static class TreeText
         var parts = new List<string>();
         if (metadata.HasFocus) parts.Add("focused");
         if (metadata.IsPassword) parts.Add("password");
-        if (metadata.Value is { } value && value is not ("" or "(empty)")) parts.Add($"value:\"{value}\"");
+        if (metadata.Value is { } value && value is not ("" or "(empty)")) parts.Add($"value:\"{UnicodeCleanup.EscapeControl(value)}\"");
         if (metadata is { Minimum: { } minimum, Maximum: { } maximum }) parts.Add($"range:{minimum}-{maximum}");
         if (!string.IsNullOrEmpty(metadata.ToggleState)) parts.Add($"toggle:{metadata.ToggleState}");
         if (!string.IsNullOrEmpty(metadata.ExpandCollapseState)) parts.Add($"state:{metadata.ExpandCollapseState}");
-        if (!string.IsNullOrEmpty(metadata.Shortcut)) parts.Add($"shortcut:{metadata.Shortcut}");
+        if (!string.IsNullOrEmpty(metadata.Shortcut)) parts.Add($"shortcut:{UnicodeCleanup.EscapeControl(metadata.Shortcut)}");
         return Join(parts);
     }
 
@@ -88,19 +88,20 @@ public static class TreeText
     private static string Format(SemanticNode node, IReadOnlyDictionary<int, int> labels)
     {
         var controlType = node.ControlType.ToLowerInvariant();
+        var name = UnicodeCleanup.EscapeControl(node.Name);
         switch (node.Kind)
         {
             case SemanticKind.Window:
-                return $"window \"{node.Name}\"";
+                return $"window \"{name}\"";
             case SemanticKind.Interactive or SemanticKind.Scrollable:
                 var builder = new StringBuilder();
                 if (node.ElementId is { } id && labels.TryGetValue(id, out var label)) builder.Append('[').Append(label).Append("] ");
                 builder.Append(node.Center?.ToText() ?? "(?)").Append(' ').Append(controlType)
-                    .Append(" \"").Append(node.Name).Append("\"  [action: ").Append(ActionFor(controlType)).Append(']')
+                    .Append(" \"").Append(name).Append("\"  [action: ").Append(ActionFor(controlType)).Append(']')
                     .Append(node.Kind == SemanticKind.Interactive ? InteractiveMetadata(node.Metadata) : ScrollMetadata(node.Metadata));
                 return builder.ToString();
             default:
-                return $"{controlType} \"{node.Name}\"";
+                return $"{controlType} \"{name}\"";
         }
     }
 

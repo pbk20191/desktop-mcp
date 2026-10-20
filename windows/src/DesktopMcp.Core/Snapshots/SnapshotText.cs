@@ -72,13 +72,13 @@ public static class SnapshotText
 
     // upstream desktop/views.py:82-90.
     private static string DesktopTable(IEnumerable<VirtualDesktopInfo> desktops) =>
-        TableFormatter.Simple(["Name"], desktops.Select(d => (IReadOnlyList<string>)[d.Name]).ToArray());
+        TableFormatter.Simple(["Name"], desktops.Select(d => (IReadOnlyList<string>)[UnicodeCleanup.EscapeControl(d.Name)]).ToArray());
 
     // upstream desktop/views.py:37-45 and 92-103.
     private static string WindowTable(IEnumerable<WindowInfo> windows) =>
         TableFormatter.Simple(WindowHeaders, windows.Select(w => (IReadOnlyList<string>)
         [
-            w.Name,
+            UnicodeCleanup.EscapeControl(w.Name),
             w.Depth.ToString(CultureInfo.InvariantCulture),
             w.Status.ToText(),
             w.Bounds.Width.ToString(CultureInfo.InvariantCulture),

@@ -22,6 +22,34 @@ public static class UnicodeCleanup
         return builder?.ToString() ?? text;
     }
 
+    /// <summary>
+    /// Makes a name or value from another app safe to place in one line of the Snapshot text (Decisions 35): CR, LF and TAB
+    /// become the two characters \r, \n and \t, U+2028 and U+2029 become \u2028 and \u2029, and other C0 and C1 control
+    /// characters are removed. Backslashes are left alone, so the escape is not reversible; the goal is that no name can
+    /// start a new line.
+    /// </summary>
+    public static string EscapeControl(string text)
+    {
+        StringBuilder? builder = null;
+        for (var i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+            var replacement = c switch
+            {
+                '\r' => "\\r",
+                '\n' => "\\n",
+                '\t' => "\\t",
+                '\u2028' => "\\u2028",
+                '\u2029' => "\\u2029",
+                <= '\u001F' or >= '\u007F' and <= '\u009F' => "",
+                _ => null,
+            };
+            if (replacement is null) builder?.Append(c);
+            else (builder ??= new StringBuilder(text, 0, i, text.Length)).Append(replacement);
+        }
+        return builder?.ToString() ?? text;
+    }
+
     /// <summary>Replaces unpaired UTF-16 surrogates with U+FFFD, so the response always encodes as UTF-8.</summary>
     public static string RepairSurrogates(string text)
     {

@@ -84,6 +84,7 @@ The user confirmed the recommended answers on 2026-10-20:
 32. **Deadline structure** (Task 16). The window scan and the tree walk have no outer deadline; they rely on the inner bounds (per-job UIA deadlines, the stuck-worker limit, bounded retries), as upstream has no global deadline. Capture is bounded at 2 s + 6 s per monitor + 5 s, and render at 15 s.
 33. **Virtual-desktop gate** (Task 9). One shell call runs at a time. A caller waits up to 2 s for the gate and then gets its own 2 s for the call; it falls back to `Default Desktop` at once, without waiting, only while an earlier call is abandoned (still blocked in the shell).
 34. **FileSystem delete and move** are unchanged in P2: they act on a link itself, never its target, as P1 decided during its reviews.
+35. **Control characters in the Snapshot text** (Task 20; user decision, 2026-10-20). Names and values from other apps (tree names, values and shortcuts; window and desktop names) have CR, LF and TAB written as `\r`, `\n` and `\t`, U+2028 and U+2029 as `\u2028` and `\u2029`, and other C0 and C1 control characters removed, so a name cannot start a fake tree line. Upstream prints them raw. Backslashes are not escaped, so the escape is not reversible.
 
 ## Follow-ups this plan picks up
 
