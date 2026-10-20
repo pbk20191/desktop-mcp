@@ -554,8 +554,8 @@ before the graphics check, 59 modules, then Screenshot and Snapshot with vision;
 no Code process running; walk with Decisions 36-38; 1 display, active desktop "Desktop 1", 55 tree
 elements of which 33 labelled, a 1728x1080 Screenshot PNG and the 200x120 region PNG; the server
 exited 26 ms after stdin closed; earlier runs 23-25 ms); AOT activation and UIA checks OK; capture probe 2560x1600 in 174 ms, borderSuppressed=True,
-borderlessAccess=Allowed; capture border with the user watching: not checked (pending, see the
-follow-ups); DisplayArea evaluation: agrees on 1 monitor (2560x1600 at 144 DPI), multi-monitor and
+borderlessAccess=Allowed; capture border with the user watching (2026-10-20, build 26220, 8 probe captures of the 2560x1600
+monitor): no yellow border and no capture indicator seen; DisplayArea evaluation: agrees on 1 monitor (2560x1600 at 144 DPI), multi-monitor and
 mixed DPI unproven; multi-monitor capture composition is tested with fakes only; Windows Sandbox
 (no Windows App SDK runtime, run by the user on 2026-10-20 without `-SkipCapture`): initialize, the
 tools/list comparison, the headless tools, DisplayInventory, Snapshot without vision (real UIA tree
@@ -625,7 +625,7 @@ P0 probe results were measured on Windows build 10.0.26220 (Insider).
 | Risk | Status / mitigation |
 |---|---|
 | `DispatcherQueue` creation/projection or LL hook delivery fails under AOT | Measured in P0: the DispatcherQueue thread is created and projected under AOT; startup plus the first invoke takes about 10 ms; timer ticks run on the dispatcher; a `WH_MOUSE_LL` hook installed on it received 2 of 2 injected signed moves, flagged injected, on the dispatcher thread. The `MsgWaitForMultipleObjectsEx` fallback behind `IDesktopDispatcher` was not needed. |
-| Windows.Graphics.Capture needs D3D11/WinRT interop that misbehaves under AOT, or its border cannot be hidden | Measured in P0: the primary monitor (2560x1600, physical, PerMonitorV2) was captured in 146-157 ms under AOT. `IsBorderRequired = false` was accepted without error. P2: the AOT capture probe reports borderSuppressed=True and borderlessAccess=Allowed (2560x1600); whether a border or a capture indicator is visible was not checked with the user watching, and that check stays pending in the follow-ups. The GDI fallback behind `IScreenCapture` was not needed. |
+| Windows.Graphics.Capture needs D3D11/WinRT interop that misbehaves under AOT, or its border cannot be hidden | Measured in P0: the primary monitor (2560x1600, physical, PerMonitorV2) was captured in 146-157 ms under AOT. `IsBorderRequired = false` was accepted without error. P2: the AOT capture probe reports borderSuppressed=True and borderlessAccess=Allowed (2560x1600); with the user watching (2026-10-20, build 26220, 8 captures), no yellow border and no capture indicator appeared. The GDI fallback behind `IScreenCapture` was not needed. |
 | The imaging library produces trim/AOT warnings or adds too much size | Measured in P0 with Win2D: a 1920x1080 frame with 40 annotations at scale 0.75 gives a 45 KB PNG in 102-149 ms; the probe exe grew by about 461 KB; 0 warnings. In P0b the statically linked build rendered the same image in 94 ms. ImageSharp was dropped for licensing and vulnerability reasons (§2). |
 | The Windows App SDK metapackage copied about 113 MB per RID of unused files (DirectML, onnxruntime, AI.MachineLearning, WebView2) into publish output | Solved in P0b: the build references the Runtime and InteractiveExperiences component packages, and `build-release.ps1` fails unless each `dist/<rid>` folder holds only `desktop-mcp.exe` and its `.pdb`. |
 | The Windows App SDK 2.5 runtime is not installed on the user's machine | `AppRuntime.EnsureInitialized()` throws with an install hint; documented as an installation requirement (§10). |
