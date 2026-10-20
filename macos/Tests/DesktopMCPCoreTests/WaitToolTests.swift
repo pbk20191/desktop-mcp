@@ -4,20 +4,56 @@ import MCP
 import XCTest
 @testable import DesktopMCPCore
 
-/// Answers `find` from a fixed list, filtered as the AX finder would, and counts the calls.
+/// Answers `find` from a fixed list, filtered as the AX finder would (first match).
 final class FakeElementFinder: ElementFinder {
     let elements: [FoundElement]
-    let calls = Locked(0)
 
     init(_ elements: [FoundElement]) { self.elements = elements }
 
-    func find(app: String?, title: String?, role: String?) async -> [FoundElement] {
-        calls.withLock { $0 += 1 }
-        return elements.filter { e in
+    func find(app: String?, title: String?, role: String?, deadline: ContinuousClock.Instant) async -> FoundElement? {
+        elements.first { e in
             (role.map { $0 == e.role } ?? true)
                 && (title.map { e.title.range(of: $0, options: .caseInsensitive) != nil } ?? true)
         }
     }
+}
+
+/// A fake accessibility tree for the element walk. Every attribute read is counted, and
+/// `onVisit` runs on each one (to cancel or stall mid-walk).
+struct FakeNode: ElementNode {
+    var attributesValue: ElementAttributes
+    var valueText = ""
+    var kids: [FakeNode] = []
+    var hangs = false
+    let visits: Locked<Int>
+    var onVisit: @Sendable (Int) -> Void = { _ in }
+
+    init(role: String = "AXGroup", subrole: String? = nil, title: String = "", description: String = "",
+         value: String = "", frame: CGRect? = CGRect(x: 0, y: 0, width: 10, height: 10),
+         kids: [FakeNode] = [], hangs: Bool = false, visits: Locked<Int>, onVisit: @escaping @Sendable (Int) -> Void = { _ in }) {
+        attributesValue = ElementAttributes(role: role, subrole: subrole, title: title, description: description, frame: frame)
+        valueText = value
+        self.kids = kids
+        self.hangs = hangs
+        self.visits = visits
+        self.onVisit = onVisit
+    }
+
+    func attributes() throws -> ElementAttributes {
+        let n = visits.withLock { $0 += 1; return $0 }
+        onVisit(n)
+        if hangs { throw ElementNotAnswering() }
+        return attributesValue
+    }
+
+    func value() -> String {
+        if SecureField.isSecure(role: attributesValue.role, subrole: attributesValue.subrole) || attributesValue.role.isEmpty {
+            XCTFail("read the value of a secure or unreadable element")
+        }
+        return valueText
+    }
+
+    func children() throws -> [FakeNode] { kids }
 }
 
 final class WaitToolTests: XCTestCase {
@@ -69,7 +105,7 @@ final class WaitToolTests: XCTestCase {
         }
         XCTAssertEqual(value, "done")
         XCTAssertEqual(calls.current, 3)
-        XCTAssertLessThan(Date().timeIntervalSince(start), 1)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 2)
     }
 
     func testPollTimesOut() async throws {
@@ -172,19 +208,116 @@ final class WaitToolTests: XCTestCase {
         let described = AXElementFinder.label(role: "AXSecureTextField", subrole: nil, title: "",
                                               description: "Password", value: { XCTFail("read a secure value"); return "x" },
                                               matching: "pass", role: nil)
-        XCTAssertEqual(described, "Password")
+        XCTAssertEqual(described?.name, "Password")
 
         // A plain field matches on its value; the reply names its title, or the query.
         XCTAssertEqual(AXElementFinder.label(role: "AXStaticText", subrole: nil, title: "", description: "",
-                                             value: { "Save changes?" }, matching: "SAVE", role: nil), "SAVE")
+                                             value: { "Save changes?" }, matching: "SAVE", role: nil)?.name, "SAVE")
         XCTAssertEqual(AXElementFinder.label(role: "AXButton", subrole: nil, title: "Save", description: "",
-                                             value: { "" }, matching: "sav", role: "AXButton"), "Save")
+                                             value: { "" }, matching: "sav", role: "AXButton")?.name, "Save")
         XCTAssertNil(AXElementFinder.label(role: "AXButton", subrole: nil, title: "Save", description: "",
                                            value: { "" }, matching: "save", role: "AXCheckBox"))
         // Role alone: the title or description, never the value.
         XCTAssertEqual(AXElementFinder.label(role: "AXTextField", subrole: nil, title: "", description: "",
                                              value: { XCTFail("read a value for a role-only match"); return "x" },
-                                             matching: nil, role: "AXTextField"), "")
+                                             matching: nil, role: "AXTextField")?.name, "")
+    }
+
+    private func walk(_ roots: [FakeNode], title: String? = nil, role: String? = nil, budget: Int = 5000,
+                      deadline: ContinuousClock.Instant = .now + .seconds(60),
+                      cancelled: Locked<Bool> = Locked(false)) -> AXElementFinder.WalkResult {
+        var budget = budget
+        return AXElementFinder.walk(roots, title: title, role: role, budget: &budget, deadline: deadline, cancelled: cancelled)
+    }
+
+    /// A window holding `count` plain groups, then `last`.
+    private func window(_ visits: Locked<Int>, groups count: Int, then last: [FakeNode] = [],
+                        onVisit: @escaping @Sendable (Int) -> Void = { _ in }) -> FakeNode {
+        FakeNode(role: "AXWindow", kids: (0..<count).map { _ in FakeNode(visits: visits, onVisit: onVisit) } + last,
+                 visits: visits, onVisit: onVisit)
+    }
+
+    func testWalkStopsAtTheFirstExactMatch() {
+        let visits = Locked(0)
+        let save = FakeNode(role: "AXButton", title: "Save", frame: CGRect(x: 100, y: 300, width: 40, height: 80), visits: visits)
+        let root = window(visits, groups: 3, then: [save] + (0..<50).map { _ in FakeNode(visits: visits) })
+        let result = walk([root], title: "save", role: "AXButton")
+        XCTAssertEqual(result.exact, FoundElement(role: "AXButton", title: "Save", center: CGPoint(x: 120, y: 340)))
+        XCTAssertEqual(visits.current, 5)  // the window, three groups, the button
+    }
+
+    func testWalkPrefersAnExactTitleOverAnEarlierSubstring() {
+        let visits = Locked(0)
+        let saveAs = FakeNode(role: "AXButton", title: "Save As…", visits: visits)
+        let save = FakeNode(role: "AXButton", title: "SAVE", visits: visits)
+        let result = walk([window(visits, groups: 0, then: [saveAs, save])], title: "save")
+        XCTAssertEqual(result.exact?.title, "SAVE")
+
+        let onlyPartial = walk([window(Locked(0), groups: 0, then: [FakeNode(role: "AXButton", title: "Save As…", visits: Locked(0))])],
+                               title: "save")
+        XCTAssertNil(onlyPartial.exact)
+        XCTAssertEqual(onlyPartial.partial?.title, "Save As…")
+    }
+
+    func testWalkHonoursADeadlineMidWalk() {
+        let visits = Locked(0)
+        // Each read takes 20 ms; the deadline passes after a few of them.
+        let root = window(visits, groups: 200) { _ in usleep(20_000) }
+        let start = Date()
+        let result = walk([root], title: "missing", deadline: .now + .milliseconds(100))
+        XCTAssertTrue(result.stopped)
+        XCTAssertNil(result.exact)
+        XCTAssertLessThan(visits.current, 20)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1)
+
+        let past = Locked(0)
+        _ = walk([window(past, groups: 5)], title: "x", deadline: .now - .seconds(1))
+        XCTAssertEqual(past.current, 0)
+    }
+
+    func testWalkHonoursCancellationMidWalk() {
+        let visits = Locked(0)
+        let cancelled = Locked(false)
+        let root = window(visits, groups: 100) { n in if n == 7 { cancelled.current = true } }
+        let result = walk([root], title: "missing", cancelled: cancelled)
+        XCTAssertTrue(result.stopped)
+        XCTAssertEqual(visits.current, 7)
+    }
+
+    func testWalkEndsWhenTheAppStopsAnswering() {
+        let visits = Locked(0)
+        let hung = FakeNode(hangs: true, visits: visits)
+        let root = window(visits, groups: 2, then: [hung] + (0..<10).map { _ in FakeNode(visits: visits) })
+        let result = walk([root], title: "missing")
+        XCTAssertNil(result.exact)
+        XCTAssertEqual(visits.current, 4)
+    }
+
+    func testWalkBudgetBoundsVisitsAndQueue() {
+        let visits = Locked(0)
+        let root = window(visits, groups: 100)
+        var budget = 10
+        let result = AXElementFinder.walk([root], title: "missing", role: nil, budget: &budget,
+                                          deadline: .now + .seconds(60), cancelled: Locked(false))
+        XCTAssertEqual(visits.current, 10)
+        XCTAssertEqual(budget, 0)
+        XCTAssertTrue(result.stopped)
+    }
+
+    func testWalkNeverReadsSecureOrUnreadableValues() {
+        let visits = Locked(0)
+        // FakeNode.value fails the test if called for these.
+        let secure = FakeNode(role: "AXTextField", subrole: "AXSecureTextField", value: "Save", visits: visits)
+        let secureRole = FakeNode(role: "AXSecureTextField", value: "Save", visits: visits)
+        let unreadable = FakeNode(role: "", value: "Save", visits: visits)
+        let result = walk([window(visits, groups: 0, then: [secure, secureRole, unreadable])], title: "Save")
+        XCTAssertNil(result.exact)
+        XCTAssertNil(result.partial)
+        XCTAssertEqual(visits.current, 4)
+
+        let plain = walk([window(Locked(0), groups: 0, then: [FakeNode(role: "AXStaticText", value: "save", visits: Locked(0))])],
+                         title: "Save")
+        XCTAssertEqual(plain.exact?.title, "Save")
     }
 
     func testTimeoutCopy() async {

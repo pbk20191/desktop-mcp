@@ -17,11 +17,94 @@ public struct FoundElement: Sendable, Equatable {
     }
 }
 
-/// Finds UI elements by title and role, for `Wait until element`.
+/// Finds a UI element by title and role, for `Wait until element`.
 public protocol ElementFinder: Sendable {
-    /// Elements of `app` (name or bundle id; the menu-bar owner when nil) whose role is `role`
-    /// exactly and whose title, description or value contains `title`, ignoring case.
-    func find(app: String?, title: String?, role: String?) async -> [FoundElement]
+    /// An element of `app` (name or bundle id; the menu-bar owner when nil) whose role is `role`
+    /// exactly and whose title, description or value contains `title`, ignoring case; an exact
+    /// match is preferred. Nil when there is none, or when `deadline` passes or the task is
+    /// cancelled before one is found.
+    func find(app: String?, title: String?, role: String?, deadline: ContinuousClock.Instant) async -> FoundElement?
+}
+
+/// The attributes `Wait until element` reads in one round trip. Never the value.
+struct ElementAttributes: Sendable, Equatable {
+    var role: String
+    var subrole: String?
+    var title: String
+    var description: String
+    var frame: CGRect?
+}
+
+/// The app stopped answering (`kAXErrorCannotComplete`, which a messaging timeout also gives).
+struct ElementNotAnswering: Error {}
+
+/// One node of the tree the element walk visits; the AX tree in production, a fake in tests.
+protocol ElementNode {
+    /// Role, subrole, title, description and frame. Throws `ElementNotAnswering` when the app
+    /// does not answer.
+    func attributes() throws -> ElementAttributes
+    /// The value as text; only called for a non-secure element.
+    func value() -> String
+    func children() throws -> [Self]
+}
+
+/// An element of another app, with a 0.5 s messaging timeout set before its first read.
+struct AXElementNode: ElementNode {
+    let element: AXUIElement
+
+    init(_ element: AXUIElement) {
+        AX.setMessagingTimeout(element, 0.5)
+        self.element = element
+    }
+
+    static let names = [kAXRoleAttribute, kAXSubroleAttribute, kAXTitleAttribute, kAXDescriptionAttribute,
+                        kAXPositionAttribute, kAXSizeAttribute]
+
+    private static func notAnswering(_ value: AnyObject) -> Bool {
+        guard CFGetTypeID(value) == AXValueGetTypeID(), AXValueGetType(value as! AXValue) == .axError else { return false }
+        var error = AXError.success
+        return AXValueGetValue(value as! AXValue, .axError, &error) && error == .cannotComplete
+    }
+
+    func attributes() throws -> ElementAttributes {
+        var values: CFArray?
+        let err = AXUIElementCopyMultipleAttributeValues(
+            element, Self.names as CFArray, AXCopyMultipleAttributeOptions(rawValue: 0), &values)
+        if err == .cannotComplete { throw ElementNotAnswering() }
+        guard err == .success, let array = values as? [AnyObject] else {
+            return ElementAttributes(role: "", subrole: nil, title: "", description: "", frame: nil)
+        }
+        var raw: [String: AnyObject] = [:]
+        for (name, value) in zip(Self.names, array) {
+            if Self.notAnswering(value) { throw ElementNotAnswering() }
+            if !AX.isError(value) && !(value is NSNull) { raw[name] = value }
+        }
+        let frame = AX.point(raw[kAXPositionAttribute]).flatMap { origin in
+            AX.size(raw[kAXSizeAttribute]).map { CGRect(origin: origin, size: $0) }
+        }
+        return ElementAttributes(role: AX.string(raw[kAXRoleAttribute]), subrole: raw[kAXSubroleAttribute] as? String,
+                                 title: AX.string(raw[kAXTitleAttribute]),
+                                 description: AX.string(raw[kAXDescriptionAttribute]), frame: frame)
+    }
+
+    func value() -> String { AX.string(AX.attribute(element, kAXValueAttribute)) }
+
+    private static func list(_ element: AXUIElement, _ name: String) throws -> [AXElementNode] {
+        var value: CFTypeRef?
+        let err = AXUIElementCopyAttributeValue(element, name as CFString, &value)
+        if err == .cannotComplete { throw ElementNotAnswering() }
+        guard err == .success else { return [] }
+        return AX.elements(value).map(AXElementNode.init)
+    }
+
+    func children() throws -> [AXElementNode] { try Self.list(element, kAXChildrenAttribute) }
+
+    /// The app's windows, the roots of the walk.
+    static func windows(_ pid: pid_t) throws -> [AXElementNode] {
+        let app = AX.application(pid)
+        AX.setMessagingTimeout(app, 0.5)
+        return try list(app, kAXWindowsAttribute)
+    }
 }
 
 /// Walks the app's windows breadth-first through the Accessibility API, depth and count limited.
@@ -30,7 +113,7 @@ struct AXElementFinder: ElementFinder {
     static let maxDepth = 25
     static let maxElements = 5000
 
-    func find(app: String?, title: String?, role: String?) async -> [FoundElement] {
+    func find(app: String?, title: String?, role: String?, deadline: ContinuousClock.Instant) async -> FoundElement? {
         let pids: [pid_t]
         if let app {
             pids = await offload {
@@ -46,60 +129,101 @@ struct AXElementFinder: ElementFinder {
             }
             pids = owner.map { [$0] } ?? []
         }
-        return await offload { Self.search(pids, title: title, role: role) }
+        let cancelled = Locked(false)
+        return await withTaskCancellationHandler {
+            await offload {
+                var budget = Self.maxElements
+                var fallback: FoundElement?
+                for pid in pids {
+                    // An app that does not answer is skipped.
+                    guard let roots = try? AXElementNode.windows(pid) else { continue }
+                    let result = Self.walk(roots, title: title, role: role, budget: &budget,
+                                           deadline: deadline, cancelled: cancelled)
+                    if let exact = result.exact { return exact }
+                    fallback = fallback ?? result.partial
+                    if result.stopped { break }
+                }
+                return fallback
+            }
+        } onCancel: {
+            cancelled.current = true
+        }
     }
 
-    private static func search(_ pids: [pid_t], title: String?, role: String?) -> [FoundElement] {
-        var found: [FoundElement] = []
-        var budget = maxElements
-        for pid in pids {
-            let app = App(pid: pid)
-            AX.setMessagingTimeout(app.element, 0.5)
-            var queue = app.windows.map { (element: $0, depth: 0) }
-            var next = 0
-            while next < queue.count, budget > 0 {
-                let (element, depth) = queue[next]
-                next += 1
-                budget -= 1
-                if let match = match(element, title: title, role: role) { found.append(match) }
-                if depth < maxDepth {
-                    queue += AX.children(element).map { ($0, depth + 1) }
+    /// What one walk found: an exact match (the walk ended there), else the first partial match.
+    /// `stopped` when the deadline passed, the task was cancelled or the budget ran out.
+    struct WalkResult {
+        var exact: FoundElement?
+        var partial: FoundElement?
+        var stopped = false
+    }
+
+    /// Breadth-first from `roots` to depth `maxDepth`, visiting at most `budget` nodes (the rest is
+    /// left in `budget`). Ends at the first exact match, when the deadline passes, when `cancelled`
+    /// is set, or when the app stops answering.
+    static func walk<Node: ElementNode>(_ roots: [Node], title: String?, role: String?, budget: inout Int,
+                                        deadline: ContinuousClock.Instant, cancelled: Locked<Bool>) -> WalkResult {
+        var result = WalkResult()
+        var queue = roots.prefix(max(0, budget)).map { (node: $0, depth: 0) }
+        var next = 0
+        while next < queue.count {
+            if cancelled.current || ContinuousClock.now >= deadline {
+                result.stopped = true
+                return result
+            }
+            let (node, depth) = queue[next]
+            next += 1
+            budget -= 1
+            do {
+                let attributes = try node.attributes()
+                if let match = label(attributes, value: node.value, matching: title, role: role),
+                   let frame = attributes.frame {
+                    let found = FoundElement(role: attributes.role, title: match.name,
+                                             center: CGPoint(x: frame.midX, y: frame.midY))
+                    if match.exact {
+                        result.exact = found
+                        return result
+                    }
+                    result.partial = result.partial ?? found
                 }
+                if depth < maxDepth {
+                    // Enqueued nodes count against the budget, so the queue stays bounded.
+                    let room = budget - (queue.count - next)
+                    if room > 0 { queue += try node.children().prefix(room).map { ($0, depth + 1) } }
+                }
+            } catch {
+                return result
             }
         }
-        return found
+        if budget <= 0 { result.stopped = true }
+        return result
     }
 
-    private static func match(_ element: AXUIElement, title: String?, role wanted: String?) -> FoundElement? {
-        // Role and subrole come first: whether the value may be read depends on them.
-        let raw = AX.attributes(element, [kAXRoleAttribute, kAXSubroleAttribute, kAXTitleAttribute,
-                                          kAXDescriptionAttribute, kAXPositionAttribute, kAXSizeAttribute])
-        let role = AX.string(raw[kAXRoleAttribute])
-        guard let label = label(role: role, subrole: raw[kAXSubroleAttribute] as? String,
-                                title: AX.string(raw[kAXTitleAttribute]),
-                                description: AX.string(raw[kAXDescriptionAttribute]),
-                                value: { AX.string(AX.attribute(element, kAXValueAttribute)) },
-                                matching: title, role: wanted),
-              let origin = AX.point(raw[kAXPositionAttribute]), let size = AX.size(raw[kAXSizeAttribute])
-        else { return nil }
-        return FoundElement(role: role, title: label,
-                            center: CGPoint(x: origin.x + size.width / 2, y: origin.y + size.height / 2))
+    /// `label` for the attributes the walk read. An element whose role could not be read is
+    /// treated as secure: its value is not read.
+    static func label(_ a: ElementAttributes, value: () -> String, matching query: String?,
+                      role wanted: String?) -> (name: String, exact: Bool)? {
+        label(role: a.role, subrole: a.role.isEmpty ? SecureField.role : a.subrole, title: a.title,
+              description: a.description, value: value, matching: query, role: wanted)
     }
 
     /// What to call a matching element, or nil when it does not match: `role` exactly when
     /// given, `query` as a case-insensitive substring of the title, the description, or the value
     /// (`value` is called only for a non-secure element, and only when the others do not match).
     /// The name is the matched title or description, else the element's title or description for
-    /// a role-only match, else the query; never the value.
+    /// a role-only match, else the query; never the value. `exact` when the matched text equals
+    /// the query ignoring case (always for a role-only match).
     static func label(role: String, subrole: String?, title: String, description: String,
-                      value: () -> String, matching query: String?, role wanted: String?) -> String? {
+                      value: () -> String, matching query: String?, role wanted: String?) -> (name: String, exact: Bool)? {
         if let wanted, role != wanted { return nil }
-        guard let query else { return title.isEmpty ? description : title }
+        guard let query else { return (title.isEmpty ? description : title, true) }
         func contains(_ s: String) -> Bool { s.range(of: query, options: .caseInsensitive) != nil }
-        if contains(title) { return title }
-        if contains(description) { return description }
+        func equals(_ s: String) -> Bool { s.caseInsensitiveCompare(query) == .orderedSame }
+        if contains(title) { return (title, equals(title)) }
+        if contains(description) { return (description, equals(description)) }
         if SecureField.isSecure(role: role, subrole: subrole) { return nil }
-        return contains(value()) ? query : nil
+        let value = value()
+        return contains(value) ? (query, equals(value)) : nil
     }
 }
 
@@ -112,13 +236,20 @@ enum WaitTool {
     /// returns a value or `timeout` seconds have passed (the last sleep ends at the deadline, and
     /// one last check follows). Nil on timeout; throws `CancellationError` when cancelled.
     static func poll<T: Sendable>(timeout: Double, check: @Sendable () async -> T?) async throws -> T? {
-        let clock = ContinuousClock()
-        let deadline = clock.now + .milliseconds(Int((max(0, timeout) * 1000).rounded()))
+        try await poll(until: deadline(timeout), check: check)
+    }
+
+    static func deadline(_ timeout: Double) -> ContinuousClock.Instant {
+        ContinuousClock.now + .milliseconds(Int((max(0, timeout) * 1000).rounded()))
+    }
+
+    static func poll<T: Sendable>(until deadline: ContinuousClock.Instant, check: @Sendable () async -> T?) async throws -> T? {
         var delay = Duration.milliseconds(100)
         while true {
             try Task.checkCancellation()
             if let value = await check() { return value }
-            let now = clock.now
+            try Task.checkCancellation()
+            let now = ContinuousClock.now
             guard now < deadline else { return nil }
             try await Task.sleep(for: min(delay, deadline - now))
             delay = min(delay * 2, .seconds(1))
@@ -177,12 +308,12 @@ enum WaitTool {
                 let app = try given(args, "app"), title = try given(args, "title"), role = try given(args, "role")
                 let timeout = max(0, Shell.clampTimeout(try args.int("timeout") ?? 10))
 
-                let check: @Sendable () async -> String?
+                let check: @Sendable (ContinuousClock.Instant) async -> String?
                 switch until {
                 case "app_running", "app_quit":
                     guard let app else { throw ToolError("app required for \(until).") }
                     let wantRunning = until == "app_running"
-                    check = {
+                    check = { _ in
                         let isRunning = await running().contains {
                             App.matches(name: $0.name, bundleID: $0.bundleID, query: app)
                         }
@@ -193,7 +324,7 @@ enum WaitTool {
                     guard app != nil || title != nil else { throw ToolError("app or title required for \(until).") }
                     try Permissions.requireAccessibility()
                     let wantGone = until == "window_gone"
-                    check = {
+                    check = { _ in
                         let matching = await windows.windows(app: app).filter { w in
                             title.map { w.title.range(of: $0, options: .caseInsensitive) != nil } ?? true
                         }
@@ -203,13 +334,14 @@ enum WaitTool {
                 default:
                     guard title != nil || role != nil else { throw ToolError("title or role required for element.") }
                     try Permissions.requireAccessibility()
-                    check = {
-                        guard let e = await elements.find(app: app, title: title, role: role).first else { return nil }
+                    check = { deadline in
+                        guard let e = await elements.find(app: app, title: title, role: role, deadline: deadline) else { return nil }
                         return "\(e.role) \"\(WindowTool.flat(e.title))\" at [\(Int(e.center.x.rounded())),\(Int(e.center.y.rounded()))]"
                     }
                 }
 
-                guard let text = try await poll(timeout: Double(timeout), check: check) else {
+                let deadline = deadline(Double(timeout))
+                guard let text = try await poll(until: deadline, check: { await check(deadline) }) else {
                     let condition = describe(until, app: app, title: title, role: role)
                     throw ToolError("Timed out after \(timeout)s waiting for \(condition).", telemetry: "Wait timed out")
                 }
