@@ -103,8 +103,7 @@ struct AXWindowSource: WindowSource {
     }
 
     private static func matches(_ running: NSRunningApplication, _ app: String) -> Bool {
-        running.bundleIdentifier == app
-            || running.localizedName?.lowercased() == app.trimmingCharacters(in: .whitespaces).lowercased()
+        App.matches(name: running.localizedName ?? "", bundleID: running.bundleIdentifier, query: app)
     }
 
     private static func regularPIDs(matching app: String?) -> [pid_t] {

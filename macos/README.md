@@ -49,7 +49,7 @@ Run `desktop-mcp permissions` to check the current state and trigger the system 
 | `Move` | Moves the cursor, or drags with `drag=true` |
 | `Shortcut` | e.g. `command+shift+t` |
 | `Wait` | Waits for N seconds |
-| `App` | launch / switch / resize / move |
+| `App` | launch / switch / resize / move / quit / force_quit (quit never targets desktop-mcp itself or loginwindow; no Accessibility needed) |
 | `Shell` | `bash -c`, or `osascript` for AppleScript / JXA (see below) |
 | `Scrape` | Fetches a URL and converts it to Markdown (private, loopback, and other internal addresses are blocked) |
 | `Desktop` | Creates a new Mission Control Space |

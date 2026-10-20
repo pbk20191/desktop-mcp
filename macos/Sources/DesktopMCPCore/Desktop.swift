@@ -122,6 +122,8 @@ public final class Desktop: Sendable {
             guard loc.count == 2 else { throw ToolError("window_loc must be a list of exactly 2 integers [x, y]") }
             _ = await offload { AX.setPosition(window, x: Double(loc[0]), y: Double(loc[1])) }
             return "Window moved."
+        case "quit", "force_quit":
+            return try await quit(name: name, force: mode == "force_quit")
         default:
             return "Unknown mode: \(mode)"
         }

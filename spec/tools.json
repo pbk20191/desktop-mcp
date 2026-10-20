@@ -9,7 +9,7 @@
         "readOnlyHint": false,
         "title": "App"
       },
-      "description": "Manages macOS applications with four modes: 'launch' (opens the application), 'resize' (adjusts active window size), 'move' (repositions active window), 'switch' (brings specific app into focus).",
+      "description": "Manages macOS applications with six modes: 'launch' (opens the application), 'resize' (adjusts active window size), 'move' (repositions active window), 'switch' (brings specific app into focus), 'quit' (asks every process with that name or bundle id to quit; the app may ask to save), 'force_quit' (terminates them without asking). Quit never targets desktop-mcp itself or loginwindow.",
       "inputSchema": {
         "properties": {
           "mode": {
@@ -18,7 +18,9 @@
               "launch",
               "resize",
               "move",
-              "switch"
+              "switch",
+              "quit",
+              "force_quit"
             ],
             "type": "string"
           },

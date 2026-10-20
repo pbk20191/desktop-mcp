@@ -266,16 +266,16 @@ public enum DesktopMCP {
         return [
             Tool(
                 name: "App",
-                description: "Manages macOS applications with four modes: 'launch' (opens the application), 'resize' (adjusts active window size), 'move' (repositions active window), 'switch' (brings specific app into focus).",
+                description: "Manages macOS applications with six modes: 'launch' (opens the application), 'resize' (adjusts active window size), 'move' (repositions active window), 'switch' (brings specific app into focus), 'quit' (asks every process with that name or bundle id to quit; the app may ask to save), 'force_quit' (terminates them without asking). Quit never targets desktop-mcp itself or loginwindow.",
                 inputSchema: schema([
-                    "mode": string(default: "launch", enum: ["launch", "resize", "move", "switch"]),
+                    "mode": string(default: "launch", enum: ["launch", "resize", "move", "switch", "quit", "force_quit"]),
                     "name": nullableString(),
                     "window_loc": intPair(nullable: true),
                     "window_size": intPair(nullable: true),
                 ]),
                 annotations: ToolAnnotations(title: "App", readOnly: false, destructive: true, idempotent: false, openWorld: false),
                 handler: { args in
-                    let mode = try args.choice("mode", in: ["launch", "resize", "move", "switch"], default: "launch")
+                    let mode = try args.choice("mode", in: ["launch", "resize", "move", "switch", "quit", "force_quit"], default: "launch")
                     let text = try await desktop.app(mode: mode, name: try args.string("name"),
                                                      windowLoc: try args.intList("window_loc"),
                                                      windowSize: try args.intList("window_size"))
