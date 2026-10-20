@@ -1,6 +1,6 @@
 using System.Net;
 using System.Security.Cryptography;
-using System.Text;
+using System.Runtime.InteropServices;
 using DesktopMcp.Core.Config;
 using DesktopMcp.Core.Net;
 
@@ -35,7 +35,7 @@ public static class HttpGuards
     public static bool IsAllowedOrigin(string? origin, IReadOnlyList<string> corsOrigins)
     {
         if (origin is null) return true;
-        if (corsOrigins.Contains(origin, StringComparer.Ordinal)) return true;
+        if (corsOrigins.Any(listed => listed.TrimEnd('/').Equals(origin, StringComparison.OrdinalIgnoreCase))) return true;
         if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri)) return false;
         if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) return false;
         return IpAddressText.IsLoopbackHost(TrimBrackets(uri.Host));
@@ -52,12 +52,12 @@ public static class HttpGuards
             : $"Forbidden: {client} is not in the IP allowlist";
     }
 
-    public static bool FixedTimeEquals(string a, string b)
-    {
-        var x = Encoding.UTF8.GetBytes(a);
-        var y = Encoding.UTF8.GetBytes(b);
-        return x.Length == y.Length && CryptographicOperations.FixedTimeEquals(x, y);
-    }
+    /// <summary>Compares the UTF-16 code units, so distinct strings (even lone surrogates) never compare equal.</summary>
+    public static bool FixedTimeEquals(string a, string b) =>
+        a.Length == b.Length
+        && CryptographicOperations.FixedTimeEquals(MemoryMarshal.AsBytes(a.AsSpan()), MemoryMarshal.AsBytes(b.AsSpan()));
 
-    private static string TrimBrackets(string host) => host.Trim('[', ']');
+    /// <summary>Strips exactly one surrounding bracket pair around an IPv6 literal, as in "[::1]".</summary>
+    private static string TrimBrackets(string host) =>
+        host.Length >= 2 && host[0] == '[' && host[^1] == ']' && host.Contains(':') ? host[1..^1] : host;
 }

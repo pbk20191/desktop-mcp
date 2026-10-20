@@ -30,5 +30,5 @@ public static class SecurityJson
     public static string OAuthError(string error, string description) =>
         JsonSerializer.Serialize(new OAuthErrorBody(error, description), Context.OAuthErrorBody);
 
-    public static string Health { get; } = JsonSerializer.Serialize(new HealthBody("ok"), Context.HealthBody);
+    public static string Health => JsonSerializer.Serialize(new HealthBody("ok"), Context.HealthBody);
 }

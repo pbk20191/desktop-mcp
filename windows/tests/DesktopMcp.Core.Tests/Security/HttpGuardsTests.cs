@@ -12,6 +12,7 @@ public class HttpGuardsTests
     [InlineData("localhost", true)] [InlineData("LOCALHOST", true)] [InlineData("127.0.0.1", true)]
     [InlineData("[::1]", true)] [InlineData("attacker.example", false)] [InlineData("127.0.0.2", false)]
     [InlineData("", false)] [InlineData(null, false)]
+    [InlineData("[localhost]", false)] [InlineData("127.0.0.1]", false)] [InlineData("[127.0.0.1", false)] [InlineData("localhost.", false)]
     public void TrustedHostTable(string? host, bool expected) => Assert.Equal(expected, HttpGuards.IsTrustedHost(host, Loopback));
 
     [Fact]
@@ -25,9 +26,22 @@ public class HttpGuardsTests
     [InlineData("http://localhost:6274", true)] [InlineData("https://127.0.0.1", true)] [InlineData("http://[::1]:3000", true)]
     [InlineData("https://client.example.com", true)]                 // listed
     [InlineData("https://attacker.example", false)] [InlineData("null", false)]
+    [InlineData("http://127.0.0.1@evil.example", false)] [InlineData("http://localhost.", false)]
+    [InlineData("HTTPS://CLIENT.EXAMPLE.COM", true)]
     [InlineData("file://localhost", false)] [InlineData("http://localhost.attacker.example", false)]
     public void OriginTable(string? origin, bool expected) =>
         Assert.Equal(expected, HttpGuards.IsAllowedOrigin(origin, ["https://client.example.com"]));
+
+    [Fact]
+    public void ConfiguredOriginsMatchCanonically() =>
+        Assert.True(HttpGuards.IsAllowedOrigin("https://client.example.com", ["HTTPS://Client.Example.com/"]));
+
+    [Fact]
+    public void AnAllowedIPv6ClientPasses() =>
+        Assert.Null(HttpGuards.AllowlistRejection(IPAddress.Parse("2001:db8::7"), IpNetwork.ParseAllowlist(["2001:db8::/32"])));
+
+    [Fact]
+    public void DistinctLoneSurrogatesDiffer() => Assert.False(HttpGuards.FixedTimeEquals("\ud800", "\ud801"));
 
     [Fact]
     public void AnEmptyAllowlistAllowsEveryone() => Assert.Null(HttpGuards.AllowlistRejection(IPAddress.Parse("8.8.8.8"), []));
