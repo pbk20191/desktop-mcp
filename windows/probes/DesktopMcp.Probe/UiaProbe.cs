@@ -17,10 +17,18 @@ internal static class UiaProbe
 {
     public static async Task<bool> RunAsync()
     {
-        using var worker = new UiaWorker<UiaSession>(UiaSession.Create);
+        // The worker creates the session on its thread, inside the job's deadline; this times that creation.
+        long createdMs = 0;
+        using var worker = new UiaWorker<UiaSession>(() =>
+        {
+            var clock = Stopwatch.StartNew();
+            var session = UiaSession.Create();
+            createdMs = clock.ElapsedMilliseconds;
+            return session;
+        });
         try
         {
-            return await worker.RunAsync((session, _) => Run(session), TimeSpan.FromSeconds(30), default);
+            return await worker.RunAsync((session, _) => Run(session, createdMs), TimeSpan.FromSeconds(30), default);
         }
         catch (Exception e)
         {
@@ -29,12 +37,12 @@ internal static class UiaProbe
         }
     }
 
-    private static unsafe bool Run(UiaSession session)
+    private static unsafe bool Run(UiaSession session, long createdMs)
     {
         var clock = Stopwatch.StartNew();
         var root = session.Automation.GetRootElement();
         var rootName = Take(root.get_CurrentName());
-        Console.WriteLine($"uia: client created and root read in {clock.ElapsedMilliseconds} ms, root='{rootName}', " +
+        Console.WriteLine($"uia: client created in {createdMs} ms, root read in {clock.ElapsedMilliseconds} ms, root='{rootName}', " +
             $"timeouts={session.Automation.get_ConnectionTimeout()}/{session.Automation.get_TransactionTimeout()} ms");
 
         // Mandatory and deterministic: the desktop root's cached children, as the Desktop test reads them.
