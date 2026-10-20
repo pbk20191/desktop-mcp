@@ -106,3 +106,6 @@ GetSidSubAuthority
 GetSidSubAuthorityCount
 GetCurrentProcess
 WindowFromPoint
+// Desktop input: the double-click time and the non-text clipboard check (Type pastes only over text or nothing)
+GetDoubleClickTime
+CountClipboardFormats
