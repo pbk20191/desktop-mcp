@@ -117,9 +117,9 @@ internal sealed class TreeWalker(ITreeSource source, ElementBudget budget, Func<
             {
                 return; // upstream tree/service.py:902-905: skip the dead subtree, keep what was found
             }
-            // A read can hang past the job's deadline; once abandoned, the walk must not push more work when it resumes.
-            cancellationToken.ThrowIfCancellationRequested();
             if (node.RuntimeId is { } key && path.Add(key)) stack.Push(new Frame(null, null, 0, key));
+            // The children are pushed even when the walk was cancelled during the read: the token check at the next pop then
+            // stops the walk, and Walk releases them with the rest of the stack.
             foreach (var child in children) stack.Push(new Frame(child, semanticParent, frame.Depth + 1, null));
         }
         finally

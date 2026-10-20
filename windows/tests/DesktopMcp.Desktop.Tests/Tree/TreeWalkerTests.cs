@@ -311,6 +311,7 @@ public class TreeWalkerTests
         Assert.ThrowsAny<OperationCanceledException>(() => walker.Walk(root, App, cancellation.Token));
         Assert.Single(source.ChildrenRead);
         Assert.Equal(0, budget.Count);
+        Assert.Equal(source.Fetched + 1, source.Released);
     }
 
     [Fact]
