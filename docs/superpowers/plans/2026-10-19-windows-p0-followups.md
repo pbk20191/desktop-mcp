@@ -179,7 +179,7 @@ Minor review findings deferred from the P4 tasks, one line per task (from the SD
 All P5 items are done (see docs/superpowers/plans/2026-10-21-windows-p5-http.md), except:
 
 - Telemetry: not implemented in the Windows port (user decision, 2026-10-21); the variables are ignored.
-- Run `pwsh windows/scripts/build-release.ps1` in an interactive session. P5 did not run it because the user was working on the machine: the win-x64 and win-arm64 publishes and `smoke-http.ps1` ran (spec §9, P5 results), but the stdio smoke with its control session and the AOT activation, UIA and overlay checks are unverified since P4.
+- Run `pwsh windows/scripts/build-release.ps1` in an interactive session. P5 did not run it because the user was working on the machine: the win-x64 and win-arm64 publishes and `smoke-http.ps1` ran (spec §9, P5 results), but the stdio smoke with its control session and the AOT activation, UIA and overlay checks are unverified since P4. It is also the first run of `smoke-stdio.ps1` since it moved its helpers into `smoke-common.ps1`, so a failure there may come from that refactor.
 
 By-hand checks for the user (none are required for P5 to pass; they need another machine or a client the default suite does not have):
 
@@ -195,6 +195,7 @@ By-hand checks for the user (none are required for P5 to pass; they need another
 - OAuth (Task 6): the token body cap for a request without a length is tested with a `MemoryStream`, not through Kestrel's chunked decoder (one real-Kestrel row would prove the 400 and the connection's clean handling); with a DNS host that resolves to several addresses and port 0, the issuer names the first listener's port, which the other listeners do not share.
 - Sampling (Task 8): when the call is cancelled before the sampling request is written, the `notifications/cancelled` notice names an id the client never saw (harmless: receivers ignore unknown ids); the whole scraped Markdown, up to the scraper's 8 MiB cap, goes into the sampling request as upstream, so a large page can exceed the client's context (the call then falls back to the raw text); a cap on the sampled text is possible.
 - TLS (Task 7): a crash while serving HTTPS leaves the temporary key file under `%APPDATA%\Microsoft\Crypto\Keys` (DPAPI-protected, same user; spec §8 TLS). `smoke-http.ps1` stops its TLS server with Ctrl+C for this reason.
+- AOT smoke (Task 10): legacy SSE is checked under NativeAOT over HTTP/2 only; real SSE clients speak HTTP/1.1, which `LegacySseTests` cover under the JIT and the Inspector by-hand check covers under AOT. A second `/sse` session with a pinned client sending `RequestVersionExact` 1.1 would close the gap.
 - OAuth access tokens are not capped in number: each needs a live code and the client secret, and expired ones are pruned whenever a token is issued (controller ruling, Task 5).
 
 ## P6 (release)

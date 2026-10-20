@@ -1,4 +1,4 @@
-#Requires -Version 7
+#Requires -Version 7.4
 # Checks `serve --help`, then runs two stdio sessions of desktop-mcp.exe:
 # 1. `serve --config <file with [control] enabled = false>` and DESKTOP_MCP_DISABLE_FLASH=1, so the act-tool calls take no
 #    control and the captures flash nothing: initialize, that tools/list equals spec/windows/tools.json (all tools, as JSON

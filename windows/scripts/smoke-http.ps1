@@ -1,4 +1,4 @@
-#Requires -Version 7
+#Requires -Version 7.4
 # Runs two HTTP sessions of desktop-mcp.exe under NativeAOT (P5 plan, Task 10). Both bind 127.0.0.1 on port 0 (an
 # ephemeral loopback port: no firewall rule, nothing reachable from the network) and run with `[control] enabled = false`
 # from a temp config file and DESKTOP_MCP_DISABLE_FLASH=1, with every inherited DESKTOP_MCP_* variable dropped (they would
@@ -301,6 +301,7 @@ $tempFolder = Join-Path ([IO.Path]::GetTempPath()) "desktop-mcp-smoke-http-$PID-
 $configPath = Join-Path $tempFolder 'config.toml'
 $tlsClient = $null
 $sse = $null
+$script:tlsServer = $null
 try {
     New-Item -ItemType Directory -Path $tempFolder | Out-Null
     [IO.File]::WriteAllText($configPath, "[control]`nenabled = false`n")
@@ -395,6 +396,7 @@ try {
     finally { $ecdsa.Dispose() }
 
     $server = Start-Server @('serve', '--transport', 'sse', '--host', '127.0.0.1', '--port', '0', '--ssl-certfile', $certPath, '--ssl-keyfile', $keyPath)
+    $script:tlsServer = $server
     # 1. The announcement.
     if (-not $server.Url.OriginalString.StartsWith('https://') -or -not $server.Url.OriginalString.EndsWith('/sse')) {
         throw "unexpected TLS announcement: $($server.Transport) on $($server.Url)"
@@ -419,7 +421,7 @@ try {
     $result = $null
     $clock = [Diagnostics.Stopwatch]::StartNew()
     while ($null -eq $result) {
-        $left = 10 - [int]$clock.Elapsed.TotalSeconds
+        $left = 10 - [int][Math]::Floor($clock.Elapsed.TotalSeconds)
         if ($left -le 0) { throw 'no initialize result on the SSE stream within 10 s' }
         $next = $sse.Next($left)
         if ($null -eq $next) { throw 'the SSE stream ended before the initialize result' }
@@ -439,8 +441,14 @@ finally {
     if ($sse) { $sse.Dispose() }
     if ($tlsClient) { $tlsClient.Dispose() }
     $script:plain.Dispose()
+    # A TLS server still running after a failed check gets the graceful stop too, so it removes its temporary key file.
+    if ($script:tlsServer -and -not $script:tlsServer.Process.HasExited) {
+        try { Stop-ServerGracefully $script:tlsServer | Out-Null }
+        catch { Write-Warning "$_" }
+    }
     foreach ($process in $script:servers) {
         if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
     }
     Remove-Item $tempFolder -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path $tempFolder) { Write-Warning "could not remove $tempFolder (it holds the test certificate's private key)" }
 }

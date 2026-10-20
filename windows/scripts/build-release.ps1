@@ -1,4 +1,4 @@
-#Requires -Version 7
+#Requires -Version 7.4
 # Publishes desktop-mcp.exe with NativeAOT for each runtime and smoke-tests the x64 build over stdio and HTTP.
 # Each dist/<rid> folder must hold exactly desktop-mcp.exe and desktop-mcp.pdb.
 param([string[]]$Runtimes = @('win-x64', 'win-arm64'))

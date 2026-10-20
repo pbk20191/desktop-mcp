@@ -32,7 +32,7 @@ environment variables `DESKTOP_MCP_*` in place of `WINDOWS_MCP_*`. `ANONYMIZED_T
 | Language | C# on .NET 10 (LTS), NativeAOT | Schannel TLS and IOCP sockets come from the platform; probes showed every needed area works under AOT with zero trim/AOT warnings. The Release `desktop-mcp.exe` is 10,399,744 bytes (win-x64) and 11,318,784 bytes (win-arm64), with Win2D linked in statically. |
 | Win32/COM bindings | CsWin32 (`Microsoft.Windows.CsWin32` 0.3.347, `allowMarshaling: false`, `public: false`, `PrivateAssets=all`) in both `DesktopMcp.Core` and `DesktopMcp.Desktop` (user decision, 2026-10-19); since P2, DesktopMcp.Desktop sets `allowMarshaling: true`, `comInterop.useComSourceGenerators` and `CsWin32RunAsBuildTask`, so UIA and the shell interfaces are `[GeneratedComInterface]` interfaces; DesktopMcp.Core keeps `allowMarshaling: false` (P2 plan, Decisions 1) | AOT-safe; generates every Win32 entry point and UIA interface we need. `Interop.UIAutomationClient` relies on built-in COM interop, which NativeAOT does not support. |
 | WinRT | CsWinRT through the `net10.0-windows10.0.22621.0` TFM | Toasts, `Windows.Graphics.Capture`, and the Windows App SDK's `Microsoft.UI.Dispatching` and `Microsoft.UI.Windowing`. |
-| MCP protocol | Official MCP C# SDK (`ModelContextProtocol`, `.AspNetCore`) | Protocol versions, sampling and cancellation come from the SDK. Accepted cost: the wire serialisation is the SDK's (field order, escaping) and the legacy SSE message path is `/message`. |
+| MCP protocol | Official MCP C# SDK (`ModelContextProtocol`, `.AspNetCore`) | Protocol versions and cancellation come from the SDK; sampling and logging are sent as raw JSON because 2.2.0 marks those APIs obsolete (MCP9005; §8 Scrape). Accepted cost: the wire serialisation is the SDK's (field order, escaping) and the legacy SSE message path is `/message`. |
 | HTTP | Kestrel via `WebApplication.CreateSlimBuilder` | AOT-supported; HTTP/1.1 + HTTP/2 over Schannel with ALPN. HttpListener is ruled out (urlacl and `netsh http add sslcert` need admin). |
 | Tool contract | Per-port: `spec/macos/tools.json`, `spec/windows/tools.json` | The upstream servers expose different tool sets. |
 | Abstraction level | Prefer WinRT and libraries over raw Win32 where an AOT-friendly option exists | Screen capture uses Windows.Graphics.Capture; imaging and drawing use Win2D (`Microsoft.Graphics.Win2D` 1.4.0, linked statically; see the Win2D row). ImageSharp was dropped: 4.x refuses a Release build without a Six Labors license key, and the key-free 3.1.x / 2.1.x line fails restore with known-vulnerability errors (NU1902/NU1903). Direct2D was the fallback for imaging and was not needed. UIA, input injection, hooks and the other Win32 areas listed in the WinRT first row stay on thin CsWin32 or hand-declared wrappers because neither WinRT nor the Windows App SDK has an API for them. |
@@ -399,9 +399,13 @@ future. The deadline is renewed by the control coordinator's heartbeat on the th
 the dispatcher thread itself stalls, Windows removes the hook after `LowLevelHooksTimeout`. No path
 leaves input locked indefinitely; both cases are integration tests.
 
-**Sessions.** The gate filter records each SDK session (`McpServer` instance) with a last-seen time.
+**Sessions.** The gate filter records each session with a last-seen time, keyed by the SDK's
+session id (`McpServer.SessionId`, or one shared key when it is null: stdio and stateless HTTP),
+with the latest call's `McpServer` as the value; the SDK builds a new `McpServer` per request, so
+keying by instance would send one copy of each notification per call (P5 plan, Decisions 18).
 Notifications go to every session seen within the TTL: unlimited for stdio, 60 s for HTTP, none
-for stateless Streamable HTTP (as upstream).
+for stateless Streamable HTTP (as upstream). A session is forgotten on a failed send or after the
+TTL.
 
 ## 8. Server layer
 
@@ -479,9 +483,11 @@ Kestrel middleware in upstream's order, with the Origin check added (P5 plan, De
 5. IP allowlist: the client address as Kestrel saw it; `X-Forwarded-For` and `Forwarded` are never
    read, and an IPv4-mapped IPv6 address is matched as IPv4 (Decisions 15). `/health` is exempt.
    403 `{"error":"Forbidden: <ip> is not in the IP allowlist"}` (or `missing client address`).
-6. Auth: bearer key and OAuth access tokens; 401 with upstream's JSON bodies. Every 401, the
-   OAuth-only `{"error":"Unauthorized"}` too, carries `WWW-Authenticate: Bearer` (Decisions 13;
-   upstream omits it for OAuth-only). Public paths: `/health`, `/.well-known/oauth-authorization-server`,
+6. Auth: bearer key and OAuth access tokens; 401 with upstream's JSON bodies. Every 401 from
+   this step, the OAuth-only `{"error":"Unauthorized"}` too, carries `WWW-Authenticate: Bearer`
+   (Decisions 13; upstream omits it for OAuth-only). The token endpoint's `invalid_client` 401 has
+   no such header: its client authenticates with `client_secret_post`, for which RFC 6749 §5.2 does
+   not require one. Public paths: `/health`, `/.well-known/oauth-authorization-server`,
    `/oauth/register`, `/oauth/authorize`, `/oauth/token`.
 7. MCP endpoints, plus `GET /health` returning `{"status":"ok"}` (Decisions 17).
 
@@ -610,7 +616,7 @@ logs focus changes at debug level.
 | Layer | Covers | Runs |
 |---|---|---|
 | Core unit | config precedence and strict TOML types; ServePlan validation messages; SSRF rules; HTML to Markdown; OAuth/PKCE flows; PowerShell runner against real pwsh (encoding, timeout, tree kill); FileSystem formats; Shortcut parsing; table formatter; Snapshot text rendering from synthetic `UiElement` records and `SemanticNode` trees; fuzzy matching; control state machine with a fake `TimeProvider` (takeover, idle return, lease, policy classification) | always |
-| Server | ContractTests (`tools/list` equals `spec/windows/tools.json` as JSON); Kestrel on 127.0.0.1 port 0 (P5 plan, Decisions 14): middleware order, 401/403 bodies, CORS, OPTIONS, trusted host, Origin, `/health`, OAuth, TLS and HTTP/2, both transports, notifications to HTTP sessions, sampling over in-memory stdio; stdio initialize, tools/list and call | always |
+| Server | ContractTests (`tools/list` equals `spec/windows/tools.json` as JSON); Kestrel on 127.0.0.1 port 0 (P5 plan, Decisions 14): middleware order, 401/403 bodies, CORS, OPTIONS, trusted host, Origin, `/health`, OAuth, TLS and HTTP/2, both transports, notifications to HTTP sessions, sampling over in-memory stdio and over stateful and stateless Streamable HTTP; stdio initialize, tools/list and call | always |
 | Desktop integration | the tests' own windows only (the P2 test window and, from P3, the WinForms target; never the user's windows, P3 Decisions 11): Snapshot reads, input through `GuardedInjector` (clicks, typing and paste, ToolStrip clicks, the signature), the label locator, Type's read-back, the foreground switch between test windows; capture and annotation; hooks, overlay, takeover and input-lock safety (heartbeat stops, input returns within 1 s; a stalled dispatcher cannot lock input), done in P4 (`InputMonitorDesktopTests`, `OverlayWindowDesktopTests`, `OverlayArtTests`, `CaptureFlashDesktopTests`; written, by-hand runs pending with the user). Notepad and App launch, switch and resize of real apps are by-hand checks (the follow-ups' P3 section), not automated tests | `Category=Desktop`, run by hand in an interactive session |
 | AOT smoke | `build-release.ps1` publishes win-x64 and win-arm64, launches the x64 exe and runs initialize, tools/list and the headless tools that leave the desktop alone over stdio, then DisplayInventory and Snapshot without vision (a named virtual desktop and at least one tree element; the graphics stack must still be unloaded), then Screenshot and Snapshot with vision (valid PNGs); `DESKTOP_MCP_EXCLUDE_PROCESSES` can keep processes out of the walk (§12). Before the graphics check it also calls the act tools (Click, Type, Shortcut, Move, MultiSelect, MultiEdit, App, WaitFor) with arguments that inject nothing and activate nothing: argument errors, an out-of-range label and point, a shortcut parse error, App lookups of an all-punctuation name (`#`), which fuzzy processing empties so it matches no app or window, and WaitFor timeouts (P3 plan, Decisions 12). Since P4 the first session runs with `[control] enabled = false` and `DESKTOP_MCP_DISABLE_FLASH=1` and checks ControlStatus's disabled text, and the second session keeps control on and reads only ControlStatus and an ungated Wait (it never takes control; its hooks pass every event through), then checks that the hooks and the dispatcher did not load the graphics stack. It then runs the probe's `imaging` step (the AOT activation check), `uia` step (the AOT UIA check) and `overlay` step (the AOT overlay check: the indicator and one flash rendered and pushed to hidden layer windows, never shown); any IL2xxx/IL3xxx warning fails the build. The desktop calls need an unlocked interactive session; `smoke-stdio.ps1 -SkipCapture` leaves out the two capture calls. Since P5, `smoke-http.ps1` follows the stdio smoke: Streamable HTTP with an auth key (`/health`, the 401 body and `WWW-Authenticate`, initialize and `Mcp-Session-Id`, tools/list equal to the contract, ControlStatus disabled and Wait, a foreign Origin 403 and Host 400, `DELETE /mcp` then 404, no graphics DLL loaded), then legacy SSE over TLS with a self-signed certificate made in the script (`/health` over HTTP/2 with the certificate pinned, the `endpoint` event, initialize through `/message` with the result on the stream); both bind 127.0.0.1 port 0 with control disabled and the flash off, and the TLS server is stopped with Ctrl+C so it removes its temporary key file | every release build |
 
