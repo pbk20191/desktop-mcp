@@ -68,3 +68,16 @@ IVirtualDesktopManager
 IServiceProvider
 IObjectArray
 CoCreateInstance
+// Top-level windows (upstream desktop/service.py:1068-1245)
+EnumWindows
+IsWindow
+IsWindowVisible
+IsIconic
+IsZoomed
+GetWindowThreadProcessId
+GetClassName
+FindWindow
+GetAncestor
+OpenProcess
+QueryFullProcessImageName
+CloseHandle
