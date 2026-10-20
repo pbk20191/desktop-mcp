@@ -80,7 +80,7 @@ enum RunShortcutTool {
         argv += ["--output-path", outputPath]
 
         let result = try await runner(argv, seconds)
-        if result.timedOut { return "Shortcut '\(name)' timed out after \(timeout)s." }
+        if result.timedOut { return "Stopped waiting for shortcut '\(name)' after \(timeout)s; it may still be running." }
 
         let output = (try? String(contentsOfFile: outputPath, encoding: .utf8)) ?? ""
         var text = "Shortcut '\(name)' finished with status \(result.status).\n"

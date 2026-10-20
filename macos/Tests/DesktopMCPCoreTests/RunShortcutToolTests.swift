@@ -189,7 +189,7 @@ final class RunShortcutToolTests: XCTestCase {
     func testTimedOutRun() async throws {
         let fake = FakeShortcuts(names: "Resize\n", timedOut: true)
         let result = try await text(fake, ["name": "Resize", "timeout": 5])
-        XCTAssertEqual(result, "Shortcut 'Resize' timed out after 5s.")
+        XCTAssertEqual(result, "Stopped waiting for shortcut 'Resize' after 5s; it may still be running.")
         let run = try XCTUnwrap(fake.runs.first)
         XCTAssertFalse(FileManager.default.fileExists(atPath: try XCTUnwrap(run.outputPath)))
     }

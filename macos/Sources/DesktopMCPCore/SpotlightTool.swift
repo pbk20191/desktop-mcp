@@ -87,9 +87,11 @@ enum SpotlightTool {
 
     /// Runs `query` over `scope` sorted newest first and reads the first `limit` results. The
     /// whole call, reads included, stops at `timeout` seconds. `content` adds a preview of
-    /// items that are text files.
-    static func search(_ query: String, scope: [URL], limit: Int, timeout: Double, content: Bool = false) async throws -> Found {
+    /// items that are text files. `check`, when given, is validated first, on the same thread.
+    static func search(_ query: String, scope: [URL], limit: Int, timeout: Double, content: Bool = false,
+                       check: (query: String, shown: String)? = nil) async throws -> Found {
         try await offload { () throws -> Found in
+            if let check { try validate(check.query, shown: check.shown) }
             let sorting = [kMDItemContentModificationDate] as CFArray
             guard let mdQuery = MDQueryCreate(kCFAllocatorDefault, query as CFString, nil, sorting) else {
                 throw invalid(query)
@@ -197,10 +199,12 @@ enum SpotlightTool {
                 } else {
                     query = try wordsQuery(text)
                 }
-                try validate(query, shown: raw ? query : text)
+                // The user's query is validated alone, so the error quotes what they wrote.
+                let check = (query: query, shown: raw ? query : text)
                 if let clause = kindClause(kind) { query = "(\(query)) && \(clause)" }
 
-                let found = try await search(query, scope: scope, limit: limit, timeout: deadlineSeconds, content: content)
+                let found = try await search(query, scope: scope, limit: limit, timeout: deadlineSeconds,
+                                             content: content, check: check)
                 return [.text(format(found.items, total: found.total, content: content, stopped: found.stopped))]
             })
     }
