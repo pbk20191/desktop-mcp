@@ -165,7 +165,8 @@ final class SocketServerTests: XCTestCase {
         await run.value
     }
 
-    /// A registry with one tool, "Big", that returns `size` bytes of text.
+    /// A registry with one tool, "Big", that returns `size` bytes of text, or as many as its
+    /// `size` argument asks for.
     func bigRegistry(size: Int) async -> ToolRegistry {
         let registry = ToolRegistry(name: "t", version: "0", instructions: "")
         await registry.register(Tool(
@@ -173,7 +174,7 @@ final class SocketServerTests: XCTestCase {
             inputSchema: .object(["type": .string("object")]),
             annotations: ToolAnnotations(title: "Big", readOnly: true, destructive: false,
                                          idempotent: true, openWorld: false),
-            handler: { _ in [.text(String(repeating: "x", count: size))] }))
+            handler: { args in [.text(String(repeating: "x", count: try args.int("size") ?? size))] }))
         return registry
     }
 
@@ -233,14 +234,15 @@ final class SocketServerTests: XCTestCase {
     }
 
     func testALargeReplyArrivesWhole() async throws {
-        let size = 2 * 1024 * 1024
+        let size = 4 * 1024 * 1024
         let registry = await bigRegistry(size: size)
         let path = socketPath()
         let (server, run) = try await serving(registry, path: path)
 
         // Timed with a plain blocking reader: the SDK client's own read loop (4 KiB reads, each
         // rescanning the whole pending buffer for a newline) takes seconds over 2 MiB in a debug
-        // build whatever the server does, so it would time the client, not the socket.
+        // build whatever the server does, so it would time the client, not the socket. At 8 KiB
+        // per 10 ms, the pace without the larger send buffer, 4 MiB would take about 5 s.
         let raw = try connectRaw(path)
         let clock = ContinuousClock()
         let started = clock.now
@@ -250,15 +252,16 @@ final class SocketServerTests: XCTestCase {
         let elapsed = clock.now - started
         close(raw)
         XCTAssertEqual(responses.first?["result"]?["content"]?.arrayValue?.first?["text"]?.stringValue?.count, size)
-        XCTAssertLessThan(elapsed, .seconds(1))
+        XCTAssertLessThan(elapsed, .milliseconds(2500))
 
-        // And the SDK client gets it whole.
+        // And the SDK client gets one whole; a smaller one, since its read loop is quadratic.
         let (client, fd) = try await client(path)
-        let result = try await client.callTool(name: "Big")
+        let clientSize = 2 * 1024 * 1024
+        let result = try await client.callTool(name: "Big", arguments: ["size": .int(clientSize)])
         guard case .text(let text, _, _)? = result.content.first else {
             return XCTFail("expected text, got \(result.content)")
         }
-        XCTAssertEqual(text.count, size)
+        XCTAssertEqual(text.count, clientSize)
         await client.disconnect()
         await server.shutdown()
         await run.value
@@ -349,13 +352,15 @@ final class SocketServerTests: XCTestCase {
 
     func testShutdownCancelsCallsInFlight() async throws {
         let observer = RecordingObserver()
-        let registry = await DesktopMCP.makeRegistry()
+        let registry = ToolRegistry(name: "t", version: "0", instructions: "")
+        let held = Locked(0)
+        await registerHold(on: registry, started: held)
         await registry.setObserver(observer)
         let path = socketPath()
         let (server, run) = try await serving(registry, path: path)
         let (client, fd) = try await client(path)
-        let call = Task { try await client.callTool(name: "Wait", arguments: ["duration": 30]) }
-        try await Task.sleep(for: .milliseconds(200))
+        let call = Task { try await client.callTool(name: "Hold") }
+        try await waitUntil(within: 5) { held.current == 1 }
         await server.shutdown()
         try await observer.waitFor(error: "Cancelled.", timeout: 2)
         await run.value

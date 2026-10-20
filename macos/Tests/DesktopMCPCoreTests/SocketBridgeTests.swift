@@ -173,7 +173,7 @@ final class SocketBridgeTests: XCTestCase {
         let ends = Ends()
         let bridge = run(connection, ends)
         ends.send(Self.initializeLine + Self.wait(id: 2, seconds: 30))
-        try await Task.sleep(for: .milliseconds(200))
+        try await waitUntil(within: 5) { try ends.lines().contains { $0["id"]?.intValue == 1 } }
         await server.shutdown()
         await serverRun.value
         let result = await outcome(of: bridge, within: 2)
