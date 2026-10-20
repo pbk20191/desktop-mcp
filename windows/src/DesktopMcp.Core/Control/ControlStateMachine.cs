@@ -33,6 +33,8 @@ public sealed class ControlStateMachine(ControlSettings settings, TimeProvider t
     private bool _stopped;
     private bool _faulted;
     private bool _armed;
+    // Kept beside Arm's stamp check: it also catches an event stamped before entering ai but handled after it
+    // (it reached the system unswallowed while ai was not armed).
     private bool _inputSinceEntry;
     private int _activeCalls;
     private long _leaseUntil;
@@ -173,14 +175,20 @@ public sealed class ControlStateMachine(ControlSettings settings, TimeProvider t
         return new BeginResult(_generation, entered || ticked ? Snapshot(now) : null, entered);
     }
 
+    /// <summary><see cref="Arm(long, long)"/> without the monitor's stamp: only events already handled count.</summary>
+    public bool Arm(long generation) => Arm(generation, 0);
+
     /// <summary>
     /// Arms suppression once the indicator is visible (Decisions 15): only for the current <c>ai</c> generation and
     /// only when no physical event, held input, takeover or fault happened since entering <c>ai</c>.
+    /// <paramref name="lastPhysical"/> is the monitor's latest event stamp (upstream <c>arm_visible</c> compares the
+    /// hook-written stamp), so an event not yet drained into <see cref="Handle"/> also refuses. A stamp at or after the
+    /// entry instant counts as since entry, as for motion (preflight F4). The coordinator uses this form.
     /// </summary>
-    public bool Arm(long generation)
+    public bool Arm(long generation, long lastPhysical)
     {
         if (!settings.Enabled || !Operational || _state != ControlState.Ai || _generation != generation
-            || _inputSinceEntry || PhysicalHeld || TakeoverPending)
+            || _inputSinceEntry || lastPhysical >= _aiSince || PhysicalHeld || TakeoverPending)
             return false;
         _armed = true;
         return true;
@@ -197,7 +205,10 @@ public sealed class ControlStateMachine(ControlSettings settings, TimeProvider t
             throw new ControlRejectedException(ControlCodes.ControlPreempted, Status, executedSteps);
     }
 
-    /// <summary>Closes a call; when none remain in <c>ai</c>, the lease ends <see cref="LeaseSeconds"/> from now.</summary>
+    /// <summary>
+    /// Closes a call; when none remain in <c>ai</c>, the lease ends <see cref="LeaseSeconds"/> from now. The token is
+    /// ignored, as upstream's <c>end_call</c> ignores it: every call counts toward the active calls whatever its generation.
+    /// </summary>
     public void End(long token)
     {
         if (!settings.Enabled) return;
@@ -219,6 +230,7 @@ public sealed class ControlStateMachine(ControlSettings settings, TimeProvider t
     {
         if (!settings.Enabled || _stopped || !_faulted) return null;
         _faulted = false;
+        TakeoverPending = false; // upstream _recover_after_rehook clears the fast-takeover flags
         if (!_started) return null;
         var now = time.GetTimestamp();
         _lastUser = now;

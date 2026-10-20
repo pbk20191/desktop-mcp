@@ -172,6 +172,30 @@ public class ControlStateMachineTests
     }
 
     [Fact]
+    public void AnUndrainedEventStampedSinceEnteringAiPreventsArming()
+    {
+        var m = Ready();
+        var before = _clock.Stamp();
+        _clock.Advance(0.5);
+        var begin = m.Begin();
+        _clock.Advance(0.1);
+        Assert.False(m.Arm(begin.Token, lastPhysical: _clock.Stamp()));
+        Assert.True(m.Arm(begin.Token, lastPhysical: before));
+    }
+
+    [Fact]
+    public void RecoverClearsAPendingTakeover()
+    {
+        var (m, _) = InArmedAi();
+        m.TakeoverPending = true;
+        m.Fault();
+        Assert.Equal(ControlState.User, m.Recover()!.State);
+        Assert.False(m.TakeoverPending);
+        _clock.Advance(10);
+        Assert.Equal(ControlState.Ready, m.Tick()!.State);
+    }
+
+    [Fact]
     public void CheckpointPreemptsAfterTakeoverWithExecutedSteps()
     {
         var (m, token) = InArmedAi();
