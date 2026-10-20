@@ -138,7 +138,8 @@ public sealed class HttpRig : IAsyncDisposable
             [
                 new(McpLogging.MessageMethod, (notification, _) =>
                 {
-                    if (notification.Params is { } parameters) {
+                    if (notification.Params is { } parameters)
+                    {
                         using var document = JsonDocument.Parse(parameters.ToJsonString());
                         heard(document.RootElement.Clone());
                     }

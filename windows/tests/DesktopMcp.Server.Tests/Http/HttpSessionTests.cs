@@ -65,17 +65,60 @@ public class HttpSessionTests
         Assert.Equal(before + 1, Volatile.Read(ref userControl));
     }
 
+    /// <summary>
+    /// Two legacy-SSE sessions are two registry entries (each has its own SessionId, not
+    /// <see cref="DesktopMcp.Server.Hosting.McpServerSetup.NoSessionIdKey"/>): one change reaches each exactly once. The
+    /// SSE stream is open before <c>initialize</c> completes, so one raise is enough here (no preflight F5 drop).
+    /// </summary>
     [Fact]
-    public async Task ADeletedSessionIsForgottenAndOthersStillHearNotifications()
+    public async Task TwoSseClientsEachHearOneNotification()
+    {
+        var control = new FakeControl();
+        await using var rig = await HttpRig.StartAsync(new ServeArguments { Transport = "sse" }, ToolServices.CreateDefault() with { Control = control });
+        var counts = new int[2];
+        var clients = new McpClient[2];
+        try
+        {
+            for (var i = 0; i < 2; i++)
+            {
+                var index = i;
+                clients[i] = await rig.ConnectAsync(HttpTransportMode.Sse, options: HttpRig.OnLogMessage(message =>
+                {
+                    if (HttpRig.EventOf(message) == ControlCodes.UserControl) Interlocked.Increment(ref counts[index]);
+                }));
+            }
+            foreach (var client in clients)
+                Assert.False((await client.CallToolAsync("Wait", new Dictionary<string, object?> { ["duration"] = 0 })).IsError ?? false);
+
+            control.RaiseStateChanged(Status(user: true, 2));
+            using var timeout = new CancellationTokenSource(Bound);
+            while (Volatile.Read(ref counts[0]) == 0 || Volatile.Read(ref counts[1]) == 0) await Task.Delay(50, timeout.Token);
+            foreach (var client in clients) await SettleAsync(client);
+            Assert.Equal([1, 1], [Volatile.Read(ref counts[0]), Volatile.Read(ref counts[1])]);
+        }
+        finally
+        {
+            foreach (var client in clients)
+                if (client is not null) await client.DisposeAsync();
+        }
+    }
+
+    /// <summary>
+    /// Review Focus 3: after a remembered session is deleted, the others keep hearing notifications and the host keeps
+    /// running. Whether the deleted entry goes on a failed send or after the TTL is not observable here (preflight F5).
+    /// </summary>
+    [Fact]
+    public async Task OthersStillHearNotificationsAfterASessionIsDeleted()
     {
         var control = new FakeControl();
         await using var rig = await HttpRig.StartAsync(new ServeArguments { Transport = "streamable-http" }, ToolServices.CreateDefault() with { Control = control });
         var heard = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var kept = await rig.ConnectAsync(HttpTransportMode.StreamableHttp, options: HttpRig.OnLogMessage(heard, ControlCodes.UserControl));
-        var gone = await rig.ConnectAsync(HttpTransportMode.StreamableHttp);
-        await kept.CallToolAsync("Wait", new Dictionary<string, object?> { ["duration"] = 0 });
-        await gone.CallToolAsync("Wait", new Dictionary<string, object?> { ["duration"] = 0 });
-        await gone.DisposeAsync();                                       // the SDK client sends DELETE
+        await using (var gone = await rig.ConnectAsync(HttpTransportMode.StreamableHttp))
+        {
+            await kept.CallToolAsync("Wait", new Dictionary<string, object?> { ["duration"] = 0 });
+            await gone.CallToolAsync("Wait", new Dictionary<string, object?> { ["duration"] = 0 });
+        }                                                                // disposing it sends DELETE
         await RaiseUntilHeardAsync(control, heard.Task);
         Assert.True(rig.HostIsRunning);
         Assert.Equal(21, (await kept.ListToolsAsync()).Count);
