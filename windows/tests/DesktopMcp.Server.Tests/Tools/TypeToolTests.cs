@@ -1,5 +1,7 @@
 using DesktopMcp.Core.Snapshots;
 
+using DesktopMcp.Server.Control;
+
 namespace DesktopMcp.Server.Tests;
 
 public class TypeToolTests
@@ -87,9 +89,10 @@ public class TypeToolTests
     {
         var desktop = new FakeDesktop { BlockFirstCall = true };
         var services = desktop.Services();
-        var first = ToolCalls.CallAsync(ToolCalls.Create("Click", services), """{"loc": [1, 1]}""");
+        var gate = new ControlGate(services.Control, services.Time);
+        var first = ToolCalls.GatedCallAsync(gate, ToolCalls.Create("Click", services), """{"loc": [1, 1]}""");
         await desktop.FirstCallStarted;
-        var second = ToolCalls.CallAsync(ToolCalls.Create("Type", services), """{"text": "x", "loc": [2, 2]}""");
+        var second = ToolCalls.GatedCallAsync(gate, ToolCalls.Create("Type", services), """{"text": "x", "loc": [2, 2]}""");
         await Task.Delay(100);
         Assert.Equal(["Point (1,1)"], desktop.Targets.Calls);
         desktop.ReleaseFirstCall();

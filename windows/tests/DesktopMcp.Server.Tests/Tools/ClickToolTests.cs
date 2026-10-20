@@ -1,6 +1,8 @@
 using DesktopMcp.Core.Snapshots;
 using DesktopMcp.Server.Tools;
 
+using DesktopMcp.Server.Control;
+
 namespace DesktopMcp.Server.Tests;
 
 public class ClickToolTests
@@ -47,44 +49,18 @@ public class ClickToolTests
     }
 
     [Fact]
-    public async Task InputToolsRunOneAtATime()
-    {
-        var desktop = new FakeDesktop { BlockFirstCall = true };
-        var services = desktop.Services();
-        var first = ToolCalls.CallAsync(ToolCalls.Create("Click", services), """{"loc": [1, 1]}""");
-        await desktop.FirstCallStarted;
-        var second = ToolCalls.CallAsync(ToolCalls.Create("Scroll", services), """{"loc": [2, 2]}""");
-        await Task.Delay(100);
-        Assert.Single(desktop.Input.Calls);
-        desktop.ReleaseFirstCall();
-        await Task.WhenAll(first, second);
-        Assert.Equal(2, desktop.Input.Calls.Count);
-    }
-
-    [Fact]
     public async Task TargetsAreResolvedInsideTheLock()
     {
         var desktop = new FakeDesktop { BlockFirstCall = true, Labels = { [1] = new ScreenPoint(3, 3) } };
         var services = desktop.Services();
-        var first = ToolCalls.CallAsync(ToolCalls.Create("Click", services), """{"loc": [1, 1]}""");
+        var gate = new ControlGate(services.Control, services.Time);
+        var first = ToolCalls.GatedCallAsync(gate, ToolCalls.Create("Click", services), """{"loc": [1, 1]}""");
         await desktop.FirstCallStarted;
-        var second = ToolCalls.CallAsync(ToolCalls.Create("Click", services), """{"label": 1}""");
+        var second = ToolCalls.GatedCallAsync(gate, ToolCalls.Create("Click", services), """{"label": 1}""");
         await Task.Delay(100);
         Assert.Equal(["Point (1,1)"], desktop.Targets.Calls);
         desktop.ReleaseFirstCall();
         await Task.WhenAll(first, second);
         Assert.Equal(["Point (1,1)", "Label 1"], desktop.Targets.Calls);
-    }
-
-    [Fact]
-    public async Task ACallWaitingForTheLockIsCancellable()
-    {
-        var inputLock = new DesktopInputLock();
-        using var held = await inputLock.EnterAsync(CancellationToken.None);
-        using var cancel = new CancellationTokenSource();
-        var waiting = inputLock.EnterAsync(cancel.Token);
-        Assert.False(waiting.IsCompleted);
-        await cancel.CancelAsync();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiting);
     }
 }

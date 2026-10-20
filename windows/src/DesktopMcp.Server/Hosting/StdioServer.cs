@@ -1,6 +1,8 @@
 using DesktopMcp.Core;
 using DesktopMcp.Core.Config;
 using DesktopMcp.Core.PowerShell;
+using DesktopMcp.Desktop;
+using DesktopMcp.Server.Control;
 using DesktopMcp.Server.Tools;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -20,15 +22,18 @@ public static class StdioServer
         // below, so the test host never joins a kill-on-close job.
         if (!ProcessJob.TryAssignKillOnClose())
             plan = plan with { Warnings = [.. plan.Warnings, "Could not put the server in a kill-on-close Job Object; PowerShell children may outlive it."] };
-        return RunAsync(plan, ToolServices.CreateDefault(), server => server.WithStdioServerTransport(), cancellationToken);
+        var desktopLog = new DesktopLogBridge();
+        return RunAsync(plan, ToolServices.Create(plan, desktopLog.Write), server => server.WithStdioServerTransport(), cancellationToken, desktopLog);
     }
 
     /// <summary>
     /// The server <paramref name="plan"/> describes over the transport <paramref name="addTransport"/> adds, with the tools
-    /// over <paramref name="services"/>; tests pass in-memory streams and fakes.
+    /// over <paramref name="services"/>; tests pass in-memory streams and fakes. The control starts before the MCP server
+    /// and stops after it; every tool call goes through the <see cref="ControlGate"/> filter.
+    /// <paramref name="desktopLog"/>, when given, is pointed at the server's logger once the host exists.
     /// </summary>
     internal static async Task<int> RunAsync(ServePlan plan, ToolServices services, Action<IMcpServerBuilder> addTransport,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, DesktopLogBridge? desktopLog = null)
     {
         var catalog = ToolSpecCatalog.LoadEmbedded();
         var kept = ToolFilter.Apply(catalog.Names, plan.ExplicitTools, plan.ExcludeTools).ToHashSet(StringComparer.Ordinal);
@@ -40,6 +45,10 @@ public static class StdioServer
         builder.Logging.ClearProviders();
         builder.Logging.AddProvider(new StderrLoggerProvider());
         builder.Logging.SetMinimumLevel(plan.Debug ? LogLevel.Debug : LogLevel.Warning);
+        // Before AddMcpServer: hosted services start in registration order and stop in reverse, so the control is
+        // running before the first request and stops after the last one.
+        builder.Services.AddSingleton<IHostedService>(provider => new ControlHostedService(services.Control,
+            provider.GetRequiredService<ILoggerFactory>().CreateLogger("desktop-mcp"), services.Dispatcher));
         var server = builder.Services.AddMcpServer(options =>
         {
             options.ServerInfo = new() { Name = ServerText.Name, Version = ServerText.Version };
@@ -47,9 +56,12 @@ public static class StdioServer
         });
         addTransport(server);
         server.WithTools(tools);
+        var gate = new ControlGate(services.Control, services.Time);
+        server.WithRequestFilters(filters => filters.AddCallToolFilter(ControlGateFilter.Create(gate, static _ => { })));
 
         using var host = builder.Build();
         var logger = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("desktop-mcp");
+        desktopLog?.Attach(logger);
         foreach (var warning in plan.Warnings) logger.LogWarning("{Warning}", warning);
         // Exceptions from dispatcher timer ticks and posted callbacks never escape into its queue; they are logged here.
         services.Dispatcher.Report = e => logger.LogWarning(e, "Dispatcher work failed: {Message}", e.Message);
@@ -82,5 +94,36 @@ public static class StdioServer
             ReleaseHeldInput();
         }
         return 0;
+    }
+}
+
+/// <summary>
+/// The desktop services' <see cref="DesktopLog"/> on the server's logger. The services are created before the host that
+/// owns the logger, so lines written before <see cref="Attach"/> are dropped (nothing logs while being created).
+/// </summary>
+internal sealed class DesktopLogBridge
+{
+    private ILogger? _logger;
+
+    public void Attach(ILogger logger) => Volatile.Write(ref _logger, logger);
+
+    public void Write(DesktopLogLevel level, string message, Exception? error)
+    {
+        try
+        {
+            var logger = Volatile.Read(ref _logger);
+            if (logger is null) return;
+            var logLevel = level switch
+            {
+                DesktopLogLevel.Debug => LogLevel.Debug,
+                DesktopLogLevel.Warning => LogLevel.Warning,
+                _ => LogLevel.Error,
+            };
+            logger.Log(logLevel, error, "{Message}", message);
+        }
+        catch (Exception)
+        {
+            // DesktopLog sinks must not throw.
+        }
     }
 }

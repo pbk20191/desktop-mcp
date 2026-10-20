@@ -6,8 +6,8 @@ namespace DesktopMcp.Server.Tools;
 
 /// <summary>
 /// upstream tools/input.py:311-333 with Decisions 37: an invalid type/direction combination is upstream's text as a
-/// normal result; without a point the cursor, read before the first wheel event, is reported. Arguments first, then the
-/// input lock, then the target (preflight F12).
+/// normal result; without a point the cursor, read before the first wheel event, is reported. The target is resolved inside
+/// the control gate's lock (preflight F12).
 /// </summary>
 public sealed class ScrollTool(Tool protocolTool, ToolServices services) : SpecTool(protocolTool)
 {
@@ -24,22 +24,19 @@ public sealed class ScrollTool(Tool protocolTool, ToolServices services) : SpecT
             ? ActArguments.Point(arguments.Get("loc"), "loc", PointerTools.LocationShape)
             : null;
 
-        using (await services.InputLock.EnterAsync(cancellationToken).ConfigureAwait(false))
+        // The desktop-session check (P2 Decisions 18) before any target is resolved.
+        services.Targets.CheckSession();
+        if (label is null && loc is null)
         {
-            // The desktop-session check (P2 Decisions 18) before any target is resolved.
-            services.Targets.CheckSession();
-            if (label is null && loc is null)
-            {
-                // The wheel goes to the window under the cursor: it gets the same integrity check as a point (Decisions 8).
-                var cursor = services.Input.Cursor;
-                services.Targets.Point(cursor);
-                return ToolResults.Text(await services.Input.ScrollAsync(null, type, direction, wheelTimes, cancellationToken).ConfigureAwait(false)
-                    ?? PointerTools.Text($"Scrolled {type} {direction} by {wheelTimes} wheel times at current cursor position ({cursor.X},{cursor.Y})."));
-            }
-
-            var point = await services.Targets.ResolveAsync(label, loc, cancellationToken).ConfigureAwait(false);
-            return ToolResults.Text(await services.Input.ScrollAsync(point, type, direction, wheelTimes, cancellationToken).ConfigureAwait(false)
-                ?? PointerTools.Text($"Scrolled {type} {direction} by {wheelTimes} wheel times at ({point.X},{point.Y})."));
+            // The wheel goes to the window under the cursor: it gets the same integrity check as a point (Decisions 8).
+            var cursor = services.Input.Cursor;
+            services.Targets.Point(cursor);
+            return ToolResults.Text(await services.Input.ScrollAsync(null, type, direction, wheelTimes, cancellationToken).ConfigureAwait(false)
+                ?? PointerTools.Text($"Scrolled {type} {direction} by {wheelTimes} wheel times at current cursor position ({cursor.X},{cursor.Y})."));
         }
+
+        var point = await services.Targets.ResolveAsync(label, loc, cancellationToken).ConfigureAwait(false);
+        return ToolResults.Text(await services.Input.ScrollAsync(point, type, direction, wheelTimes, cancellationToken).ConfigureAwait(false)
+            ?? PointerTools.Text($"Scrolled {type} {direction} by {wheelTimes} wheel times at ({point.X},{point.Y})."));
     }
 }

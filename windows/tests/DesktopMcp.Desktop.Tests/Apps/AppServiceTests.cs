@@ -1,6 +1,8 @@
+using DesktopMcp.Core.Control;
 using DesktopMcp.Core.Snapshots;
 using DesktopMcp.Desktop.Apps;
 using DesktopMcp.Desktop.Errors;
+using DesktopMcp.Desktop.Input;
 using DesktopMcp.Desktop.Tree;
 using DesktopMcp.Desktop.WindowControl;
 
@@ -25,6 +27,7 @@ internal sealed class AppRig
         Foreground = new FakeForeground(this, switchSucceeds);
         Service = new AppService(Scanner, Foreground, (window, name, target, _) =>
         {
+            if (Throws is { } thrown) throw thrown;
             if (ResizeError is { } error) throw new DesktopException(error);
             ResizedTo = target;
             return Task.CompletedTask;
@@ -43,6 +46,9 @@ internal sealed class AppRig
 
     /// <summary>When set, the switch throws a <see cref="DesktopException"/> with this text.</summary>
     public string? SwitchError { get; set; }
+
+    /// <summary>When set, the switch and the resize seam throw this exception.</summary>
+    public Exception? Throws { get; set; }
 
     internal sealed class FakeScanner(WindowScan scan) : IWindowScanner
     {
@@ -65,6 +71,7 @@ internal sealed class AppRig
     {
         public Task<ForegroundResult> SwitchToAsync(long window, CancellationToken ct)
         {
+            if (rig.Throws is { } thrown) throw thrown;
             if (rig.SwitchError is { } error) throw new DesktopException(error);
             rig.SwitchedTo = window;
             return Task.FromResult(new ForegroundResult(succeeds, rig.Minimized.Contains(window)));
@@ -93,6 +100,28 @@ public class AppServiceTests
     public async Task SwitchFailureIsAnError() =>
         Assert.Equal(new AppResult("Failed to bring Untitled - Notepad to the foreground within 1 second.", true),
             await new AppRig(windows: [("Untitled - Notepad", 10, false)], switchSucceeds: false).Service.SwitchAsync("notepad", default));
+
+    public static TheoryData<Exception> Interruptions() =>
+    [
+        new ControlRejectedException(ControlCodes.ControlPreempted, new ControlStatus(ControlState.User, 1, 0, true, "relaxed", 10), 0),
+        new InputUnavailableException("blocked"),
+    ];
+
+    [Theory]
+    [MemberData(nameof(Interruptions))]
+    public async Task SwitchDoesNotSwallowAControlInterruption(Exception interruption)
+    {
+        var rig = new AppRig(windows: [("Notepad", 10, false)]) { Throws = interruption };
+        Assert.Same(interruption, await Assert.ThrowsAnyAsync<Exception>(() => rig.Service.SwitchAsync("notepad", default)));
+    }
+
+    [Theory]
+    [MemberData(nameof(Interruptions))]
+    public async Task ResizeDoesNotSwallowAControlInterruption(Exception interruption)
+    {
+        var rig = new AppRig(windows: [("Notepad", 10, false)]) { Throws = interruption };
+        Assert.Same(interruption, await Assert.ThrowsAnyAsync<Exception>(() => rig.Service.ResizeAsync("notepad", null, (1, 1), default)));
+    }
 
     [Fact]
     public async Task SwitchExceptionsAreErrors()

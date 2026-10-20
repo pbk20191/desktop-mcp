@@ -7,7 +7,7 @@ namespace DesktopMcp.Server.Tools;
 
 /// <summary>
 /// upstream tools/input.py:354-404 (move and drag). Both ends of a drag get the point checks (Decisions 15); the start
-/// is the cursor when from_loc is absent. Arguments first, then the input lock, then the targets (preflight F12).
+/// is the cursor when from_loc is absent. The targets are resolved inside the control gate's lock (preflight F12).
 /// </summary>
 public sealed class MoveTool(Tool protocolTool, ToolServices services) : SpecTool(protocolTool)
 {
@@ -25,22 +25,19 @@ public sealed class MoveTool(Tool protocolTool, ToolServices services) : SpecToo
             throw new ArgumentException("from_loc and duration require drag=True");
         var duration = drag ? ActArguments.Duration(arguments.Get("duration")) : null;
 
-        using (await services.InputLock.EnterAsync(cancellationToken).ConfigureAwait(false))
+        // The desktop-session check (P2 Decisions 18) before any target is resolved.
+        services.Targets.CheckSession();
+        var to = await services.Targets.ResolveAsync(label, loc, cancellationToken).ConfigureAwait(false);
+        if (!drag)
         {
-            // The desktop-session check (P2 Decisions 18) before any target is resolved.
-            services.Targets.CheckSession();
-            var to = await services.Targets.ResolveAsync(label, loc, cancellationToken).ConfigureAwait(false);
-            if (!drag)
-            {
-                await services.Input.MoveAsync(to, cancellationToken).ConfigureAwait(false);
-                return ToolResults.Text(PointerTools.Text($"Moved the mouse pointer to ({to.X},{to.Y})."));
-            }
-
-            // The start that was checked is the start pressed, even if the cursor moves during the drag's settle.
-            var start = services.Targets.Point(from ?? services.Input.Cursor).Point;
-            var result = await services.Input.DragAsync(start, to, duration, cancellationToken).ConfigureAwait(false);
-            var text = PointerTools.Text($"Dragged from ({result.Start.X},{result.Start.Y}) to ({to.X},{to.Y})");
-            return ToolResults.Text(result.Duration is { } seconds ? $"{text} over {PyText.Fixed(seconds, 3)} seconds." : $"{text}.");
+            await services.Input.MoveAsync(to, cancellationToken).ConfigureAwait(false);
+            return ToolResults.Text(PointerTools.Text($"Moved the mouse pointer to ({to.X},{to.Y})."));
         }
+
+        // The start that was checked is the start pressed, even if the cursor moves during the drag's settle.
+        var start = services.Targets.Point(from ?? services.Input.Cursor).Point;
+        var result = await services.Input.DragAsync(start, to, duration, cancellationToken).ConfigureAwait(false);
+        var text = PointerTools.Text($"Dragged from ({result.Start.X},{result.Start.Y}) to ({to.X},{to.Y})");
+        return ToolResults.Text(result.Duration is { } seconds ? $"{text} over {PyText.Fixed(seconds, 3)} seconds." : $"{text}.");
     }
 }

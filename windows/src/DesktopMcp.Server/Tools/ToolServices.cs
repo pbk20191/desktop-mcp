@@ -1,3 +1,5 @@
+using DesktopMcp.Core.Config;
+using DesktopMcp.Core.Control;
 using DesktopMcp.Core.FileSystem;
 using DesktopMcp.Core.PowerShell;
 using DesktopMcp.Core.Processes;
@@ -7,6 +9,7 @@ using DesktopMcp.Desktop;
 using DesktopMcp.Desktop.Actions;
 using DesktopMcp.Desktop.Apps;
 using DesktopMcp.Desktop.ClipboardAccess;
+using DesktopMcp.Desktop.Control;
 using DesktopMcp.Desktop.Dispatching;
 using DesktopMcp.Desktop.Displays;
 using DesktopMcp.Desktop.Input;
@@ -49,25 +52,59 @@ public sealed record ToolServices
     public required IWaitConditions WaitConditions { get; init; }
 
     /// <summary>
-    /// Every key or button the input holds; the server releases it on shutdown (Decisions 19). It must be the ledger
-    /// <see cref="Input"/> presses through, or the shutdown release misses what the input holds: replace both together.
+    /// Desktop ownership (spec §7): the control gate's status, leases and checkpoints. <see cref="Create"/> and
+    /// <see cref="CreateDefault"/> build <see cref="Input"/> and <see cref="Ledger"/> over it.
+    /// </summary>
+    public required IDesktopControl Control { get; init; }
+
+    /// <summary>
+    /// Every key or button the input holds; the server releases it on shutdown (Decisions 19). In the production wiring it
+    /// is <see cref="IDesktopControl.Ledger"/> and the ledger <see cref="Input"/> presses through, or a takeover or the
+    /// shutdown release misses what the input holds; tests may replace it on its own.
     /// </summary>
     public required InputLedger Ledger { get; init; }
-    public required DesktopInputLock InputLock { get; init; }
     public required TimeProvider Time { get; init; }
 
     /// <summary>
-    /// The shared dispatcher thread (input monitor, indicator, flash), started on first use; the server logs its unhandled
-    /// exceptions. Tests that start or shut it down pass their own host.
+    /// The dispatcher thread the input monitor, indicator and flash share, started on first use; the server logs its
+    /// unhandled exceptions and shuts it down after the control stops. <see cref="Create"/> uses
+    /// <see cref="DispatcherHost.Shared"/>; <see cref="CreateDefault"/> uses a host of its own (never started by its
+    /// disabled control) so a test server's shutdown leaves the shared one alone.
     /// </summary>
     public DispatcherHost Dispatcher { get; init; } = DispatcherHost.Shared;
 
-    public static ToolServices CreateDefault()
+    /// <summary>
+    /// The services with control disabled (default settings) and no process allowlist: what the tests and the contract
+    /// checks build on. Nothing starts a monitor.
+    /// </summary>
+    public static ToolServices CreateDefault() =>
+        Create(new DisabledControl(DefaultControlSettings()), ProcessAllowlist.Everything, log: null) with { Dispatcher = new DispatcherHost() };
+
+    /// <summary>
+    /// The server's services for <paramref name="plan"/>: the desktop control its <c>[control]</c> settings describe
+    /// (<see cref="ControlCoordinator.Create"/>), the process allowlist, and the input over the control's ledger and
+    /// checkpoint. <paramref name="log"/> receives the desktop services' own log lines (control, indicator, flash).
+    /// Cheap: nothing starts until the control is started.
+    /// </summary>
+    public static ToolServices Create(ServePlan plan, DesktopLog? log = null)
     {
-        var machine = DesktopMachine.CreateDefault();
+        ArgumentNullException.ThrowIfNull(plan);
+        return Create(ControlCoordinator.Create(plan.Control, log), new ProcessAllowlist(plan.Control.ProcessAllowlist), log);
+    }
+
+    /// <summary>The <c>[control]</c> defaults with control turned off.</summary>
+    private static ControlSettings DefaultControlSettings()
+    {
+        var defaults = new ControlConfig();
+        return new ControlSettings(false, defaults.Policy, defaults.IdleTimeoutSeconds, defaults.MouseTakeoverUnits, defaults.MouseTakeoverPixels);
+    }
+
+    private static ToolServices Create(IDesktopControl control, ProcessAllowlist allowlist, DesktopLog? log)
+    {
+        var machine = DesktopMachine.CreateDefault(log);
         var snapshots = new SnapshotService(machine);
         var clipboard = new SystemClipboard();
-        var ledger = new InputLedger();
+        var ledger = control.Ledger;
         var foreground = new ForegroundService();
         return new()
         {
@@ -81,14 +118,14 @@ public sealed record ToolServices
             Displays = new Win32Displays(),
             Snapshots = snapshots,
             Machine = machine,
-            Input = new DesktopInput(ledger, clipboard, NoCheckpoint.Instance),
+            Input = new DesktopInput(ledger, clipboard, control.Checkpoint, allowlist),
             Targets = new ActionTargets(machine, snapshots.State),
             Foreground = foreground,
             ReadBack = new UiaTypeReadBack(machine),
             Apps = new AppService(machine, foreground),
             WaitConditions = new WaitConditionService(machine),
+            Control = control,
             Ledger = ledger,
-            InputLock = new DesktopInputLock(),
             Time = TimeProvider.System,
         };
     }

@@ -1,4 +1,7 @@
+using DesktopMcp.Core.Control;
 using DesktopMcp.Core.Snapshots;
+
+using DesktopMcp.Server.Control;
 
 namespace DesktopMcp.Server.Tests;
 
@@ -118,14 +121,44 @@ public class MultiToolTests
     }
 
     [Fact]
+    public async Task MultiSelectDoesNotSwallowAPreemption()
+    {
+        var preempted = new ControlRejectedException(ControlCodes.ControlPreempted, new ControlStatus(ControlState.User, 2, 1, true, "relaxed", 10), 1);
+        var desktop = new FakeDesktop { PointThrows = preempted, PointErrorAt = new ScreenPoint(2, 2) };
+        var thrown = await Assert.ThrowsAsync<ControlRejectedException>(() =>
+            ToolCalls.CallAsync(ToolCalls.Create("MultiSelect", desktop.Services()), """{"locs": [[1, 1], [2, 2]]}"""));
+        Assert.Same(preempted, thrown);
+    }
+
+    [Fact]
+    public async Task MultiEditDoesNotSwallowAPreemption()
+    {
+        var preempted = new ControlRejectedException(ControlCodes.ControlPreempted, new ControlStatus(ControlState.User, 2, 1, true, "relaxed", 10), 3);
+        var desktop = new FakeDesktop { ReadBackEchoesTypedText = true, TypeThrows = preempted, TypeThrowsAt = 1 };
+        var thrown = await Assert.ThrowsAsync<ControlRejectedException>(() =>
+            ToolCalls.CallAsync(ToolCalls.Create("MultiEdit", desktop.Services()), """{"locs": [[1, 1, "a"], [2, 2, "b"]]}"""));
+        Assert.Same(preempted, thrown);
+        Assert.Equal(["Type (1,1) clear a"], desktop.Input.Calls);
+    }
+
+    [Fact]
+    public async Task MultiEditDoesNotSwallowUnavailableInput()
+    {
+        var desktop = new FakeDesktop { ReadBackEchoesTypedText = true, TypeThrows = new DesktopMcp.Desktop.Input.InputUnavailableException("blocked"), TypeThrowsAt = 1 };
+        await Assert.ThrowsAsync<DesktopMcp.Desktop.Input.InputUnavailableException>(() =>
+            ToolCalls.CallAsync(ToolCalls.Create("MultiEdit", desktop.Services()), """{"locs": [[1, 1, "a"], [2, 2, "b"]]}"""));
+    }
+
+    [Fact]
     public async Task TargetsAreResolvedInsideTheLock()
     {
         var desktop = new FakeDesktop { BlockFirstCall = true, Labels = { [0] = new ScreenPoint(3, 3) } };
         var services = desktop.Services();
-        var first = ToolCalls.CallAsync(ToolCalls.Create("Click", services), """{"loc": [1, 1]}""");
+        var gate = new ControlGate(services.Control, services.Time);
+        var first = ToolCalls.GatedCallAsync(gate, ToolCalls.Create("Click", services), """{"loc": [1, 1]}""");
         await desktop.FirstCallStarted;
-        var select = ToolCalls.CallAsync(ToolCalls.Create("MultiSelect", services), """{"locs": [[2, 2]], "labels": [0]}""");
-        var edit = ToolCalls.CallAsync(ToolCalls.Create("MultiEdit", services), """{"locs": [[4, 4, "x"]]}""");
+        var select = ToolCalls.GatedCallAsync(gate, ToolCalls.Create("MultiSelect", services), """{"locs": [[2, 2]], "labels": [0]}""");
+        var edit = ToolCalls.GatedCallAsync(gate, ToolCalls.Create("MultiEdit", services), """{"locs": [[4, 4, "x"]]}""");
         await Task.Delay(100);
         Assert.Equal(["Point (1,1)"], desktop.Targets.Calls);
         desktop.ReleaseFirstCall();

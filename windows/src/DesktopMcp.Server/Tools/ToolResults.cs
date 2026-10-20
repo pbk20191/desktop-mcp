@@ -1,4 +1,5 @@
 using System.Text.Json;
+using DesktopMcp.Core.Control;
 using ModelContextProtocol.Protocol;
 
 namespace DesktopMcp.Server.Tools;
@@ -32,6 +33,35 @@ public static class ToolResults
         {
             Content = [new TextContentBlock { Text = json }],
             StructuredContent = document.RootElement.Clone(),
+        };
+    }
+
+    /// <summary>
+    /// A JSON object result whose object is the structuredContent itself (ControlStatus, spec §4): the JSON as text, plus
+    /// the parsed object, not wrapped in <c>result</c>.
+    /// </summary>
+    public static CallToolResult Object(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        if (document.RootElement.ValueKind != JsonValueKind.Object) throw new ArgumentException("Not a JSON object.", nameof(json));
+        return new()
+        {
+            Content = [new TextContentBlock { Text = json }],
+            StructuredContent = document.RootElement.Clone(),
+        };
+    }
+
+    /// <summary>
+    /// A control rejection (spec §4): an <c>isError</c> result whose whole text is <see cref="ControlJson.Rejection"/>,
+    /// with no <c>Error calling tool</c> prefix.
+    /// </summary>
+    public static CallToolResult Rejection(ControlRejectedException rejection)
+    {
+        ArgumentNullException.ThrowIfNull(rejection);
+        return new()
+        {
+            IsError = true,
+            Content = [new TextContentBlock { Text = ControlJson.Rejection(rejection) }],
         };
     }
 

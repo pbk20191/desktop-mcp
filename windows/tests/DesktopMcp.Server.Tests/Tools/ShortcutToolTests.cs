@@ -1,3 +1,5 @@
+using DesktopMcp.Server.Control;
+
 namespace DesktopMcp.Server.Tests;
 
 public class ShortcutToolTests
@@ -46,9 +48,10 @@ public class ShortcutToolTests
     {
         var desktop = new FakeDesktop { BlockFirstCall = true };
         var services = desktop.Services();
-        var first = ToolCalls.CallAsync(ToolCalls.Create("Click", services), """{"loc": [1, 1]}""");
+        var gate = new ControlGate(services.Control, services.Time);
+        var first = ToolCalls.GatedCallAsync(gate, ToolCalls.Create("Click", services), """{"loc": [1, 1]}""");
         await desktop.FirstCallStarted;
-        var second = ToolCalls.CallAsync(ToolCalls.Create("Shortcut", services), """{"shortcut": "ctrl+c"}""");
+        var second = ToolCalls.GatedCallAsync(gate, ToolCalls.Create("Shortcut", services), """{"shortcut": "ctrl+c"}""");
         await Task.Delay(100);
         Assert.Equal(0, desktop.Targets.ForegroundInputChecks);
         desktop.ReleaseFirstCall();

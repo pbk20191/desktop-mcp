@@ -1,4 +1,5 @@
 using System.Text.Json;
+using DesktopMcp.Server.Control;
 using DesktopMcp.Server.Tools;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
@@ -20,6 +21,16 @@ internal static class ToolCalls
         var request = new RequestContext<CallToolRequestParams>(server, new JsonRpcRequest { Method = "tools/call" },
             new CallToolRequestParams { Name = tool.ProtocolTool.Name, Arguments = arguments });
         return await tool.InvokeAsync(request, cancellationToken);
+    }
+
+    /// <summary>Calls a tool through <paramref name="gate"/>, as the server's call-tool filter does.</summary>
+    public static Task<CallToolResult> GatedCallAsync(ControlGate gate, McpServerTool tool, string argumentsJson, CancellationToken cancellationToken = default)
+    {
+        Dictionary<string, JsonElement> arguments;
+        using (var document = JsonDocument.Parse(argumentsJson))
+            arguments = document.RootElement.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.Clone());
+        return gate.InvokeAsync(tool.ProtocolTool.Name, arguments, ct => new ValueTask<CallToolResult>(CallAsync(tool, argumentsJson, ct)), cancellationToken)
+            .AsTask();
     }
 
     public static string Text(CallToolResult result) => Assert.IsType<TextContentBlock>(Assert.Single(result.Content)).Text;

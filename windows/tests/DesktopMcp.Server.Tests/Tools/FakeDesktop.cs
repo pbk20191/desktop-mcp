@@ -39,7 +39,17 @@ internal sealed class FakeDesktop
     /// <summary>When set, <see cref="IActionTargets.Point"/> throws an <see cref="ArgumentException"/> with this text.</summary>
     public string? PointError { get; set; }
 
-    /// <summary>When set, <see cref="PointError"/> applies only to this point.</summary>
+    /// <summary>When set, <see cref="IActionTargets.Point"/> throws this exception (at <see cref="PointErrorAt"/> when that is set).</summary>
+    public Exception? PointThrows { get; set; }
+
+    /// <summary>When set, the Type call numbered <see cref="TypeThrowsAt"/> (from 0) throws this after recording nothing.</summary>
+    public Exception? TypeThrows { get; set; }
+
+    public int TypeThrowsAt { get; set; }
+
+    private int _typeCalls;
+
+    /// <summary>When set, <see cref="PointError"/> and <see cref="PointThrows"/> apply only to this point.</summary>
     public ScreenPoint? PointErrorAt { get; set; }
 
     /// <summary>The window a checked point lands on (0: no window); it is named <c>Window</c>.</summary>
@@ -148,7 +158,6 @@ internal sealed class FakeDesktop
         Apps = new FakeApps(this),
         WaitConditions = new FakeWaitConditions(this),
         Ledger = new InputLedger(),
-        InputLock = new DesktopInputLock(),
         Time = new AutoAdvanceTime(),
     };
 
@@ -198,6 +207,7 @@ internal sealed class FakeDesktop
             Func<CancellationToken, Task>? afterClick, CancellationToken ct)
         {
             lock (desktop._typeOptions) desktop._typeOptions.Add($"{caret} {pressEnter}");
+            if (Interlocked.Increment(ref desktop._typeCalls) - 1 == desktop.TypeThrowsAt && desktop.TypeThrows is { } thrown) throw thrown;
             try
             {
                 if (afterClick is not null) await afterClick(ct);
@@ -262,6 +272,7 @@ internal sealed class FakeDesktop
         public ActionTarget Point(ScreenPoint point)
         {
             Record($"Point ({point.X},{point.Y})");
+            if (desktop.PointThrows is { } thrown && (desktop.PointErrorAt is null || desktop.PointErrorAt == point)) throw thrown;
             if (desktop.PointError is { } error && (desktop.PointErrorAt is null || desktop.PointErrorAt == point)) throw new ArgumentException(error);
             return new ActionTarget(point, desktop.PointWindow, desktop.PointWindow == 0 ? "" : "Window");
         }

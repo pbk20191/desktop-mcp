@@ -11,7 +11,7 @@ namespace DesktopMcp.Server.Tools;
 /// upstream tools/input.py:438-504 wait_for_tool with P3 Decisions 6 and 24-28: each poll reads only what the condition
 /// needs (<see cref="ToolServices.WaitConditions"/>), never a full snapshot, and the label store is left alone. The
 /// arguments are checked in upstream's order, then use_dom (True is refused, P2 Decisions 39), then the desktop session
-/// once. The polls run on <see cref="ToolServices.Time"/>. WaitFor only reads, so it takes no input lock.
+/// once. The polls run on <see cref="ToolServices.Time"/>. WaitFor only reads the desktop.
 /// </summary>
 public sealed class WaitForTool(Tool protocolTool, ToolServices services) : SpecTool(protocolTool)
 {

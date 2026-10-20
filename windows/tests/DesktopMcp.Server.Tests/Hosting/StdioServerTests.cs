@@ -1,5 +1,7 @@
 using System.IO.Pipelines;
+using System.Text.Json;
 using DesktopMcp.Core.Config;
+using DesktopMcp.Core.Control;
 using DesktopMcp.Desktop.Dispatching;
 using DesktopMcp.Desktop.Input;
 using DesktopMcp.Server.Hosting;
@@ -13,6 +15,81 @@ namespace DesktopMcp.Server.Tests;
 /// <summary>The serve host's MCP setup over in-memory pipes in place of stdin and stdout (spec §9).</summary>
 public sealed class StdioServerTests
 {
+    private static readonly ServePlan Plan = new() { Transport = "stdio", Host = "localhost", Port = 8000, Control = new ControlSettings(true, "relaxed", 10.0, 500, 500) };
+
+    /// <summary>Serves <paramref name="services"/> over in-memory pipes, runs <paramref name="client"/>, then stops the server.</summary>
+    private static async Task ServeAsync(ToolServices services, Func<McpClient, CancellationToken, Task> client)
+    {
+        var clientToServer = new Pipe();
+        var serverToClient = new Pipe();
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var serving = StdioServer.RunAsync(Plan, services,
+            builder => builder.WithStreamServerTransport(clientToServer.Reader.AsStream(), serverToClient.Writer.AsStream()), stop.Token);
+        await using (var connected = await McpClient.CreateAsync(
+            new StreamClientTransport(clientToServer.Writer.AsStream(), serverToClient.Reader.AsStream()), cancellationToken: stop.Token))
+            await client(connected, stop.Token);
+        await stop.CancelAsync();
+        Assert.Equal(0, await serving);
+    }
+
+    private static string Text(CallToolResult result) => Assert.IsType<TextContentBlock>(Assert.Single(result.Content)).Text;
+
+    [Fact]
+    public async Task GatedCallsGoThroughTheFilter()
+    {
+        var status = new ControlStatus(ControlState.User, 2, 9.5, true, "relaxed", 10);
+        await ServeAsync(ToolServices.CreateDefault() with { Control = new FakeControl { Current = status } }, async (client, ct) =>
+        {
+            var click = await client.CallToolAsync("Click", new Dictionary<string, object?> { ["loc"] = JsonDocument.Parse("[1, 2]").RootElement }, cancellationToken: ct);
+            Assert.True(click.IsError);
+            Assert.Equal(ControlJson.Rejection(new ControlRejectedException(ControlCodes.UserControl, status)), Text(click));
+
+            // The gate runs before the tool's own argument checks.
+            var invalid = await client.CallToolAsync("Click", new Dictionary<string, object?>(), cancellationToken: ct);
+            Assert.StartsWith("{\"code\": \"USER_CONTROL\"", Text(invalid));
+
+            var wait = await client.CallToolAsync("Wait", new Dictionary<string, object?> { ["duration"] = 0 }, cancellationToken: ct);
+            Assert.False(wait.IsError ?? false);
+
+            var controlStatus = await client.CallToolAsync("ControlStatus", new Dictionary<string, object?>(), cancellationToken: ct);
+            Assert.False(controlStatus.IsError ?? false);
+            Assert.Equal(ControlJson.Status(status), Text(controlStatus));
+            Assert.Equal("user", controlStatus.StructuredContent?.GetProperty("state").GetString());
+        });
+    }
+
+    [Fact]
+    public async Task APreemptionInsideAToolReachesTheClientAsARejection()
+    {
+        var user = new ControlStatus(ControlState.User, 3, 1, true, "relaxed", 10);
+        var desktop = new FakeDesktop { PointThrows = new ControlRejectedException(ControlCodes.ControlPreempted, user, 2) };
+        var control = new FakeControl();
+        await ServeAsync(desktop.Services() with { Control = control }, async (client, ct) =>
+        {
+            var click = await client.CallToolAsync("Click", new Dictionary<string, object?> { ["loc"] = JsonDocument.Parse("[1, 2]").RootElement }, cancellationToken: ct);
+            Assert.True(click.IsError);
+            Assert.Equal("""{"code": "CONTROL_PREEMPTED", "status": {"state": "user", "generation": 3, "wait_seconds": 1.0, "enabled": true, "policy": "relaxed", "idle_timeout_seconds": 10.0, "executed_steps": 2}}""",
+                Text(click));
+        });
+        Assert.Equal(1, control.EndedCalls);
+    }
+
+    [Fact]
+    public async Task TheControlStartsBeforeServingAndStopsAfter()
+    {
+        var control = new FakeControl();
+        var dispatcher = new DispatcherHost(() => throw new InvalidOperationException("never started"));
+        await ServeAsync(ToolServices.CreateDefault() with { Control = control, Dispatcher = dispatcher }, async (client, ct) =>
+        {
+            Assert.Equal(["start"], control.Events);
+            await client.ListToolsAsync(cancellationToken: ct);
+            Assert.Equal(["start"], control.Events);
+        });
+        Assert.Equal(["start", "stop"], control.Events);
+        // spec §5: the shared dispatcher is shut down after the control stops (F17).
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => dispatcher.GetAsync(default));
+    }
+
     [Fact]
     public async Task InitializeListsTheContractToolsAndCallsWait()
     {

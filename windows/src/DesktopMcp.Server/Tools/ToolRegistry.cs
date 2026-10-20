@@ -35,6 +35,7 @@ public static class ToolRegistry
         "MultiEdit" => new MultiEditTool(protocolTool, services),
         "App" => new AppTool(protocolTool, services),
         "WaitFor" => new WaitForTool(protocolTool, services),
+        "ControlStatus" => new ControlStatusTool(protocolTool, services.Control),
         _ => new PendingTool(protocolTool),
     };
 }

@@ -5,8 +5,8 @@ using ModelContextProtocol.Server;
 namespace DesktopMcp.Server.Tools;
 
 /// <summary>
-/// upstream tools/input.py:238-256 with Decisions 17 (click counts) and 22 (a label reports the point used). Arguments
-/// are checked first; the input lock is taken next and the target resolved inside it (preflight F12).
+/// upstream tools/input.py:238-256 with Decisions 17 (click counts) and 22 (a label reports the point used). The control
+/// gate holds the desktop lock for the whole call, so the target is resolved inside it (preflight F12).
 /// </summary>
 public sealed class ClickTool(Tool protocolTool, ToolServices services) : SpecTool(protocolTool)
 {
@@ -22,20 +22,17 @@ public sealed class ClickTool(Tool protocolTool, ToolServices services) : SpecTo
         if (loc is null && label is null) throw new ArgumentException(PointerTools.EitherLocOrLabel);
         if (clicks < 0) throw new ArgumentException("clicks must be 0 or more");
 
-        using (await services.InputLock.EnterAsync(cancellationToken).ConfigureAwait(false))
+        // The desktop-session check (P2 Decisions 18) before any target is resolved.
+        services.Targets.CheckSession();
+        var point = await services.Targets.ResolveAsync(label, loc, cancellationToken).ConfigureAwait(false);
+        await services.Input.ClickAsync(point, ToButton(button), clicks, cancellationToken).ConfigureAwait(false);
+        return ToolResults.Text(clicks switch
         {
-            // The desktop-session check (P2 Decisions 18) before any target is resolved.
-            services.Targets.CheckSession();
-            var point = await services.Targets.ResolveAsync(label, loc, cancellationToken).ConfigureAwait(false);
-            await services.Input.ClickAsync(point, ToButton(button), clicks, cancellationToken).ConfigureAwait(false);
-            return ToolResults.Text(clicks switch
-            {
-                0 => PointerTools.Text($"Hover {button} clicked at ({point.X},{point.Y})."),
-                1 => PointerTools.Text($"Single {button} clicked at ({point.X},{point.Y})."),
-                2 => PointerTools.Text($"Double {button} clicked at ({point.X},{point.Y})."),
-                _ => PointerTools.Text($"Clicked {button} {clicks} times at ({point.X},{point.Y})."),
-            });
-        }
+            0 => PointerTools.Text($"Hover {button} clicked at ({point.X},{point.Y})."),
+            1 => PointerTools.Text($"Single {button} clicked at ({point.X},{point.Y})."),
+            2 => PointerTools.Text($"Double {button} clicked at ({point.X},{point.Y})."),
+            _ => PointerTools.Text($"Clicked {button} {clicks} times at ({point.X},{point.Y})."),
+        });
     }
 
     private static MouseButton ToButton(string button) => button switch

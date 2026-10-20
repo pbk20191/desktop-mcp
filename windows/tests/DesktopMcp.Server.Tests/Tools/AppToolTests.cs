@@ -53,20 +53,4 @@ public class AppToolTests
             "LaunchExecutable a.exe [x y] C:\\", "LaunchExecutable a.exe [] ",
         ], desktop.AppCalls);
     }
-
-    [Fact]
-    public async Task AppHoldsTheInputLock()
-    {
-        var desktop = new FakeDesktop { AppResult = new AppResult("ok", false) };
-        var services = desktop.Services();
-        Task call;
-        using (await services.InputLock.EnterAsync(default))
-        {
-            call = ToolCalls.CallAsync(ToolCalls.Create("App", services), """{"mode": "switch", "name": "notepad"}""");
-            Assert.False(call.IsCompleted);
-            Assert.Empty(desktop.AppCalls);
-        }
-        await call;
-        Assert.Equal(["Switch notepad"], desktop.AppCalls);
-    }
 }

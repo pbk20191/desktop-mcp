@@ -3,6 +3,7 @@ using DesktopMcp.Core.Config;
 using DesktopMcp.Core.FileSystem;
 using DesktopMcp.Core.Snapshots;
 using DesktopMcp.Core.Text;
+using DesktopMcp.Desktop.Control;
 using DesktopMcp.Desktop.Errors;
 using DesktopMcp.Desktop.Threading;
 using DesktopMcp.Desktop.Tree;
@@ -97,7 +98,7 @@ public sealed class AppService : IAppService
                 ? $"Restored {TreeConfig.Title(window.Name)} from minimized and switched to it."
                 : $"Switched to {TreeConfig.Title(window.Name)} window.", false);
         }
-        catch (Exception e) when (e is not OperationCanceledException)
+        catch (Exception e) when (e is not OperationCanceledException && !ControlErrors.IsInterruption(e))
         {
             return new AppResult($"Error switching app: {e.Message}", true);
         }
@@ -129,7 +130,7 @@ public sealed class AppService : IAppService
         {
             await _resize(window.Handle, window.Name, new ScreenRect(x, y, unchecked(x + width), unchecked(y + height)), ct).ConfigureAwait(false);
         }
-        catch (DesktopException e)
+        catch (DesktopException e) when (!ControlErrors.IsInterruption(e))
         {
             return new AppResult(e.Message, false);
         }
@@ -171,7 +172,7 @@ public sealed class AppService : IAppService
         {
             return new AppResult($"Failed to launch {title}: it did not start within 10 s.", false);
         }
-        catch (Exception e) when (e is DesktopException or Win32Exception)
+        catch (Exception e) when ((e is DesktopException or Win32Exception) && !ControlErrors.IsInterruption(e))
         {
             // The launcher's own failures (a translated COM error, ShellExecuteEx); anything else is a bug and propagates.
             return new AppResult($"Failed to launch {title}: {e.Message}", false);

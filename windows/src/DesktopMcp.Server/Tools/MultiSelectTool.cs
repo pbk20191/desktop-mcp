@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using DesktopMcp.Core.Input;
 using DesktopMcp.Core.Snapshots;
+using DesktopMcp.Desktop.Control;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
@@ -10,7 +11,8 @@ namespace DesktopMcp.Server.Tools;
 /// <summary>
 /// upstream tools/multi.py:31-55 with Decisions 23: every label is range-checked first (upstream's wrapper text), then
 /// each target is resolved just before its own click, locs first, then labels. Arguments and the range check come
-/// first; the input lock is taken next and the targets resolved inside it (preflight F12).
+/// first; the targets are resolved inside the control gate's lock (preflight F12). A control interruption is not wrapped
+/// in the progress text: it reaches the gate as is.
 /// </summary>
 public sealed class MultiSelectTool(Tool protocolTool, ToolServices services) : SpecTool(protocolTool)
 {
@@ -27,29 +29,26 @@ public sealed class MultiSelectTool(Tool protocolTool, ToolServices services) : 
         labels ??= [];
         var pressCtrl = arguments.StrictBool("press_ctrl", true);
 
-        using (await services.InputLock.EnterAsync(cancellationToken).ConfigureAwait(false))
+        // The desktop-session check (P2 Decisions 18) before any target is resolved.
+        services.Targets.CheckSession();
+        var count = locs.Count + labels.Count;
+        var points = await services.Input.MultiSelectAsync(pressCtrl, count, async (i, ct) =>
         {
-            // The desktop-session check (P2 Decisions 18) before any target is resolved.
-            services.Targets.CheckSession();
-            var count = locs.Count + labels.Count;
-            var points = await services.Input.MultiSelectAsync(pressCtrl, count, async (i, ct) =>
+            try
             {
-                try
-                {
-                    return i < locs.Count
-                        ? services.Targets.Point(locs[i]).Point
-                        : (await services.Targets.LabelAsync(labels[i - locs.Count], ct).ConfigureAwait(false)).Point;
-                }
-                catch (Exception e) when (e is not OperationCanceledException && i > 0)
-                {
-                    throw PointerTools.Stopped(e, i, count);
-                }
-            }, cancellationToken).ConfigureAwait(false);
+                return i < locs.Count
+                    ? services.Targets.Point(locs[i]).Point
+                    : (await services.Targets.LabelAsync(labels[i - locs.Count], ct).ConfigureAwait(false)).Point;
+            }
+            catch (Exception e) when (e is not OperationCanceledException && !ControlErrors.IsInterruption(e) && i > 0)
+            {
+                throw PointerTools.Stopped(e, i, count);
+            }
+        }, cancellationToken).ConfigureAwait(false);
 
-            var text = new StringBuilder("Multi-selected elements at:\n");
-            text.AppendJoin('\n', points.Select(point => PointerTools.Text($"({point.X},{point.Y})")));
-            return ToolResults.Text(text.ToString());
-        }
+        var text = new StringBuilder("Multi-selected elements at:\n");
+        text.AppendJoin('\n', points.Select(point => PointerTools.Text($"({point.X},{point.Y})")));
+        return ToolResults.Text(text.ToString());
     }
 
     /// <summary>The labels as Python prints a list of ints: <c>[0, 9]</c>.</summary>
