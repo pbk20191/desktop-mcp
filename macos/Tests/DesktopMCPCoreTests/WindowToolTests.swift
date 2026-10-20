@@ -568,6 +568,18 @@ final class WindowToolTests: XCTestCase {
         XCTAssertEqual(actions, [])
     }
 
+    func testMaximizeAndDisplayRefuseAMinimizedWindow() async {
+        let source = FakeWindowSource([window(minimized: true, number: 10)], displays: Self.displays)
+        for arguments: [String: Value] in [["mode": "maximize", "id": "1:w10"], ["mode": "display", "id": "1:w10", "display": 1]] {
+            let message = await error(source, WindowCache(), arguments)
+            XCTAssertEqual(message, "Window 1:w10 is minimized; use restore first.")
+        }
+        let actions = await source.actions
+        XCTAssertEqual(actions, [])
+        let listed = await source.list.first
+        XCTAssertEqual(listed, window(minimized: true, number: 10))
+    }
+
     func testDisplayModeKeepsAnIndexIdUsable() async throws {
         let source = FakeWindowSource([window(frame: CGRect(x: 100, y: 125, width: 800, height: 600))], displays: Self.displays)
         let cache = WindowCache()

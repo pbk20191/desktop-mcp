@@ -444,6 +444,10 @@ enum WindowTool {
         ToolError("Window \(id) is in full screen; use exit_fullscreen first.", telemetry: "Window is in full screen")
     }
 
+    private static func minimized(_ id: String) -> ToolError {
+        ToolError("Window \(id) is minimized; use restore first.", telemetry: "Window is minimized")
+    }
+
     private static func failed(_ mode: String, _ id: String) -> ToolError {
         ToolError("Could not \(mode) window \(id).", telemetry: "Could not \(mode) window")
     }
@@ -451,7 +455,7 @@ enum WindowTool {
     static func tool(source: any WindowSource = AXWindowSource(), cache: WindowCache = WindowCache()) -> Tool {
         Tool(
             name: "Window",
-            description: "Lists and arranges application windows. 'list' (default) returns one line per window: '<id>\\t<app>\\t\"<title>\"\\t[x,y,w,h]\\t<flags>' (flags: focused, minimized, fullscreen), optionally only for 'app' (name or bundle id). The other modes act on the window 'id' from list: 'focus', 'move' (to 'loc' [x, y]), 'resize' (to 'size' [width, height]), 'minimize', 'restore', 'close' (presses its close button; the app may ask to save), 'maximize' (fills its display minus the menu bar and Dock), 'fullscreen', 'exit_fullscreen', 'display' (moves it to display index 'display', same relative position, kept inside that display). 'displays' (no id) returns one line per display: '<index>\\t<name>\\t[x,y,w,h]\\tvisible [x,y,w,h]\\tscale <s>', then 'main' for the main one, in the same top-left coordinates as window frames. 'maximize' and 'display' refuse a window in full screen. A window that closed since it was listed is refused; list again. An index id (no 'w') must also be listed again after 'fullscreen' or 'exit_fullscreen'.",
+            description: "Lists and arranges application windows. 'list' (default) returns one line per window: '<id>\\t<app>\\t\"<title>\"\\t[x,y,w,h]\\t<flags>' (flags: focused, minimized, fullscreen), optionally only for 'app' (name or bundle id). The other modes act on the window 'id' from list: 'focus', 'move' (to 'loc' [x, y]), 'resize' (to 'size' [width, height]), 'minimize', 'restore', 'close' (presses its close button; the app may ask to save), 'maximize' (fills its display minus the menu bar and Dock), 'fullscreen', 'exit_fullscreen', 'display' (moves it to display index 'display', same relative position, kept inside that display). 'displays' (no id) returns one line per display: '<index>\\t<name>\\t[x,y,w,h]\\tvisible [x,y,w,h]\\tscale <s>', then 'main' for the main one, in the same top-left coordinates as window frames. 'maximize' and 'display' refuse a window in full screen or minimized. A window that closed since it was listed is refused; list again. An index id (no 'w') must also be listed again after 'fullscreen' or 'exit_fullscreen'.",
             inputSchema: DesktopMCP.schema([
                 "mode": DesktopMCP.string(default: "list", enum: modes),
                 "app": DesktopMCP.nullableString(),
@@ -522,6 +526,7 @@ enum WindowTool {
                                                  : "Resized \(id) to \(frame[2])×\(frame[3]).")]
                 case "maximize":
                     guard !window.fullscreen else { throw inFullScreen(id) }
+                    guard !window.minimized else { throw minimized(id) }
                     guard let target = maximizedFrame(for: window.frame, displays: await source.displays()) else {
                         throw failed(mode, id)
                     }
@@ -542,6 +547,7 @@ enum WindowTool {
                     return [.text(on ? "Full screen \(id)." : "Left full screen \(id).")]
                 case "display":
                     guard !window.fullscreen else { throw inFullScreen(id) }
+                    guard !window.minimized else { throw minimized(id) }
                     let displays = await source.displays()
                     guard let target = displays.first(where: { $0.index == displayIndex }) else {
                         throw ToolError("No display \(displayIndex); see Window displays.", telemetry: "No such display")
