@@ -104,13 +104,13 @@ public static class ActArguments
         return double.IsFinite(number) ? number : throw new ArgumentException(message);
     }
 
-    /// <summary>One of <paramref name="allowed"/> (trimmed, lower case), or <paramref name="defaultValue"/> when absent.</summary>
+    /// <summary>Exactly one of <paramref name="allowed"/> (case-sensitive, like upstream's Literal), or <paramref name="defaultValue"/> when absent.</summary>
     public static string Choice(JsonElement? value, string name, string defaultValue, params string[] allowed)
     {
         if (value is not { } element || element.ValueKind == JsonValueKind.Null) return defaultValue;
         if (element.ValueKind == JsonValueKind.String)
         {
-            var text = element.GetString()!.Trim().ToLowerInvariant();
+            var text = element.GetString()!;
             if (allowed.Contains(text)) return text;
         }
         throw new ArgumentException($"{name} must be one of: {string.Join(", ", allowed)}");

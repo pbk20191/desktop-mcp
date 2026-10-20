@@ -30,7 +30,7 @@ public static class PointerPath
 
     /// <summary>
     /// service.py:958-971: with a duration, steps = max(1, min(200, ceil(d / 0.01))) and the interval is d / steps; without
-    /// one the move step count and 10 ms. Points are round-half-even interpolations.
+    /// one the move step count and 10 ms. Each point is from + round(offset), half to even.
     /// </summary>
     public static (IReadOnlyList<ScreenPoint> Points, TimeSpan Interval) DragSteps(ScreenPoint from, ScreenPoint to, double? duration)
     {
@@ -50,8 +50,8 @@ public static class PointerPath
         for (var step = 1; step <= steps; step++)
         {
             points[step - 1] = new ScreenPoint(
-                (int)PyText.RoundToInteger(from.X + (double)(to.X - from.X) * step / steps),
-                (int)PyText.RoundToInteger(from.Y + (double)(to.Y - from.Y) * step / steps));
+                from.X + (int)PyText.RoundToInteger((double)(to.X - from.X) * step / steps),
+                from.Y + (int)PyText.RoundToInteger((double)(to.Y - from.Y) * step / steps));
         }
         return (points, interval);
     }

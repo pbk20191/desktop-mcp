@@ -57,6 +57,20 @@ public class PointerPathTests
         Assert.Equal((6554, 13107), MouseCoordinates.Normalize(new(100, 200), new ScreenRect(0, 0, 1001, 1001)));
 
     [Fact]
+    public void NormaliseHalfWayCasesGoToTheEvenNeighbour() =>
+        Assert.Equal((19660, 0), MouseCoordinates.Normalize(new(300, 0), new ScreenRect(0, 0, 1001, 1001))); // 19660.5, half-away would give 19661
+
+    // service.py:958-971 rounds only the offset: cx + round((x - cx) * step / steps).
+    [Fact]
+    public void DragRoundsTheOffsetNotTheSum()
+    {
+        Assert.Equal([new ScreenPoint(2, 0), new ScreenPoint(3, 0), new ScreenPoint(5, 0), new ScreenPoint(6, 0)],
+            PointerPath.DragSteps(new(1, 0), new(6, 0), 0.04).Points);
+        Assert.Equal([new ScreenPoint(0, 0), new ScreenPoint(1, 0), new ScreenPoint(3, 0), new ScreenPoint(4, 0)],
+            PointerPath.DragSteps(new(-1, 0), new(4, 0), 0.04).Points);
+    }
+
+    [Fact]
     public void OutsideMessageIsUpstreams() =>
         Assert.Equal("Coordinates (3000,5) are outside the desktop bounds x=-1920..2559, y=0..1599",
             MouseCoordinates.OutsideMessage(new(3000, 5), new ScreenRect(-1920, 0, 2560, 1600)));

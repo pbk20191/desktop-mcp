@@ -80,6 +80,8 @@ public class ActArgumentsTests
     [InlineData("\"Infinity\"")]
     [InlineData("\"x\"")]
     [InlineData("null")]
+    [InlineData("1e999")]
+    [InlineData("-1e999")]
     public void FiniteNumberRejectsBooleansNonFiniteAndText(string json) =>
         Assert.Equal("timeout must be a finite number", Assert.Throws<ArgumentException>(() => ActArguments.FiniteNumber(J(json), "timeout")).Message);
 
@@ -97,6 +99,9 @@ public class ActArgumentsTests
         Assert.Equal("button must be one of: left, right, middle",
             Assert.Throws<ArgumentException>(() => ActArguments.Choice(J("\"top\""), "button", "left", "left", "right", "middle")).Message);
         Assert.Equal("left", ActArguments.Choice(null, "button", "left", "left", "right", "middle"));
-        Assert.Equal("right", ActArguments.Choice(J("\" Right \""), "button", "left", "left", "right", "middle"));
+        Assert.Equal("right", ActArguments.Choice(J("\"right\""), "button", "left", "left", "right", "middle"));
+        foreach (var bad in new[] { "\"LEFT\"", "\" left\"" })
+            Assert.Equal("button must be one of: left, right, middle",
+                Assert.Throws<ArgumentException>(() => ActArguments.Choice(J(bad), "button", "left", "left", "right", "middle")).Message);
     }
 }
