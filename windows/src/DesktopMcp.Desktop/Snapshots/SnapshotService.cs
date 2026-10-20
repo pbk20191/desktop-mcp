@@ -193,19 +193,7 @@ public sealed class SnapshotService : IDesktopSnapshots
         var tree = TreeSnapshot.Empty;
         if (request.UseUiTree)
         {
-            // upstream desktop/service.py:174-193: the focused window, the windows that are not applications, and with a
-            // capture rectangle the application windows inside it. The focused window is never among the others.
-            var applications = scan.Windows.Select(window => window.Handle).ToHashSet();
-            var inArea = captureRect is { } area
-                ? windows.Where(window => RegionFilter.Window(window, area) is not null).Select(window => window.Handle).ToHashSet()
-                : [];
-            long? treeActive = active is not null && (captureRect is not { } bounds || RegionFilter.Window(active, bounds) is not null)
-                ? active.Handle
-                : null;
-            var others = scan.Candidates
-                .Where(handle => handle != active?.Handle && (!applications.Contains(handle) || inArea.Contains(handle)))
-                .Distinct()
-                .ToArray();
+            var (treeActive, others) = TreeTargets(scan, captureRect);
             tree = await _machine.Tree.CaptureAsync(treeActive, others, screen, cancellationToken).ConfigureAwait(false);
         }
         Stage("tree_capture");
@@ -258,6 +246,30 @@ public sealed class SnapshotService : IDesktopSnapshots
         if (SnapshotSettings.ProfileEnabled(_machine.Environment(SnapshotSettings.ProfileSnapshotVariable)))
             Profile(stages, clock.Elapsed.TotalMilliseconds, request, displayIndices);
         return snapshot;
+    }
+
+    /// <summary>
+    /// upstream desktop/service.py:174-193: the windows the tree walks. The focused window (when it is inside
+    /// <paramref name="area"/>), then the candidates that are not application windows and, with an area, the application
+    /// windows inside it. The focused window is never among the others. WaitFor walks the same selection without an area.
+    /// </summary>
+    internal static (long? Active, IReadOnlyList<long> Others) TreeTargets(WindowScan scan, ScreenRect? area)
+    {
+        ArgumentNullException.ThrowIfNull(scan);
+        var active = scan.Active;
+        var applications = scan.Windows.Select(window => window.Handle).ToHashSet();
+        var inArea = area is { } rect
+            ? scan.Windows.Where(window => window.Handle != active?.Handle && RegionFilter.Window(window, rect) is not null)
+                .Select(window => window.Handle).ToHashSet()
+            : [];
+        long? treeActive = active is not null && (area is not { } bounds || RegionFilter.Window(active, bounds) is not null)
+            ? active.Handle
+            : null;
+        var others = scan.Candidates
+            .Where(handle => handle != active?.Handle && (!applications.Contains(handle) || inArea.Contains(handle)))
+            .Distinct()
+            .ToArray();
+        return (treeActive, others);
     }
 
     // upstream desktop/service.py:154-162: the desktops cannot be read, so the report names the default desktop.

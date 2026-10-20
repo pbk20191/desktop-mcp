@@ -21,7 +21,9 @@ public class TreeServiceTests
         /// <summary>Runs before the failure is thrown: what a walk did before it failed or was abandoned.</summary>
         public Action<ElementBudget, Func<int>>? BeforeFailure { get; set; }
 
-        public Task<WindowWalk> WalkAsync(long window, bool isBrowser, ScreenRect screen, ElementBudget budget, Func<int> nextId, CancellationToken cancellationToken)
+        public Task<WindowWalk> WalkAsync(
+            long window, bool isBrowser, ScreenRect screen, ElementBudget budget, Func<int> nextId, Func<UiElement, bool>? stopWhen,
+            CancellationToken cancellationToken)
         {
             Walked.Add(window);
             if (Failures.TryGetValue(window, out var failures) && failures.Count > 0)
@@ -33,6 +35,7 @@ public class TreeServiceTests
             budget.TryConsume();
             var element = new UiElement(nextId(), $"B{window}{(isBrowser ? " (browser)" : "")}", "button", $"W{window}", new ScreenRect(0, 0, 10, 10), new ScreenPoint(5, 5), UiMetadata.Empty);
             walk.Interactive.Add(element);
+            if (stopWhen?.Invoke(element) == true) walk.Match = element;
             walk.Window.Children.Add(new SemanticNode(SemanticKind.Interactive, "button", element.Name) { ElementId = element.Id });
             return Task.FromResult(walk);
         }
@@ -165,7 +168,9 @@ public class TreeServiceTests
         public List<long> WindowsRead { get; } = [];
         public Dictionary<long, Queue<WindowResponse>> Answers { get; } = [];
 
-        public Task<WindowWalk> WalkAsync(long window, bool isBrowser, ScreenRect screen, ElementBudget budget, Func<int> nextId, CancellationToken cancellationToken)
+        public Task<WindowWalk> WalkAsync(
+            long window, bool isBrowser, ScreenRect screen, ElementBudget budget, Func<int> nextId, Func<UiElement, bool>? stopWhen,
+            CancellationToken cancellationToken)
         {
             Walked.Add(window);
             var root = new UiaElementData { Name = $"W{window}", ControlType = TreeConfig.Window, Bounds = new ScreenRect(0, 0, 100, 100) };
@@ -177,7 +182,7 @@ public class TreeServiceTests
             var pane = new UiaElementData { Name = "", ControlType = TreeConfig.Pane, Bounds = new ScreenRect(0, 0, 50, 50) };
             var answers = Answers.GetValueOrDefault(window);
             var source = new Source(root, [pane, button], () => answers is { Count: > 0 } ? answers.Dequeue() : WindowResponse.Responding);
-            return Task.FromResult(UiaWindowWalker.Walk(source, () => { WindowsRead.Add(window); return root; }, isBrowser, screen, budget, nextId, cancellationToken, window));
+            return Task.FromResult(UiaWindowWalker.Walk(source, () => { WindowsRead.Add(window); return root; }, isBrowser, screen, budget, nextId, cancellationToken, window, stopWhen));
         }
 
         private sealed class Source(UiaElementData root, UiaElementData[] children, Func<WindowResponse> answer) : ITreeSource
@@ -241,6 +246,45 @@ public class TreeServiceTests
         Assert.False(_blocks.IsBlocked(1, 501));
         Assert.True(_blocks.IsBlocked(2, 502));
         Assert.Equal(["B3"], tree.Interactive.Select(e => e.Name));
+    }
+
+    [Fact]
+    public async Task FindAsyncSkipsBlockedWindowsAndDoesNotRetry()
+    {
+        _environment[SnapshotSettings.ExcludeProcessesVariable] = "secret.exe";
+        _system.Processes[1] = 300;
+        _system.ProcessNames[300] = "Secret.exe";
+        _system.Processes[4] = 400;
+        _blocks.Block(99, 400);
+        _system.Classes[5] = "Progman";
+        _walker.Failures[6] = new Queue<Exception>([new InvalidOperationException("busy")]);
+        _system.Processes[7] = 700;
+        _walker.Failures[7] = new Queue<Exception>([new UiaTimeoutException("hung")]);
+
+        var found = await Service().FindAsync(2, [1, 4, 5, 6, 7, 8, 9], Screen, e => e.Name is "B8" or "B9", default);
+
+        Assert.Equal("B8", found?.Name);
+        Assert.Equal([2L, 6L, 7L, 8L], _walker.Walked); // stops at the first match; 9 is never walked
+        Assert.Empty(_delays);
+        Assert.True(_blocks.IsBlocked(7, 700));
+    }
+
+    [Fact]
+    public async Task FindAsyncGivesNullWhenNothingMatches()
+    {
+        _walker.Failures[1] = new Queue<Exception>([new COMException("gone", unchecked((int)0x80040201))]);
+        Assert.Null(await Service().FindAsync(null, [1, 2], Screen, _ => false, default));
+        Assert.Equal([1L, 2L], _walker.Walked);
+        Assert.Empty(_delays);
+    }
+
+    [Fact]
+    public async Task FindAsyncStopsInsideTheWindowWalk()
+    {
+        var walker = new GuardedWalker();
+        var found = await Service(walker).FindAsync(null, [1, 2], Screen, e => e.Name == "B1", default);
+        Assert.Equal("B1", found?.Name);
+        Assert.Equal([1L], walker.Walked);
     }
 
     [Fact]
@@ -394,5 +438,20 @@ public sealed class WindowCatalogDesktopTests : IDisposable
         Assert.Equal(_window.Title, window.Name);
         Assert.Contains(tree.Interactive, e => e.Name == TestWindow.ButtonText); // ControlType is the localized name ("button", "단추", ...)
         Assert.Contains(tree.Interactive, e => e.ControlType == "Word" && e.Name == "world");
+    }
+
+    [Fact]
+    public async Task FindsTheTestWindowsButtonAndStopsThere()
+    {
+        var service = new TreeService(new Win32WindowSystem(), new UiaWindowWalker(_worker), _blocks, _ => null, Task.Delay);
+        using var limit = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var visited = new List<string>();
+        var found = await service.FindAsync(null, [_window.Handle], new Win32Displays().GetVirtualScreen(), e =>
+        {
+            visited.Add(e.Name);
+            return e.Name == TestWindow.ButtonText;
+        }, limit.Token);
+        Assert.Equal(TestWindow.ButtonText, found?.Name);
+        Assert.Equal(TestWindow.ButtonText, visited[^1]);
     }
 }

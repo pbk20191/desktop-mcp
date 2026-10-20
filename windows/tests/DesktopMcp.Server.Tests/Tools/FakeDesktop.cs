@@ -4,6 +4,7 @@ using DesktopMcp.Desktop.Actions;
 using DesktopMcp.Desktop.Apps;
 using DesktopMcp.Desktop.Errors;
 using DesktopMcp.Desktop.Input;
+using DesktopMcp.Desktop.Waiting;
 using DesktopMcp.Desktop.WindowControl;
 using DesktopMcp.Server.Tools;
 
@@ -105,6 +106,28 @@ internal sealed class FakeDesktop
 
     private readonly List<string> _appCalls = [];
 
+    /// <summary>What each WaitFor poll returns, in order; the last entry repeats once the list is used up.</summary>
+    public IReadOnlyList<(bool Matched, string Detail)> WaitResults { get; set; } = [(true, "matched")];
+
+    /// <summary>Each WaitFor poll as <c>condition text window</c> (<c>-</c> for null).</summary>
+    public IReadOnlyList<string> WaitCalls
+    {
+        get
+        {
+            lock (_waitCalls) return [.. _waitCalls];
+        }
+    }
+
+    private readonly List<string> _waitCalls = [];
+
+    /// <summary>How many times WaitFor checked the desktop session.</summary>
+    public int SessionChecks => Volatile.Read(ref _sessionChecks);
+
+    private int _sessionChecks;
+
+    /// <summary>When set, the desktop session check throws a <see cref="DesktopException"/> with this text.</summary>
+    public string? SessionError { get; set; }
+
     public FakeInput Input { get; }
 
     public FakeTargets Targets { get; }
@@ -120,8 +143,10 @@ internal sealed class FakeDesktop
         Foreground = new FakeForeground(this),
         ReadBack = new FakeReadBack(this),
         Apps = new FakeApps(this),
+        WaitConditions = new FakeWaitConditions(this),
         Ledger = new InputLedger(),
         InputLock = new DesktopInputLock(),
+        Time = new AutoAdvanceTime(),
     };
 
     /// <summary>
@@ -288,6 +313,27 @@ internal sealed class FakeDesktop
         {
             lock (desktop._appCalls) desktop._appCalls.Add(call);
             return Task.FromResult(desktop.AppResult);
+        }
+    }
+
+    internal sealed class FakeWaitConditions(FakeDesktop desktop) : IWaitConditions
+    {
+        public void EnsureSession()
+        {
+            Interlocked.Increment(ref desktop._sessionChecks);
+            if (desktop.SessionError is { } error) throw new DesktopException(error);
+        }
+
+        public Task<(bool Matched, string Detail)> CheckAsync(WaitCondition condition, string? text, string? windowName, CancellationToken ct)
+        {
+            int poll;
+            lock (desktop._waitCalls)
+            {
+                poll = desktop._waitCalls.Count;
+                desktop._waitCalls.Add($"{WaitConditions.Name(condition)} {text ?? "-"} {windowName ?? "-"}");
+            }
+            var results = desktop.WaitResults;
+            return Task.FromResult(results[Math.Min(poll, results.Count - 1)]);
         }
     }
 

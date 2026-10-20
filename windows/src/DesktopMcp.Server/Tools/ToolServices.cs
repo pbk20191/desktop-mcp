@@ -11,6 +11,7 @@ using DesktopMcp.Desktop.Displays;
 using DesktopMcp.Desktop.Input;
 using DesktopMcp.Desktop.Snapshots;
 using DesktopMcp.Desktop.Toasts;
+using DesktopMcp.Desktop.Waiting;
 using DesktopMcp.Desktop.WindowControl;
 
 namespace DesktopMcp.Server.Tools;
@@ -42,6 +43,9 @@ public sealed record ToolServices
 
     /// <summary>The App tool's modes (switch, resize, launch, launch_executable).</summary>
     public required IAppService Apps { get; init; }
+
+    /// <summary>WaitFor's per-condition reads (P3 Decisions 6); they never replace the snapshot store (Decisions 24).</summary>
+    public required IWaitConditions WaitConditions { get; init; }
 
     /// <summary>
     /// Every key or button the input holds; the server releases it on shutdown (Decisions 19). It must be the ledger
@@ -75,6 +79,7 @@ public sealed record ToolServices
             Foreground = foreground,
             ReadBack = new UiaTypeReadBack(machine),
             Apps = new AppService(machine, foreground),
+            WaitConditions = new WaitConditionService(machine),
             Ledger = ledger,
             InputLock = new DesktopInputLock(),
             Time = TimeProvider.System,

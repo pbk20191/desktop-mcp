@@ -625,4 +625,54 @@ public class TreeWalkerTests
         source.Capped.Add(pane);
         Assert.True(Walk(source, root).Walk.ChildrenCapped);
     }
+
+    [Fact]
+    public void StopWhenEndsTheWalkAtTheFirstMatch()
+    {
+        var source = new FakeSource();
+        var (first, second, third) = (Button("One", 10), Button("Two", 70), Button("Three", 130));
+        var root = source.Add(Window(), first, second, third);
+        var visited = new List<string>();
+        var walk = new TreeWalker(source, new ElementBudget(500), Counter(), stopWhen: element =>
+        {
+            visited.Add(element.Name);
+            return visited.Count == 2;
+        }).Walk(root, App);
+
+        // Children are visited right to left: Three, then Two (the match); One is never read.
+        Assert.Equal(["Three", "Two"], visited);
+        Assert.Equal("Two", walk.Match?.Name);
+        Assert.DoesNotContain(first, source.ChildrenRead);
+        Assert.DoesNotContain(second, source.ChildrenRead);
+        Assert.Equal(source.Fetched + 1, source.Released); // every element read was released, the root included
+    }
+
+    [Fact]
+    public void WithoutAMatchTheWalkIsComplete()
+    {
+        var source = new FakeSource();
+        var walk = new TreeWalker(source, new ElementBudget(500), Counter(), stopWhen: _ => false)
+            .Walk(source.Add(Window(), Button("One", 10), Button("Two", 70)), App);
+        Assert.Null(walk.Match);
+        Assert.Equal(2, walk.Interactive.Count);
+    }
+
+    [Fact]
+    public void DescribeListsOneNodeWithoutWordsOrParentRules()
+    {
+        var edit = Text("Body") with { HasKeyboardFocus = true, LegacyValue = "hello", RuntimeId = "1.2" };
+        var element = TreeWalker.Describe(edit, App with { Handle = 9 });
+        Assert.NotNull(element);
+        Assert.Equal(("Body", "edit", "App"), (element.Name, element.ControlType, element.WindowName));
+        Assert.Equal(("hello", true), (element.Metadata.Value, element.Metadata.HasFocus));
+        Assert.Equal(9, element.Identity!.Window);
+
+        var list = Pane("Files", scrollable: true) with { IsEnabled = false };
+        var scrollable = TreeWalker.Describe(list, App);
+        Assert.Equal("Files", scrollable?.Name);
+        Assert.False(scrollable!.Metadata.IsEnabled);
+
+        Assert.Null(TreeWalker.Describe(Pane("Plain"), App));
+        Assert.Null(TreeWalker.Describe(Text(""), App)); // a nameless edit lists only its words, which Describe never reads
+    }
 }

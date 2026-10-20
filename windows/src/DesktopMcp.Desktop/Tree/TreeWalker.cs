@@ -18,6 +18,9 @@ internal sealed class WindowWalk(SemanticNode window)
     /// <summary>At least one element had more children than the source reads (Decisions 37).</summary>
     public bool ChildrenCapped { get; set; }
 
+    /// <summary>The element that ended the walk early (the walker's <c>stopWhen</c> accepted it), or null.</summary>
+    public UiElement? Match { get; set; }
+
     public List<UiElement> Interactive { get; } = [];
     public List<UiElement> Scrollable { get; } = [];
     public SemanticNode Window { get; } = window;
@@ -31,11 +34,15 @@ internal sealed class WindowWalk(SemanticNode window)
 /// element.
 /// </summary>
 /// <remarks>
+/// With <paramref name="stopWhen"/>, the walk ends at the first listed element (interactive, scrollable or word, in visit
+/// order) that it accepts, which becomes <see cref="WindowWalk.Match"/>; the elements not yet visited are not read (P3
+/// Decisions 6). The walk is then incomplete: its lists and semantic tree stop there.
 /// A walk can outlive its caller: the UIA worker abandons a job past its deadline while the thread keeps running. The walk
 /// therefore checks its cancellation token before every element, and <paramref name="nextId"/> must be safe to call from
 /// such a thread (an <see cref="Interlocked.Increment(ref int)"/> counter) when it is shared beyond one walk.
 /// </remarks>
-internal sealed class TreeWalker(ITreeSource source, ElementBudget budget, Func<int> nextId, int maxDepth = TreeWalker.MaxDepth)
+internal sealed class TreeWalker(
+    ITreeSource source, ElementBudget budget, Func<int> nextId, int maxDepth = TreeWalker.MaxDepth, Func<UiElement, bool>? stopWhen = null)
 {
     /// <summary>Elements deeper than this below the window are not visited.</summary>
     public const int MaxDepth = 256;
@@ -84,6 +91,11 @@ internal sealed class TreeWalker(ITreeSource source, ElementBudget budget, Func<
                     if (node.ControlType == TreeConfig.Window && !node.IsOffscreen && node.WindowIsModal == true) walk.Interactive.Clear();
                 }
                 Visit(node, frame, walk, context, path, stack, cancellationToken);
+                if (walk.Match is not null)
+                {
+                    ReleaseAll(stack);
+                    break;
+                }
             }
         }
         catch
@@ -107,7 +119,9 @@ internal sealed class TreeWalker(ITreeSource source, ElementBudget budget, Func<
 
             var typeName = TreeConfig.ControlTypeName(node.ControlType);
             var semanticAdded = AddScrollable(node, typeName, frame.Parent, walk, context);
+            if (walk.Match is not null) return;
             semanticAdded |= AddInteractive(node, typeName, frame.Parent, walk, context, cancellationToken);
+            if (walk.Match is not null) return;
 
             // upstream tree/service.py:823-839: named structural containers become tree nodes.
             var semanticParent = frame.Parent;
@@ -142,6 +156,32 @@ internal sealed class TreeWalker(ITreeSource source, ElementBudget budget, Func<
         }
     }
 
+    /// <summary>
+    /// The element a walk would list for <paramref name="node"/> alone (WaitFor's focused element, P3 Decisions 6): its
+    /// interactive element when it has one, else its scrollable element, else null. No words are read (no source call at
+    /// all), and the rules that need the walk's other elements (a modal dialog, structural parents) do not apply. The id is 0.
+    /// </summary>
+    internal static UiElement? Describe(UiaElementData node, WindowContext context)
+    {
+        ArgumentNullException.ThrowIfNull(node);
+        ArgumentNullException.ThrowIfNull(context);
+        var walker = new TreeWalker(NoSource.Instance, new ElementBudget(int.MaxValue), () => 0);
+        var walk = new WindowWalk(new SemanticNode(SemanticKind.Window, "Window", context.WindowName));
+        var typeName = TreeConfig.ControlTypeName(node.ControlType);
+        walker.AddInteractive(node, typeName, null, walk, context, CancellationToken.None, readWords: false);
+        if (walk.Interactive.Count > 0) return walk.Interactive[0];
+        walker.AddScrollable(node, typeName, null, walk, context);
+        return walk.Scrollable.Count > 0 ? walk.Scrollable[0] : null;
+    }
+
+    // Records the element that ends the walk, when the caller asked for one.
+    private bool Stop(WindowWalk walk, UiElement element)
+    {
+        if (stopWhen?.Invoke(element) != true) return false;
+        walk.Match = element;
+        return true;
+    }
+
     private static ElementIdentity? Identity(UiaElementData node, WindowContext context) => node.RuntimeId is { } runtimeId
         ? new ElementIdentity(context.Handle, runtimeId, node.ControlType, node.AutomationId, node.Name.Trim(), node.ClickablePoint)
         : null;
@@ -174,6 +214,7 @@ internal sealed class TreeWalker(ITreeSource source, ElementBudget budget, Func<
             Identity = Identity(node, context),
         };
         walk.Scrollable.Add(element);
+        Stop(walk, element);
         if (parent is null) return false;
         parent.Children.Add(Semantic(SemanticKind.Scrollable, element));
         return true;
@@ -181,7 +222,8 @@ internal sealed class TreeWalker(ITreeSource source, ElementBudget budget, Func<
 
     // upstream tree/service.py:536-792.
     private bool AddInteractive(
-        UiaElementData node, string typeName, SemanticNode? parent, WindowWalk walk, WindowContext context, CancellationToken cancellationToken)
+        UiaElementData node, string typeName, SemanticNode? parent, WindowWalk walk, WindowContext context, CancellationToken cancellationToken,
+        bool readWords = true)
     {
         var area = (long)node.Bounds.Width * node.Bounds.Height;
         var visible = area > 0
@@ -191,7 +233,7 @@ internal sealed class TreeWalker(ITreeSource source, ElementBudget budget, Func<
         var focusable = TreeConfig.FocusableControlTypes.Contains(typeName) || node.IsKeyboardFocusable;
         if (!IsInteractive(node, typeName, focusable, context.IsBrowser)) return false;
 
-        var (metadata, words) = Metadata(node, typeName, cancellationToken);
+        var (metadata, words) = Metadata(node, typeName, readWords, cancellationToken);
         var box = ClipToWindow(context, node.Bounds);
         var added = false;
         var name = node.Name.Trim();
@@ -208,6 +250,7 @@ internal sealed class TreeWalker(ITreeSource source, ElementBudget budget, Func<
                 parent.Children.Add(Semantic(SemanticKind.Interactive, element));
                 added = true;
             }
+            if (Stop(walk, element)) return added;
         }
         // upstream tree/service.py:320-348: one "Word" element per word box, each consuming budget.
         foreach (var word in words)
@@ -218,6 +261,7 @@ internal sealed class TreeWalker(ITreeSource source, ElementBudget budget, Func<
             var element = new UiElement(nextId(), word.Word, "Word", context.WindowName, wordBox, wordBox.Center, UiMetadata.Empty);
             walk.Interactive.Add(element);
             parent?.Children.Add(Semantic(SemanticKind.Interactive, element));
+            if (Stop(walk, element)) break;
         }
         return added;
     }
@@ -251,7 +295,8 @@ internal sealed class TreeWalker(ITreeSource source, ElementBudget budget, Func<
     }
 
     // upstream tree/service.py:617-750. Only the metadata the tree text renders is read (Decisions 6).
-    private (UiMetadata Metadata, IReadOnlyList<WordBox> Words) Metadata(UiaElementData node, string typeName, CancellationToken cancellationToken)
+    private (UiMetadata Metadata, IReadOnlyList<WordBox> Words) Metadata(
+        UiaElementData node, string typeName, bool readWords, CancellationToken cancellationToken)
     {
         var metadata = new UiMetadata
         {
@@ -266,7 +311,7 @@ internal sealed class TreeWalker(ITreeSource source, ElementBudget budget, Func<
         if (typeName is "EditControl" or "DocumentControl" or "ImageControl")
         {
             metadata = metadata with { IsPassword = node.IsPassword, Value = LegacyValue(node) };
-            if (!node.IsPassword) words = Words(node, cancellationToken);
+            if (!node.IsPassword && readWords) words = Words(node, cancellationToken);
         }
         if (typeName == "ComboBoxControl")
         {
@@ -351,6 +396,17 @@ internal sealed class TreeWalker(ITreeSource source, ElementBudget budget, Func<
         ElementId = element.Id,
         Metadata = element.Metadata,
     };
+
+    /// <summary>The source of <see cref="Describe"/>, which never reads children or words.</summary>
+    private sealed class NoSource : ITreeSource
+    {
+        public static readonly NoSource Instance = new();
+
+        public IReadOnlyList<UiaElementData> GetChildren(UiaElementData parent, out bool capped) => throw new InvalidOperationException("Describe reads no children.");
+        public IReadOnlyList<WordBox> GetWords(UiaElementData element, int maxWords) => throw new InvalidOperationException("Describe reads no words.");
+        public void Release(UiaElementData element) { }
+        public WindowResponse CheckWindow() => WindowResponse.Responding;
+    }
 
     private void ReleaseAll(Stack<Frame> stack)
     {

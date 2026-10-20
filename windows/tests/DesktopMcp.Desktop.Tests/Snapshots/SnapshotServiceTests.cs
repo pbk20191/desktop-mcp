@@ -44,6 +44,9 @@ public class SnapshotServiceTests
 
     private sealed class FakeTree : ITreeCapture
     {
+        public Task<UiElement?> FindAsync(long? active, IReadOnlyList<long> others, ScreenRect screen, Func<UiElement, bool> match, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
         public (long? Active, long[] Others)? Request { get; private set; }
 
         public Task<TreeSnapshot> CaptureAsync(long? active, IReadOnlyList<long> others, ScreenRect screen, CancellationToken cancellationToken)
@@ -120,6 +123,9 @@ public class SnapshotServiceTests
     /// <summary>Takes its time, like a walk over many slow windows, then finishes.</summary>
     private sealed class SlowTree(TimeSpan duration) : ITreeCapture
     {
+        public Task<UiElement?> FindAsync(long? active, IReadOnlyList<long> others, ScreenRect screen, Func<UiElement, bool> match, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
         public async Task<TreeSnapshot> CaptureAsync(long? active, IReadOnlyList<long> others, ScreenRect screen, CancellationToken cancellationToken)
         {
             await Task.Delay(duration, cancellationToken);
@@ -130,6 +136,9 @@ public class SnapshotServiceTests
     /// <summary>Waits for the test's signal.</summary>
     private sealed class GatedTree(Task gate) : ITreeCapture
     {
+        public Task<UiElement?> FindAsync(long? active, IReadOnlyList<long> others, ScreenRect screen, Func<UiElement, bool> match, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
         public async Task<TreeSnapshot> CaptureAsync(long? active, IReadOnlyList<long> others, ScreenRect screen, CancellationToken cancellationToken)
         {
             await gate;

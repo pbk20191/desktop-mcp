@@ -34,6 +34,7 @@ public static class ToolRegistry
         "MultiSelect" => new MultiSelectTool(protocolTool, services),
         "MultiEdit" => new MultiEditTool(protocolTool, services),
         "App" => new AppTool(protocolTool, services),
+        "WaitFor" => new WaitForTool(protocolTool, services),
         _ => new PendingTool(protocolTool),
     };
 }
