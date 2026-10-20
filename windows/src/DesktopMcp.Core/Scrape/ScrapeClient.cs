@@ -9,7 +9,7 @@ using DesktopMcp.Core.Net;
 namespace DesktopMcp.Core.Scrape;
 
 /// <summary>upstream Desktop.scrape over safe_get and validate_url (Decisions 16).</summary>
-public sealed partial class ScrapeClient
+public sealed partial class ScrapeClient : IWebScraper
 {
     internal const int MaxRequests = 5;
     internal const int MaxDownloadBytes = 8 * 1024 * 1024;

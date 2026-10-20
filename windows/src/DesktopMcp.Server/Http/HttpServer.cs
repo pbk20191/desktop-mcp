@@ -57,6 +57,8 @@ public static class HttpServer
     {
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(services);
+        // Decisions 5: stateless Streamable HTTP cannot send the client a request, so Scrape never asks it to sample.
+        services = services with { SamplingEnabled = SessionTtl(plan) != TimeSpan.Zero };
         announce ??= Console.Error;
         IReadOnlyList<ListenTarget> targets;
         X509Certificate2? loaded;

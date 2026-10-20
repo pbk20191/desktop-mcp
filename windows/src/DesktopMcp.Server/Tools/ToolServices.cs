@@ -32,7 +32,7 @@ public sealed record ToolServices
     public required ProcessService Processes { get; init; }
     public required IClipboard Clipboard { get; init; }
     public required IToastSender Toasts { get; init; }
-    public required ScrapeClient Scrape { get; init; }
+    public required IWebScraper Scrape { get; init; }
     public required IDisplayProvider Displays { get; init; }
     public required IDesktopSnapshots Snapshots { get; init; }
 
@@ -72,6 +72,12 @@ public sealed record ToolServices
     /// machine's capture flash, so a test server never starts the shared one and its shutdown leaves it alone.
     /// </summary>
     public DispatcherHost Dispatcher { get; init; } = DispatcherHost.Shared;
+
+    /// <summary>
+    /// Whether Scrape may ask the client to sample (P5 plan, Decisions 5). The HTTP host turns it off for stateless
+    /// Streamable HTTP, whose requests cannot carry a server-to-client request.
+    /// </summary>
+    public bool SamplingEnabled { get; init; } = true;
 
     /// <summary>
     /// The services with control disabled (default settings) and no process allowlist: what the tests and the contract

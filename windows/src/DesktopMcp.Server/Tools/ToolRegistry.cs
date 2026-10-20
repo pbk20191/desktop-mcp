@@ -22,7 +22,7 @@ public static class ToolRegistry
         "Process" => new ProcessTool(protocolTool, services.Processes),
         "Clipboard" => new ClipboardTool(protocolTool, services.Clipboard),
         "Notification" => new NotificationTool(protocolTool, services.Toasts),
-        "Scrape" => new ScrapeTool(protocolTool, services.Scrape),
+        "Scrape" => new ScrapeTool(protocolTool, services.Scrape, services.SamplingEnabled),
         "DisplayInventory" => new DisplayInventoryTool(protocolTool, services.Displays),
         "Snapshot" => new SnapshotTool(protocolTool, services.Snapshots),
         "Screenshot" => new ScreenshotTool(protocolTool, services.Snapshots),
