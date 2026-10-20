@@ -505,11 +505,16 @@ public actor StdoutWriter {
     /// nothing more is attempted.
     @discardableResult
     public func write(_ text: String) -> Bool {
+        write(Data(text.utf8))
+    }
+
+    /// Writes all of `data`, with the same rules as the text overload.
+    @discardableResult
+    public func write(_ data: Data) -> Bool {
         if closed { return false }
-        let bytes = Array(text.utf8)
         var offset = 0
-        while offset < bytes.count {
-            let written = bytes.withUnsafeBytes { buffer in
+        while offset < data.count {
+            let written = data.withUnsafeBytes { buffer in
                 Darwin.write(STDOUT_FILENO, buffer.baseAddress! + offset, buffer.count - offset)
             }
             if written < 0 {
