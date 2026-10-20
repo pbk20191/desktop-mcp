@@ -38,4 +38,20 @@ public class FuzzyWRatioTests
 
     [Fact]
     public void ExtractOneOfNoChoicesIsNull() => Assert.Null(Fuzzy.ExtractOne("x", [], 0));
+
+    // Python's (?ui)\W works on code points: an astral letter or number is kept, any other astral character (an emoji)
+    // becomes one space, not two.
+    [Theory]
+    [InlineData("a\U0001D49Cb", "a\U0001D49Cb")] // MATHEMATICAL SCRIPT CAPITAL A (Lu), no lower case
+    [InlineData("x\U0001D7D9", "x\U0001D7D9")]    // MATHEMATICAL DOUBLE-STRUCK DIGIT ONE (Nd)
+    [InlineData("a\U0001F600b", "a b")]
+    [InlineData("\U0001F600\U0001F600", "")]
+    public void ProcessWorksOnRunes(string value, string processed) => Assert.Equal(processed, Fuzzy.Process(value));
+
+    [Fact]
+    public void AnEmojiIsOneSeparator() => Assert.Equal("x  y", Fuzzy.Process("x\U0001F600\U0001F600y"));
+
+    // A lone surrogate is one code point of category Cs, so one space.
+    [Fact]
+    public void ALoneSurrogateIsOneSeparator() => Assert.Equal("a b", Fuzzy.Process("a\uD800b"));
 }

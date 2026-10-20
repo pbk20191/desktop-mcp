@@ -5,9 +5,10 @@ namespace DesktopMcp.Core.FileSystem;
 
 /// <summary>
 /// Python's Path.resolve() on Windows (Decisions 9): the longest existing prefix becomes the OS final path (links
-/// resolved, 8.3 names expanded, on-disk case) and the missing rest is appended unchanged.
+/// resolved, 8.3 names expanded, on-disk case) and the missing rest is appended unchanged. Public for App
+/// launch_executable (P3 Decisions 34), which resolves its executable and working directory the same way.
 /// </summary>
-internal static class PathResolver
+public static class PathResolver
 {
     public static string Resolve(string path)
     {
@@ -30,7 +31,7 @@ internal static class PathResolver
     /// Like <see cref="Resolve"/>, but a symbolic link or junction in the final component is not followed (Decisions
     /// 11: delete and move act on a link itself). The parent is resolved, and the link keeps its own name.
     /// </summary>
-    public static string ResolveKeepingLink(string path)
+    internal static string ResolveKeepingLink(string path)
     {
         var full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path.Length == 0 ? "." : path));
         if (!IsLink(full)) return Resolve(full);
@@ -38,7 +39,7 @@ internal static class PathResolver
     }
 
     /// <summary>Whether <paramref name="path"/> itself is a symbolic link or junction (see DirectoryTree.IsLink).</summary>
-    public static bool IsLink(string path)
+    internal static bool IsLink(string path)
     {
         // FileInfo reads the attributes of the entry itself, directory or not. A missing path reports -1 (every bit).
         var info = new FileInfo(path);

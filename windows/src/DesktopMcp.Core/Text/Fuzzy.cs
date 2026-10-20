@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace DesktopMcp.Core.Text;
 
 /// <summary>
@@ -48,14 +50,20 @@ public static class Fuzzy
 
     /// <summary>
     /// fuzzywuzzy utils.full_process without <c>force_ascii</c>: every character that is not a word character (Python's
-    /// <c>\W</c>: letters, numbers and <c>_</c>) becomes a space, then lower case, then trimmed.
+    /// <c>\W</c>: letters, numbers and <c>_</c>) becomes a space, then lower case, then trimmed. Python works on code
+    /// points, so the string is read by <see cref="Rune"/>: a supplementary-plane letter or number is kept whole, and any
+    /// other rune (an emoji, or a lone surrogate, which <see cref="string.EnumerateRunes"/> reads as U+FFFD) becomes one space.
     /// </summary>
     internal static string Process(string value)
     {
-        var chars = value.ToCharArray();
-        for (var i = 0; i < chars.Length; i++)
-            if (!(char.IsLetter(chars[i]) || char.IsNumber(chars[i]) || chars[i] == '_')) chars[i] = ' ';
-        return new string(chars).ToLowerInvariant().Trim();
+        var builder = new StringBuilder(value.Length);
+        Span<char> units = stackalloc char[2];
+        foreach (var rune in value.EnumerateRunes())
+        {
+            if (Rune.IsLetter(rune) || Rune.IsNumber(rune) || rune.Value == '_') builder.Append(units[..rune.EncodeToUtf16(units)]);
+            else builder.Append(' ');
+        }
+        return builder.ToString().ToLowerInvariant().Trim();
     }
 
     // fuzz.py WRatio on processed, non-empty strings.

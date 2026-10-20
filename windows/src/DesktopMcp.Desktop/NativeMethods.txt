@@ -125,3 +125,27 @@ GetCurrentThreadId
 GetWindowRect
 GetWindowText
 GetWindowTextLength
+// App launch (P3 Decisions 31 and 34): the AppsFolder enumeration on an STA thread, packaged-app activation, ShellExecuteEx
+// of shell:AppsFolder for the other entries, and CreateProcess with the std handles on NUL as the only inherited handle.
+SHCreateItemFromParsingName
+IShellItem
+IEnumShellItems
+BHID_EnumItems
+SIGDN
+CoTaskMemFree
+IApplicationActivationManager
+ApplicationActivationManager
+ACTIVATEOPTIONS
+ShellExecuteEx
+SHELLEXECUTEINFOW
+SEE_MASK_NOCLOSEPROCESS
+SEE_MASK_FLAG_NO_UI
+SEE_MASK_NOASYNC
+GetProcessId
+CreateProcess
+STARTUPINFOEXW
+InitializeProcThreadAttributeList
+UpdateProcThreadAttribute
+DeleteProcThreadAttributeList
+PROCESS_CREATION_FLAGS
+PROC_THREAD_ATTRIBUTE_HANDLE_LIST

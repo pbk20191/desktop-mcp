@@ -28,7 +28,7 @@ internal sealed class AppRig
             if (ResizeError is { } error) throw new DesktopException(error);
             ResizedTo = target;
             return Task.CompletedTask;
-        });
+        }, new LaunchRig.FakeCatalog([]), new LaunchRig.FakeLauncher(null), new Tree.FakeWindowSystem(), (_, _) => Task.CompletedTask, TimeProvider.System);
     }
 
     public AppService Service { get; }
@@ -168,8 +168,4 @@ public class AppServiceTests
         var rig = new AppRig(windows: [("Notepad", 10, false)]) { ResizeError = "Notepad is not responding" };
         Assert.Equal(new AppResult("Notepad is not responding", false), await rig.Service.ResizeAsync("notepad", null, (1, 1), default));
     }
-
-    [Fact]
-    public async Task LaunchIsNotAvailableYet() =>
-        await Assert.ThrowsAsync<NotSupportedException>(() => new AppRig(windows: []).Service.LaunchAsync("notepad", default));
 }

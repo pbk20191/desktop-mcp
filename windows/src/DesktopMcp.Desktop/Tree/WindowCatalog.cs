@@ -17,7 +17,8 @@ internal interface IWindowScanner
 
     /// <summary>
     /// The focused window as <see cref="ScanAsync"/> reports it (blocked windows skipped, the same retries), without
-    /// probing the other windows (P3 Decisions 24: App resize without a name, WaitFor's active_window).
+    /// probing the other windows (P3 Decisions 24: App resize without a name, WaitFor's active_window). The window comes
+    /// back with Depth 0, as the active window of a scan does.
     /// </summary>
     Task<WindowInfo?> ScanActiveAsync(CancellationToken cancellationToken);
 }
