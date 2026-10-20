@@ -338,4 +338,97 @@ final class SocketServerTests: XCTestCase {
         await client.disconnect()
         try fd.close()
     }
+
+    // MARK: - Accept failures
+
+    /// A listening socket bound at `path`, for `SocketServer.listen(fileDescriptors:)`.
+    func listener(at path: String) throws -> Int32 {
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { throw Errno(rawValue: errno) }
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        withUnsafeMutableBytes(of: &address.sun_path) { raw in
+            raw.copyBytes(from: path.utf8.prefix(raw.count - 1))
+        }
+        let bound = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        guard bound == 0, Darwin.listen(fd, 16) == 0 else {
+            let error = Errno(rawValue: errno)
+            close(fd)
+            throw error
+        }
+        return fd
+    }
+
+    /// An `accept` that fails with `code` for its first `failures` calls (every call when nil),
+    /// then accepts; `calls` counts every call.
+    func failingAccept(_ code: Int32, failures: Int?, calls: Locked<Int>) -> Acceptor.Accept {
+        { listener in
+            let call = calls.withLock { $0 += 1; return $0 }
+            if failures.map({ call <= $0 }) ?? true {
+                errno = code
+                return -1
+            }
+            return Darwin.accept(listener, nil, nil)
+        }
+    }
+
+    func testRunningOutOfDescriptorsPausesAcceptingInsteadOfEndingIt() async throws {
+        // Under launchd, ending the accept loop would leave launchd queueing connections that
+        // nobody accepts; running out of fds must clear by itself instead.
+        let path = socketPath()
+        defer { unlink(path) }
+        let calls = Locked(0)
+        let server = try await SocketServer.listen(
+            fileDescriptors: [FileDescriptor(rawValue: try listener(at: path))],
+            registry: await DesktopMCP.makeRegistry(), accept: failingAccept(EMFILE, failures: 3, calls: calls))
+        let run = Task { await server.run() }
+        let (client, fd) = try await client(path)
+        try await client.ping()
+        XCTAssertGreaterThanOrEqual(calls.current, 4, "three failures, then the accept that served")
+        let count = await server.connections
+        XCTAssertEqual(count, 1)
+        await client.disconnect()
+        try fd.close()
+        await server.shutdown()
+        await run.value
+    }
+
+    func testShutdownDuringABackOffClosesTheListener() async throws {
+        let path = socketPath()
+        defer { unlink(path) }
+        let calls = Locked(0)
+        let listening = try listener(at: path)
+        let server = try await SocketServer.listen(
+            fileDescriptors: [FileDescriptor(rawValue: listening)],
+            registry: await DesktopMCP.makeRegistry(), accept: failingAccept(ENOBUFS, failures: nil, calls: calls))
+        let run = Task { await server.run() }
+        let fd = try connectRaw(path)
+        defer { close(fd) }
+        try await waitUntil(within: 5) { calls.current >= 1 }
+        await server.shutdown()
+        await run.value
+        // The source's cancel handler closes the listener, and a suspended source runs it only
+        // once resumed.
+        try await waitUntil(within: 2) { fcntl(listening, F_GETFD) == -1 }
+    }
+
+    func testAnAcceptErrorThatCannotClearEndsRun() async throws {
+        let path = socketPath()
+        defer { unlink(path) }
+        let calls = Locked(0)
+        let server = try await SocketServer.listen(
+            fileDescriptors: [FileDescriptor(rawValue: try listener(at: path))],
+            registry: await DesktopMCP.makeRegistry(), accept: failingAccept(EBADF, failures: nil, calls: calls))
+        let run = Task { await server.run() }
+        let fd = try connectRaw(path)
+        defer { close(fd) }
+        let ended = Locked(false)
+        Task { await run.value; ended.current = true }
+        try await waitUntil(within: 5) { ended.current }
+        XCTAssertEqual(calls.current, 1)
+    }
 }

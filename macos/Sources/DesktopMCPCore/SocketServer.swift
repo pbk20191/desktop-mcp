@@ -30,7 +30,7 @@ public actor SocketServer {
     private let activated: Bool
     /// One log line per connection accepted and per connection ended.
     private let debug: Bool
-    private let sources: [any DispatchSourceRead]
+    private let acceptors: [Acceptor]
     private let accepted: AsyncStream<Int32>
     private let continuation: AsyncStream<Int32>.Continuation
     /// Each connection's server, by its fd. A connection removes itself before closing its fd,
@@ -75,14 +75,22 @@ public actor SocketServer {
     /// if that fails. Nothing is unlinked.
     public static func listen(fileDescriptors: [FileDescriptor], registry: ToolRegistry,
                               debug: Bool = false) async throws -> SocketServer {
+        try await listen(fileDescriptors: fileDescriptors, registry: registry, debug: debug,
+                         accept: Acceptor.systemAccept)
+    }
+
+    /// `listen(fileDescriptors:registry:debug:)` with `accept` standing in for the system call,
+    /// so a test can make it fail.
+    static func listen(fileDescriptors: [FileDescriptor], registry: ToolRegistry, debug: Bool = false,
+                       accept: @escaping Acceptor.Accept) async throws -> SocketServer {
         let listeners = fileDescriptors.map(\.rawValue)
         try adopt(listeners)
         return SocketServer(listeners: listeners, name: boundPath(listeners[0]) ?? "socket", ownedPath: nil,
-                            activated: false, registry: registry, debug: debug)
+                            activated: false, registry: registry, debug: debug, accept: accept)
     }
 
     private init(listeners: [Int32], name: String, ownedPath: String?, activated: Bool,
-                 registry: ToolRegistry, debug: Bool) {
+                 registry: ToolRegistry, debug: Bool, accept: @escaping Acceptor.Accept = Acceptor.systemAccept) {
         let (accepted, continuation) = AsyncStream.makeStream(of: Int32.self)
         self.accepted = accepted
         self.continuation = continuation
@@ -91,7 +99,7 @@ public actor SocketServer {
         self.ownedPath = ownedPath
         self.activated = activated
         self.debug = debug
-        sources = listeners.map { Self.makeSource(listener: $0, yieldingTo: continuation) }
+        acceptors = listeners.map { Acceptor(listener: $0, accept: accept, yieldingTo: continuation) }
     }
 
     /// Serves every connection accepted until `shutdown()`, then returns once their servers
@@ -117,7 +125,7 @@ public actor SocketServer {
             return
         }
         isShutDown = true
-        for source in sources { source.cancel() }
+        for acceptor in acceptors { acceptor.cancel() }
         continuation.finish()
         for task in live.values { task.cancel() }
         await waitForConnections()
@@ -176,52 +184,6 @@ public actor SocketServer {
         if debug { log("Connection ended: \(label)") }
     }
 
-    // MARK: - Accepting
-
-    private static let acceptQueue = DispatchQueue(label: "desktop-mcp.socket-accept")
-
-    /// A read source on `listener` that accepts into `continuation`. Built here, outside the
-    /// actor's isolation: Dispatch runs the handlers on its own queue, and a closure formed in an
-    /// actor method would be inferred actor-isolated and trap there under Swift 6's checks.
-    private static func makeSource(listener: Int32,
-                                   yieldingTo continuation: AsyncStream<Int32>.Continuation) -> any DispatchSourceRead {
-        let source = DispatchSource.makeReadSource(fileDescriptor: listener, queue: acceptQueue)
-        source.setEventHandler(handler: acceptHandler(listener: listener, yieldingTo: continuation))
-        source.setCancelHandler(handler: closeHandler(listener))
-        source.activate()
-        return source
-    }
-
-    /// Accepts until the listener has nothing pending. A connection accepted after shutdown has
-    /// finished the stream is closed. Any failure other than "nothing pending" ends the stream,
-    /// and with it `run()`.
-    private static func acceptHandler(listener: Int32,
-                                      yieldingTo continuation: AsyncStream<Int32>.Continuation) -> @Sendable () -> Void {
-        {
-            while true {
-                let fd = accept(listener, nil, nil)
-                if fd >= 0 {
-                    if case .terminated = continuation.yield(fd) { close(fd) }
-                    continue
-                }
-                switch errno {
-                case EINTR, ECONNABORTED:
-                    continue
-                case EAGAIN:
-                    return
-                default:
-                    log("Could not accept on the socket: \(lastError())")
-                    continuation.finish()
-                    return
-                }
-            }
-        }
-    }
-
-    private static func closeHandler(_ listener: Int32) -> @Sendable () -> Void {
-        { close(listener) }
-    }
-
     // MARK: - launchd
 
     /// The listeners launchd holds for `name`, or nil when this process was not started by
@@ -249,7 +211,8 @@ public actor SocketServer {
     }
 
     /// Makes listeners handed over (by launchd or a test) non-blocking. On failure every one of
-    /// them is closed, so that launchd stops queueing connections nobody would accept.
+    /// them is closed, so that they do not leak. launchd keeps its own copy and goes on queueing
+    /// connections, which nobody then accepts.
     private static func adopt(_ listeners: [Int32]) throws {
         guard !listeners.isEmpty else { throw CannotListen(reason: "no listening sockets") }
         do {
@@ -350,5 +313,134 @@ public actor SocketServer {
 
     private static func lastError() -> String {
         String(cString: strerror(errno))
+    }
+}
+
+/// One listener's read source, which accepts until nothing is pending and yields each new fd.
+///
+/// When `accept` runs out of a resource (fds, buffers, memory) the source is suspended for a
+/// moment and then tried again, rather than given up: a level-triggered source would spin, and
+/// ending the accept loop would leave launchd's copy of the listener queueing connections that
+/// nobody accepts. Only an error that cannot clear (the listener is not one) ends the stream,
+/// and with it `SocketServer.run()`.
+///
+/// The handlers are built here, outside the actor's isolation: Dispatch runs them on its own
+/// queue, and a closure formed in an actor method would be inferred actor-isolated and trap
+/// there under Swift 6's checks.
+final class Acceptor: Sendable {
+    /// `accept(2)` on the listener: the new fd, or -1 with `errno` set.
+    typealias Accept = @Sendable (Int32) -> Int32
+
+    static let systemAccept: Accept = { Darwin.accept($0, nil, nil) }
+
+    /// How long a listener rests after running out of a resource.
+    static let backOff: DispatchTimeInterval = .milliseconds(250)
+
+    private static let queue = DispatchQueue(label: "desktop-mcp.socket-accept")
+
+    private struct State {
+        var suspended = false
+        var cancelled = false
+        /// Whether running out has been logged since the last connection accepted.
+        var logged = false
+    }
+
+    private let source: any DispatchSourceRead
+    private let listener: Int32
+    private let accept: Accept
+    private let continuation: AsyncStream<Int32>.Continuation
+    /// Guards the suspend count as well: suspend and resume are only called under it.
+    private let state = Locked(State())
+
+    init(listener: Int32, accept: @escaping Accept, yieldingTo continuation: AsyncStream<Int32>.Continuation) {
+        self.listener = listener
+        self.accept = accept
+        self.continuation = continuation
+        let source = DispatchSource.makeReadSource(fileDescriptor: listener, queue: Self.queue)
+        self.source = source
+        source.setEventHandler(handler: Self.eventHandler(self))
+        source.setCancelHandler(handler: Self.closeHandler(listener))
+        source.activate()
+    }
+
+    /// Stops accepting and closes the listener. Idempotent. A source resting after running out
+    /// is resumed, since its cancel handler (which closes the listener) only runs once it is.
+    func cancel() {
+        state.withLock { state in
+            guard !state.cancelled else { return }
+            state.cancelled = true
+            source.cancel()
+            if state.suspended {
+                state.suspended = false
+                source.resume()
+            }
+        }
+    }
+
+    /// Accepts until the listener has nothing pending. A connection accepted after shutdown has
+    /// finished the stream is closed.
+    private func acceptPending() {
+        while true {
+            let fd = accept(listener)
+            if fd >= 0 {
+                state.withLock { $0.logged = false }
+                if case .terminated = continuation.yield(fd) { close(fd) }
+                continue
+            }
+            let code = errno
+            switch code {
+            case EINTR, ECONNABORTED:
+                continue
+            case EAGAIN:
+                return
+            case EBADF, EINVAL, ENOTSOCK, EOPNOTSUPP:
+                log("Could not accept on the socket: \(String(cString: strerror(code)))")
+                // The source would only fire again; `run()` shuts the others down.
+                cancel()
+                continuation.finish()
+                return
+            default:
+                rest(after: code)
+                return
+            }
+        }
+    }
+
+    /// Suspends the source for `backOff`, logging the first time since a connection was
+    /// accepted.
+    private func rest(after code: Int32) {
+        let first: Bool? = state.withLock { state in
+            guard !state.cancelled, !state.suspended else { return nil }
+            state.suspended = true
+            source.suspend()
+            defer { state.logged = true }
+            return !state.logged
+        }
+        guard let first else { return }
+        if first {
+            log("Could not accept on the socket: \(String(cString: strerror(code))); retrying")
+        }
+        Self.queue.asyncAfter(deadline: .now() + Self.backOff, execute: Self.resumeHandler(self))
+    }
+
+    /// Ends a rest, unless the source was cancelled meanwhile (`cancel()` resumed it then).
+    private func resume() {
+        state.withLock { state in
+            guard state.suspended, !state.cancelled else { return }
+            state.suspended = false
+            source.resume()
+        }
+    }
+
+    private static func eventHandler(_ acceptor: Acceptor) -> @Sendable () -> Void {
+        { acceptor.acceptPending() }
+    }
+
+    private static func resumeHandler(_ acceptor: Acceptor) -> @Sendable () -> Void {
+        { acceptor.resume() }
+    }
+
+    private static func closeHandler(_ listener: Int32) -> @Sendable () -> Void {
+        { close(listener) }
     }
 }
