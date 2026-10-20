@@ -15,6 +15,12 @@ public struct StdioBridge: Sendable {
             self.authKey = authKey
         }
 
+        /// The argument that follows `flag`, if there is one.
+        static func value(after flag: String, in arguments: [String]) -> String? {
+            guard let index = arguments.firstIndex(of: flag), index + 1 < arguments.count else { return nil }
+            return arguments[index + 1]
+        }
+
         /// Where the installed Launch Agent listens (from its plist) and how to authenticate
         /// (from config.toml, which the agent reads as well).
         public static func installed(plist: Data, config: DesktopMCPConfig) throws -> Target {
@@ -22,17 +28,13 @@ public struct StdioBridge: Sendable {
                   let arguments = dictionary["ProgramArguments"] as? [String] else {
                 throw ConfigErrorText("Could not read the Launch Agent plist.")
             }
-            func value(after flag: String) -> String? {
-                guard let index = arguments.firstIndex(of: flag), index + 1 < arguments.count else { return nil }
-                return arguments[index + 1]
-            }
-            let transport = value(after: "--transport") ?? "streamable-http"
+            let transport = value(after: "--transport", in: arguments) ?? "streamable-http"
             // An agent installed with `--transport sse` maps it to streamable-http itself.
             guard transport == "streamable-http" || transport == "sse" else {
                 throw ConfigErrorText("connect supports streamable-http only; the installed agent runs \(transport).")
             }
-            let host = value(after: "--host") ?? "127.0.0.1"
-            let port = value(after: "--port").flatMap(Int.init) ?? 8000
+            let host = value(after: "--host", in: arguments) ?? "127.0.0.1"
+            let port = value(after: "--port", in: arguments).flatMap(Int.init) ?? 8000
             let scheme = config.server.sslCertfile != nil ? "https" : "http"
             let authority = host.contains(":") ? "[\(host)]" : host
             guard let url = URL(string: "\(scheme)://\(authority):\(port)/mcp") else {

@@ -248,4 +248,19 @@ final class ConfigTests: XCTestCase {
         XCTAssertFalse(SecurityUtil.constantTimeEquals("abc", "abd"))
         XCTAssertFalse(SecurityUtil.constantTimeEquals("abc", "abcd"))
     }
+
+    func testSocketRequiresStreamableHTTPAndAShortPath() throws {
+        var cli = ServePlan.CommandLineValues()
+        cli.transport = "streamable-http"
+        cli.socketPath = "/tmp/a.sock"
+        XCTAssertEqual(try ServePlan.resolve(cli, environment: [:], config: DesktopMCPConfig()).socketPath, "/tmp/a.sock")
+        cli.transport = "stdio"
+        XCTAssertThrowsError(try ServePlan.resolve(cli, environment: [:], config: DesktopMCPConfig())) {
+            XCTAssertEqual("\($0)", "--socket requires --transport streamable-http.")
+        }
+        cli.transport = "streamable-http"
+        cli.socketPath = "/" + String(repeating: "a", count: 110)
+        XCTAssertThrowsError(try ServePlan.resolve(cli, environment: [:], config: DesktopMCPConfig()))
+        XCTAssertNil(try ServePlan.resolve(ServePlan.CommandLineValues(), environment: [:], config: DesktopMCPConfig()).socketPath)
+    }
 }

@@ -75,4 +75,35 @@ final class LaunchAgentTests: XCTestCase {
     func testFreePortGivesUpAfterMaxTries() {
         XCTAssertThrowsError(try LaunchAgent.findFreePort(host: "256.1.1.1", preferred: 8000, maxTries: 3))
     }
+
+    func testSocketPathIsUnderTheConfigDirectory() {
+        XCTAssertEqual(LaunchAgent.socketURL(home: URL(fileURLWithPath: "/Users/x")).path, "/Users/x/.desktop-mcp/mcp.sock")
+    }
+
+    func testSocketPathLongerThan103BytesIsRejected() {
+        XCTAssertNoThrow(try LaunchAgent.validateSocketPath(String(repeating: "a", count: 103)))
+        XCTAssertThrowsError(try LaunchAgent.validateSocketPath(String(repeating: "a", count: 104))) { error in
+            XCTAssertTrue("\(error)".hasPrefix("Socket path too long (max 103 bytes): "))
+        }
+    }
+
+    func testProgramArgumentsAppendTheSocket() {
+        let args = LaunchAgent.programArguments(executable: "/x", transport: "streamable-http", host: "127.0.0.1", port: 8000, socketPath: "/s.sock")
+        XCTAssertEqual(args.suffix(2), ["--socket", "/s.sock"])
+        XCTAssertFalse(LaunchAgent.programArguments(executable: "/x", transport: "streamable-http", host: "h", port: 1, socketPath: nil).contains("--socket"))
+    }
+
+    func testPlistCarriesTheLaunchdSocket() throws {
+        let data = try LaunchAgent.plist(programArguments: ["/x"], logDirectory: URL(fileURLWithPath: "/tmp"), socketPath: "/s.sock")
+        let plist = try XCTUnwrap(PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any])
+        let sockets = try XCTUnwrap(plist["Sockets"] as? [String: [String: Any]])
+        let listener = try XCTUnwrap(sockets[LaunchAgent.socketName])
+        XCTAssertEqual(listener["SockPathName"] as? String, "/s.sock")
+        XCTAssertEqual(listener["SockFamily"] as? String, "Unix")
+        XCTAssertEqual(listener["SockType"] as? String, "stream")
+        XCTAssertEqual(listener["SockPathMode"] as? Int, 384)
+        XCTAssertEqual(plist["RunAtLoad"] as? Bool, true)
+        let without = try LaunchAgent.plist(programArguments: ["/x"], logDirectory: URL(fileURLWithPath: "/tmp"), socketPath: nil)
+        XCTAssertNil((try PropertyListSerialization.propertyList(from: without, format: nil) as? [String: Any])?["Sockets"])
+    }
 }

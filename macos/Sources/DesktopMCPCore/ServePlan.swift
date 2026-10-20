@@ -15,6 +15,8 @@ public struct ServePlan: Equatable, Sendable {
     /// Seconds an HTTP session may stay idle before it is dropped; 0 keeps sessions until the
     /// client ends them. Command line only.
     public var sessionTimeout: TimeInterval = 1800
+    /// Unix socket to serve `/mcp` on as well (streamable-http only); command line only.
+    public var socketPath: String?
     /// Non-fatal notes for the log.
     public var warnings: [String] = []
 
@@ -44,6 +46,7 @@ public struct ServePlan: Equatable, Sendable {
         public var oauthClientSecret: String?
         public var excludeTools: String?
         public var sessionTimeout: Int?
+        public var socketPath: String?
 
         public init() {}
     }
@@ -69,6 +72,13 @@ public struct ServePlan: Equatable, Sendable {
         }
         guard DesktopMCPConfig.transports.contains(transport) else {
             throw ConfigErrorText("Invalid transport: \(transport)")
+        }
+        let socketPath = cli.socketPath.flatMap(\.nilIfEmpty)
+        if let socketPath {
+            guard transport == "streamable-http" else {
+                throw ConfigErrorText("--socket requires --transport streamable-http.")
+            }
+            try LaunchAgent.validateSocketPath(socketPath)
         }
         let host = cli.host ?? config.server.host
         let port = cli.port ?? config.server.port
@@ -113,6 +123,7 @@ public struct ServePlan: Equatable, Sendable {
             tls: certificate.flatMap { c in privateKey.map { (c, $0) } },
             oauth: oauth, excludedTools: excluded)
         plan.warnings = warnings
+        plan.socketPath = socketPath
         if let sessionTimeout = cli.sessionTimeout { plan.sessionTimeout = TimeInterval(sessionTimeout) }
         if transport == "stdio" && (authKey != nil || !allowlist.isEmpty) {
             plan.warnings.append("auth_key / ip_allowlist have no effect on stdio transport")
@@ -129,6 +140,6 @@ public struct ServePlan: Equatable, Sendable {
             && lhs.tls?.certificate == rhs.tls?.certificate && lhs.tls?.privateKey == rhs.tls?.privateKey
             && lhs.oauth?.clientID == rhs.oauth?.clientID && lhs.oauth?.clientSecret == rhs.oauth?.clientSecret
             && lhs.excludedTools == rhs.excludedTools && lhs.sessionTimeout == rhs.sessionTimeout
-            && lhs.warnings == rhs.warnings
+            && lhs.socketPath == rhs.socketPath && lhs.warnings == rhs.warnings
     }
 }

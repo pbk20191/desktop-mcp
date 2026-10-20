@@ -22,6 +22,25 @@ public enum LaunchAgent {
         plistURL(home: DesktopMCPConfig.directory.deletingLastPathComponent())
     }
 
+    /// Name of the launchd socket entry; the server asks launchd for it by this name.
+    public static let socketName = "Listener"
+
+    public static func socketURL(home: URL) -> URL {
+        home.appendingPathComponent(".desktop-mcp/mcp.sock")
+    }
+
+    /// `~/.desktop-mcp/mcp.sock`, honouring $HOME as the config dir does.
+    public static var socketURL: URL {
+        DesktopMCPConfig.directory.appendingPathComponent("mcp.sock")
+    }
+
+    /// `sockaddr_un.sun_path` holds 104 bytes including the terminating NUL.
+    public static func validateSocketPath(_ path: String) throws {
+        guard path.utf8.count <= 103 else {
+            throw ConfigErrorText("Socket path too long (max 103 bytes): \(path)")
+        }
+    }
+
     public static func logURLs(directory: URL) -> (out: URL, error: URL) {
         (directory.appendingPathComponent("server.log"), directory.appendingPathComponent("server.error.log"))
     }
@@ -36,14 +55,28 @@ public enum LaunchAgent {
 
     /// Everything explicit, so the agent does not depend on config.toml for where it listens.
     public static func programArguments(executable: String, transport: String, host: String, port: Int) -> [String] {
-        [executable, "serve", "--transport", transport, "--host", host, "--port", String(port)]
+        programArguments(executable: executable, transport: transport, host: host, port: port, socketPath: nil)
+    }
+
+    /// As above, plus `--socket <path>` when the agent also serves a Unix socket.
+    public static func programArguments(executable: String, transport: String, host: String, port: Int,
+                                        socketPath: String?) -> [String] {
+        var arguments = [executable, "serve", "--transport", transport, "--host", host, "--port", String(port)]
+        if let socketPath { arguments += ["--socket", socketPath] }
+        return arguments
     }
 
     /// XML plist with the same keys as the original (Label, ProgramArguments, RunAtLoad,
     /// KeepAlive, StandardOutPath, StandardErrorPath).
     public static func plist(programArguments: [String], logDirectory: URL) throws -> Data {
+        try plist(programArguments: programArguments, logDirectory: logDirectory, socketPath: nil)
+    }
+
+    /// As above; with a `socketPath` the plist also has a `Sockets` entry, so launchd owns the
+    /// Unix socket (mode 0600) and starts the agent on the first connection.
+    public static func plist(programArguments: [String], logDirectory: URL, socketPath: String?) throws -> Data {
         let logs = logURLs(directory: logDirectory)
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "Label": label,
             "ProgramArguments": programArguments,
             "RunAtLoad": true,
@@ -51,6 +84,14 @@ public enum LaunchAgent {
             "StandardOutPath": logs.out.path,
             "StandardErrorPath": logs.error.path,
         ]
+        if let socketPath {
+            payload["Sockets"] = [socketName: [
+                "SockFamily": "Unix",
+                "SockType": "stream",
+                "SockPathName": socketPath,
+                "SockPathMode": 0o600,
+            ] as [String: Any]]
+        }
         return try PropertyListSerialization.data(fromPropertyList: payload, format: .xml, options: 0)
     }
 
