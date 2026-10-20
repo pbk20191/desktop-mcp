@@ -2,7 +2,7 @@
 
 A Swift port of [CursorTouch/MacOS-MCP](https://github.com/CursorTouch/MacOS-MCP). The tool names, parameters, output format, CLI, config file format and HTTP behaviour follow the original; the command is `desktop-mcp`, the config directory is `~/.desktop-mcp` and environment variables are prefixed `DESKTOP_MCP_` instead of `MACOS_MCP_`. Unlike the original, it needs **no Python, uv, or Homebrew packages**: it's one binary (plus one Swift runtime shim on macOS 13–15, see below).
 
-- Uses only the frameworks that ship with macOS (Accessibility, CoreGraphics, ScreenCaptureKit, AppKit, HIToolbox, Network).
+- Uses only the frameworks that ship with macOS (Accessibility, CoreGraphics, ScreenCaptureKit, AppKit, HIToolbox, Network, CoreServices for Spotlight, Vision for OCR).
 - The external dependencies (`swift-argument-parser`, the official MCP Swift SDK `mcp-swift-sdk` and `swift-log`, which it needs, SwiftNIO + NIOTransportServices + NIOSSL + NIOHTTP2) are used at build time and compiled into the binary.
 - Built on Swift Concurrency (async/await). Each request runs as its own task, so a long `Wait` or `Shell` call doesn't delay other requests. In-flight work is cancelled by `notifications/cancelled` or by the HTTP client disconnecting (inside a session only the call whose request connection closed), which also kills shell child processes.
 - Transports: **stdio**, a **Unix domain socket** carrying the stdio binding (what the Launch Agent offers `connect`) and **Streamable HTTP** (stateless with JSON responses by default, with opt-in sessions, see Endpoints). The protocol layer is the MCP Swift SDK (`StdioTransport`, `StatelessHTTPServerTransport` and `StatefulHTTPServerTransport`). The legacy HTTP+SSE transport is gone. HTTP runs on Network.framework through NIOTransportServices, with optional TLS from PEM files. TLS connections negotiate **HTTP/2** or HTTP/1.1 through ALPN; plain connections speak HTTP/1.1.
@@ -31,8 +31,8 @@ With Claude Code: `claude mcp add desktop-mcp /absolute/path/macos/dist/desktop-
 
 Permissions are granted to **the app that launches the binary** (Claude Desktop, Terminal, VS Code, and so on). To have desktop-mcp hold them itself, install it as a Launch Agent (see [Running as a Launch Agent](#running-as-a-launch-agent)): launchd makes it the responsible process, so System Settings lists "desktop-mcp" by name and the grant works for every client that connects over HTTP.
 
-- System Settings › Privacy & Security › **Accessibility**: required
-- System Settings › Privacy & Security › **Screen Recording**: needed only for `Snapshot(use_vision=true)`
+- System Settings › Privacy & Security › **Accessibility**: required; `Window` and `Menu` work entirely through it
+- System Settings › Privacy & Security › **Screen Recording**: needed only for `Snapshot(use_vision=true)` and the opt-in `OCR`
 
 Run `desktop-mcp permissions` to check the current state and trigger the system prompts. The grant is tied to the code signature: an ad-hoc signed binary is identified by its hash, so every rebuild needs a new grant. Sign with a stable identity to keep it (`CODESIGN_IDENTITY="My Codesign Cert" macos/scripts/build-release.sh`, using a code signing certificate made in Keychain Access, or a Developer ID).
 
@@ -59,6 +59,8 @@ Run `desktop-mcp permissions` to check the current state and trigger the system 
 | `Window` | Lists app windows with ids and frames; focuses, moves, resizes, minimizes, restores or closes one by id |
 | `Menu` | Lists an app's menu bar as a tree with shortcuts; selects a menu item by its path (`["File", "Export…"]`) |
 | `OCR` | Opt-in (`--include-tools OCR`): reads the text in a screen region (default the focused window) with on-device recognition, one line per text line with its centre in `Click` coordinates |
+
+`Open` hands its target to macOS as given, with any URL scheme, so opening a `.command` file, an app or a `shortcuts://` URL runs code: excluding `Shell` or `RunShortcut` is not a sandbox.
 
 ## Commands and options
 
@@ -107,7 +109,7 @@ desktop-mcp install --transport streamable-http --port 9000   # or choose; --for
 desktop-mcp uninstall
 ```
 
-As in the original, `install` writes `~/Library/LaunchAgents/com.desktop-mcp.server.plist` (`RunAtLoad`, `KeepAlive`) pointing at this binary with `serve --transport … --host … --port … --socket …`, loads it with `launchctl bootstrap`, and prints the client config to connect with. Logs go to `~/.desktop-mcp/server.log` and `server.error.log`. Other `serve` settings (auth key from `auth`, TLS, allowlist, excluded tools) still come from `config.toml`; stdio cannot be installed as a service. Because launchd is the parent, the agent asks for Accessibility on its first start under its own name (see [Permissions](#permissions)). Install from the binary's permanent location, for example `~/.local/bin/desktop-mcp install`, since the plist records that path.
+As in the original, `install` writes `~/Library/LaunchAgents/com.desktop-mcp.server.plist` (`RunAtLoad`, `KeepAlive`) pointing at this binary with `serve --transport … --host … --port … --socket …`, loads it with `launchctl bootstrap`, and prints the client config to connect with. Logs go to `~/.desktop-mcp/server.log` and `server.error.log`. Other `serve` settings (auth key from `auth`, TLS, allowlist, excluded and included tools) still come from `config.toml`; stdio cannot be installed as a service. Because launchd is the parent, the agent asks for Accessibility on its first start under its own name (see [Permissions](#permissions)). Install from the binary's permanent location, for example `~/.local/bin/desktop-mcp install`, since the plist records that path.
 
 `install` also has the agent serve the stdio binding on a Unix domain socket, `~/.desktop-mcp/mcp.sock`: the plist's `Sockets` key makes launchd create it (mode `0600`, so only the same user can connect) and the server takes it over with `launch_activate_socket`. Every connection is its own server, with the stdio rule that stdin EOF ends it, so a client that disconnects takes nothing else down. `desktop-mcp connect` prefers the socket the plist names and pipes stdin and stdout to it unchanged; if the connection is refused there (no socket file, or nothing listening on it) it logs that to stderr and uses HTTP instead. A plist written before the socket existed names none, so `connect` goes straight to HTTP; an existing install needs `desktop-mcp install --force` once to gain the socket. While the agent is installed, launchd holds the socket and takes connections even when no agent is answering (between restarts, or a hung agent), so `connect` then waits, as the client of a hung stdio server would, instead of falling back. `--socket <path>` uses that socket with no fallback. A connection open when the agent restarts ends with it: `connect` exits with status 1 and Claude Desktop starts it again. Anything that can speak to a Unix socket works without the bridge, for example `socat STDIO UNIX-CONNECT:$HOME/.desktop-mcp/mcp.sock`.
 
@@ -149,6 +151,7 @@ oauth_client_secret = "…"
 
 [tools]
 exclude = ["Shell"]
+include = ["OCR"]
 ```
 
 ## Telemetry

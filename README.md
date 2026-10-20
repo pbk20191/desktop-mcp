@@ -9,7 +9,7 @@ Only the command name, the config directory (`~/.desktop-mcp`) and the environme
 
 | Port | Port of | Status | Language |
 |---|---|---|---|
-| [`macos/`](macos/) + root `Package.swift` | [CursorTouch/MacOS-MCP](https://github.com/CursorTouch/MacOS-MCP) | working, 12 tools | Swift 6 (SwiftPM) |
+| [`macos/`](macos/) + root `Package.swift` | [CursorTouch/MacOS-MCP](https://github.com/CursorTouch/MacOS-MCP) | working, 18 tools (plus opt-in `OCR`) | Swift 6 (SwiftPM) |
 | `windows/` | [CursorTouch/Windows-MCP](https://github.com/CursorTouch/Windows-MCP) | planned | to be decided (C# NativeAOT or Rust) |
 | `linux/` | none upstream | idea | to be decided (Rust) |
 
