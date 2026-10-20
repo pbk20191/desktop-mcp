@@ -65,7 +65,7 @@ internal sealed class WinFormsTarget : IDisposable
         if (!_thread.Join(WaitLimit)) throw new TimeoutException("The WinForms test window's thread did not end within 10 s.");
     }
 
-    private static ScreenPoint CenterOf(Control control, Rectangle bounds)
+    private static ScreenPoint CenterOf(System.Windows.Forms.Control control, Rectangle bounds)
     {
         var point = control.PointToScreen(new Point(bounds.X + bounds.Width / 2, bounds.Y + bounds.Height / 2));
         return new ScreenPoint(point.X, point.Y);
