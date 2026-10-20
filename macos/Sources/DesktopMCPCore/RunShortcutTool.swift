@@ -25,7 +25,8 @@ enum RunShortcutTool {
         let run = try await runner(argv, timeout)
         if run.timedOut { throw ToolError("shortcuts list timed out.") }
         guard run.status == 0 else {
-            throw ToolError("shortcuts list failed: \(run.stderr.trimmingCharacters(in: .whitespacesAndNewlines))")
+            throw ToolError("shortcuts list failed: \(run.stderr.trimmingCharacters(in: .whitespacesAndNewlines))",
+                            telemetry: "shortcuts list failed")
         }
         return run.stdout.split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -35,13 +36,19 @@ enum RunShortcutTool {
     /// Creates `path` exclusively with mode 0600 from the start, so no other user can read it.
     private static func writePrivateFile(_ text: String, to path: String) throws {
         let fd = open(path, O_CREAT | O_EXCL | O_WRONLY, 0o600)
-        guard fd >= 0 else { throw ToolError("Could not create a temporary file: \(String(cString: strerror(errno)))") }
+        guard fd >= 0 else {
+            throw ToolError("Could not create a temporary file: \(String(cString: strerror(errno)))",
+                            telemetry: "Could not create a temporary file")
+        }
         defer { close(fd) }
         var remaining = Data(text.utf8)[...]
         while !remaining.isEmpty {
             let n = remaining.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
             if n < 0 && errno == EINTR { continue }
-            guard n > 0 else { throw ToolError("Could not write a temporary file: \(String(cString: strerror(errno)))") }
+            guard n > 0 else {
+                throw ToolError("Could not write a temporary file: \(String(cString: strerror(errno)))",
+                                telemetry: "Could not write a temporary file")
+            }
             remaining = remaining.dropFirst(n)
         }
     }
@@ -53,7 +60,7 @@ enum RunShortcutTool {
             var message = "No shortcut named '\(name)'."
             let close = closeMatches(name, in: names)
             if !close.isEmpty { message += " Close matches: " + close.joined(separator: ", ") }
-            throw ToolError(message)
+            throw ToolError(message, telemetry: "No such shortcut")
         }
 
         let directory = FileManager.default.temporaryDirectory

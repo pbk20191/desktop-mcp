@@ -57,6 +57,20 @@ final class OpenToolTests: XCTestCase {
         }
     }
 
+    /// Telemetry sees fixed labels, never the path or app name.
+    func testErrorsCarryFixedTelemetryLabels() async {
+        XCTAssertThrowsError(try OpenTool.resolve("/nope/x")) {
+            XCTAssertEqual(($0 as? ToolError)?.telemetry, "No such file")
+        }
+        do {
+            _ = try await OpenTool.tool(workspace: RecordingWorkspace())
+                .handler(ToolArguments(["target": "https://example.com", "app": "NoSuchApp"]))
+            XCTFail("expected an error")
+        } catch {
+            XCTAssertEqual((error as? ToolError)?.telemetry, "Application not found")
+        }
+    }
+
     func testURLIsNotCheckedOnDisk() throws {
         let target = try OpenTool.resolve("https://example.com/a?b=1")
         guard case .url(let url) = target else { return XCTFail("not a URL") }

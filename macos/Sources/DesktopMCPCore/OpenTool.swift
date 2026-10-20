@@ -58,7 +58,7 @@ enum OpenTool {
             path = url.path
         }
         path = (path as NSString).expandingTildeInPath
-        guard FileManager.default.fileExists(atPath: path) else { throw ToolError("No such file: \(path)") }
+        guard FileManager.default.fileExists(atPath: path) else { throw ToolError("No such file: \(path)", telemetry: "No such file") }
         return .file(URL(fileURLWithPath: path))
     }
 
@@ -89,7 +89,7 @@ enum OpenTool {
                 var appURL: URL?
                 if let appName {
                     guard let found = await workspace.applicationURL(for: appName) else {
-                        throw ToolError("Application '\(appName)' not found.")
+                        throw ToolError("Application '\(appName)' not found.", telemetry: "Application not found")
                     }
                     appURL = found
                 }
