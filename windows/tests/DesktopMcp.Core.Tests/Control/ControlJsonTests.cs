@@ -36,4 +36,9 @@ public class ControlJsonTests
     [Fact]
     public void ExceptionMessageNamesCodeAndState() =>
         Assert.Equal("USER_CONTROL: user", new ControlRejectedException(ControlCodes.UserControl, User).Message);
+
+    [Fact]
+    public void PolicyStringsFollowEnsureAsciiFalse() =>
+        Assert.Contains("\"policy\": \"café \\\"x\\\"\"",
+            ControlJson.Rejection(new ControlRejectedException(ControlCodes.UserControl, User with { Policy = "café \"x\"" })));
 }

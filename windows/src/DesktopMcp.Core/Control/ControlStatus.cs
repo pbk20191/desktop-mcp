@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
@@ -68,12 +69,12 @@ public static class ControlJson
         var s = rejection.Status;
         var text = new StringBuilder("{\"code\": ").Append(Quote(rejection.Code))
             .Append(", \"status\": {\"state\": ").Append(Quote(ControlStates.Wire(s.State)))
-            .Append(", \"generation\": ").Append(s.Generation)
+            .Append(", \"generation\": ").Append(s.Generation.ToString(CultureInfo.InvariantCulture))
             .Append(", \"wait_seconds\": ").Append(PyText.FloatRepr(s.WaitSeconds))
             .Append(", \"enabled\": ").Append(s.Enabled ? "true" : "false")
             .Append(", \"policy\": ").Append(Quote(s.Policy))
             .Append(", \"idle_timeout_seconds\": ").Append(PyText.FloatRepr(s.IdleTimeoutSeconds));
-        if (rejection.ExecutedSteps is { } steps) text.Append(", \"executed_steps\": ").Append(steps);
+        if (rejection.ExecutedSteps is { } steps) text.Append(", \"executed_steps\": ").Append(steps.ToString(CultureInfo.InvariantCulture));
         return text.Append("}}").ToString();
     }
 
