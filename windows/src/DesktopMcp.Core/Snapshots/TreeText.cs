@@ -87,7 +87,7 @@ public static class TreeText
     // upstream tree/views.py:126-138, plus the label.
     private static string Format(SemanticNode node, IReadOnlyDictionary<int, int> labels)
     {
-        var controlType = node.ControlType.ToLowerInvariant();
+        var controlType = UnicodeCleanup.EscapeControl(node.ControlType).ToLowerInvariant();
         var name = UnicodeCleanup.EscapeControl(node.Name);
         switch (node.Kind)
         {

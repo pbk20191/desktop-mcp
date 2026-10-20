@@ -253,7 +253,7 @@ displays, desktops, focused window, opened windows, UI tree). Cleanups:
 - no stray four-space indentation; every section header starts at column 0;
 - tables use a deterministic implementation of tabulate's `simple` format;
 - each interactive and scrollable line starts with its label: `[12] (x,y) button "OK"  [action: click]`;
-- names and values from other apps are escaped per field (CR, LF and TAB as `\r`, `\n` and `\t`, U+2028 and U+2029 as `\u2028` and `\u2029`, other control characters removed) so a name cannot start a fake tree line (P2 plan Decision 35);
+- names, control types and values from other apps are escaped per field (CR, LF and TAB as `\r`, `\n` and `\t`, U+2028 and U+2029 as `\u2028` and `\u2029`, other control characters removed) so a name cannot start a fake tree line (P2 plan Decision 35);
 - without an image, the result is one plain `TextContent`, not a JSON-encoded array of strings.
 
 ### Input (`Desktop/Input`)

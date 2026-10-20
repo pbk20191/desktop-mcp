@@ -235,6 +235,25 @@ public class SnapshotTextTests
     }
 
     [Fact]
+    public void AControlTypeOrAStructuralNameCannotInjectATreeLine()
+    {
+        var button = new UiElement(1, "x", "button", "App", new ScreenRect(0, 0, 20, 20), new ScreenPoint(10, 10), UiMetadata.Empty);
+        var root = new SemanticNode(SemanticKind.Desktop, "Desktop", "Desktop");
+        var window = new SemanticNode(SemanticKind.Window, "Window", "App");
+        window.Children.Add(new SemanticNode(SemanticKind.Interactive, "Role\nX", "ok")
+        {
+            Box = button.Box, Center = button.Center, ElementId = 1,
+        });
+        window.Children.Add(new SemanticNode(SemanticKind.Structural, "Pane\r\nY", "p\nq"));
+        root.Children.Add(window);
+        var text = TreeText.Render(new TreeSnapshot([button], [], root, false, 500));
+
+        Assert.Equal(4, text.Split('\n').Length);
+        Assert.Contains("(10,10) role\\nx \"ok\"", text);
+        Assert.Contains("pane\\r\\ny \"p\\nq\"", text);
+    }
+
+    [Fact]
     public void TablesKeepTheirRowCountWhenANameHasANewline()
     {
         static DesktopSnapshot Snapshot(string name) => new()
