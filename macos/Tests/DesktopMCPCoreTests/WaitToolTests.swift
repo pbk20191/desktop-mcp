@@ -18,9 +18,21 @@ final class FakeElementFinder: ElementFinder {
     }
 }
 
+/// Walks a fake tree as the AX finder walks the app's windows, honouring the deadline.
+struct TreeElementFinder: ElementFinder {
+    let roots: [FakeNode]
+
+    func find(app: String?, title: String?, role: String?, deadline: ContinuousClock.Instant) async -> FoundElement? {
+        var budget = AXElementFinder.maxElements
+        let result = AXElementFinder.walk(roots, title: title, role: role, budget: &budget,
+                                          deadline: deadline, cancelled: Locked(false))
+        return result.exact ?? result.partial
+    }
+}
+
 /// A fake accessibility tree for the element walk. Every attribute read is counted, and
 /// `onVisit` runs on each one (to cancel or stall mid-walk).
-struct FakeNode: ElementNode {
+struct FakeNode: ElementNode, Sendable {
     var attributesValue: ElementAttributes
     var valueText = ""
     var kids: [FakeNode] = []
@@ -216,6 +228,14 @@ final class WaitToolTests: XCTestCase {
             FoundElement(role: "AXButton", title: "Save As…", center: CGPoint(x: 10, y: 10)),
         ])
         let text = try await run(elements: finder, ["until": "element", "title": "save", "role": "AXButton"])
+        XCTAssertEqual(text, "AXButton \"Save\" at [120,340]")
+    }
+
+    func testElementWithTimeoutZeroStillLooksOnce() async throws {
+        let visits = Locked(0)
+        let save = FakeNode(role: "AXButton", title: "Save", frame: CGRect(x: 100, y: 300, width: 40, height: 80), visits: visits)
+        let finder = TreeElementFinder(roots: [FakeNode(role: "AXWindow", kids: [FakeNode(visits: visits), save], visits: visits)])
+        let text = try await run(elements: finder, ["until": "element", "title": "Save", "timeout": 0])
         XCTAssertEqual(text, "AXButton \"Save\" at [120,340]")
     }
 

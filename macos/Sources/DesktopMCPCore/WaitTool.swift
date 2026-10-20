@@ -211,6 +211,8 @@ struct AXElementFinder: ElementFinder {
 /// element appears.
 enum WaitTool {
     static let conditions = ["app_running", "app_quit", "window", "window_gone", "element"]
+    /// The least time one `element` check may walk, whatever is left of the timeout.
+    static let minimumWalk = Duration.milliseconds(500)
 
     /// Calls `check` at once, then after 0.1 s, doubling to at most 1 s between checks, until it
     /// returns a value or `timeout` seconds have passed (the last sleep ends at the deadline, and
@@ -317,7 +319,9 @@ enum WaitTool {
                     guard title != nil || role != nil else { throw ToolError("title or role required for element.") }
                     try Permissions.requireAccessibility()
                     check = { deadline in
-                        guard let e = await elements.find(app: app, title: title, role: role, deadline: deadline) else { return nil }
+                        // Every check gets a real walk, even at or past the deadline (timeout 0).
+                        let walkDeadline = max(deadline, ContinuousClock.now + minimumWalk)
+                        guard let e = await elements.find(app: app, title: title, role: role, deadline: walkDeadline) else { return nil }
                         return "\(e.role) \"\(WindowTool.flat(e.title))\" at [\(Int(e.center.x.rounded())),\(Int(e.center.y.rounded()))]"
                     }
                 }
