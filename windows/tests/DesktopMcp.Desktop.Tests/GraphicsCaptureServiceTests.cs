@@ -183,6 +183,50 @@ public class GraphicsCaptureServiceTests
     }
 
     [Fact]
+    public async Task AnAbandonedCaptureCleansUpOffTheCallersThread()
+    {
+        // The abandoned job's cleanup (here a token callback standing in for FrameArrived -= and the session's Dispose)
+        // blocks; the caller must still get its error at the deadline, not after the cleanup.
+        using var release = new ManualResetEventSlim();
+        var service = new GraphicsCaptureService(() => { }, Allowed, (_, _, token) =>
+        {
+            token.Register(() => release.Wait(TimeSpan.FromSeconds(10)));
+            return new TaskCompletionSource<(ScreenRect, CapturedImage)?>().Task;
+        })
+        { MonitorTimeout = TimeSpan.FromMilliseconds(50) };
+        try
+        {
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            await Assert.ThrowsAsync<DesktopException>(() =>
+                service.CaptureAsync(new ScreenRect(0, 0, 1, 1), [new ScreenRect(0, 0, 1, 1)], default));
+            Assert.True(clock.Elapsed < TimeSpan.FromSeconds(2), $"the capture failed after {clock.Elapsed}");
+        }
+        finally
+        {
+            release.Set();
+        }
+    }
+
+    [Fact]
+    public void AFrameIsCroppedToItsMonitorAndTheArea()
+    {
+        var monitor = new ScreenRect(0, 0, 100, 50);
+        // A frame larger than its monitor (a mode change between the reads) must not spill onto the neighbour at x = 100.
+        Assert.Equal(new ScreenRect(90, 0, 100, 50), GraphicsCaptureService.Crop(monitor, 200, 80, new ScreenRect(90, 0, 300, 100)));
+        // A smaller frame is read as far as it goes.
+        Assert.Equal(new ScreenRect(10, 10, 60, 40), GraphicsCaptureService.Crop(monitor, 60, 40, new ScreenRect(10, 10, 300, 300)));
+        Assert.Null(GraphicsCaptureService.Crop(monitor, 200, 80, new ScreenRect(100, 0, 300, 100)));
+    }
+
+    [Fact]
+    public void FramesAreMadeOpaque()
+    {
+        byte[] pixels = [1, 2, 3, 0, 4, 5, 6, 128];
+        Assert.Same(pixels, GraphicsCaptureService.MakeOpaque(pixels));
+        Assert.Equal([1, 2, 3, 255, 4, 5, 6, 255], pixels);
+    }
+
+    [Fact]
     public async Task ACallThatBlocksSynchronouslyIsBoundedToo()
     {
         using var release = new ManualResetEventSlim();
@@ -230,8 +274,9 @@ public class GraphicsCaptureServiceTests
     }
 
     [Fact]
-    public async Task TheBorderlessAccessRequestIsMadeOnceAndBoundedWhenItHangs()
+    public async Task TheBorderlessAccessRequestIsMadeOncePerProcessAndBoundedWhenItHangs()
     {
+        GraphicsCaptureService.ResetAccessRequest();
         var requests = 0;
         var service = new GraphicsCaptureService(() => { }, () =>
         {
@@ -244,6 +289,12 @@ public class GraphicsCaptureServiceTests
         await service.CaptureAsync(area, [area], default).WaitAsync(TimeSpan.FromSeconds(5));
         Assert.StartsWith("TimeoutException", GraphicsCaptureService.BorderlessAccess);
         await service.CaptureAsync(area, [area], default).WaitAsync(TimeSpan.FromSeconds(5));
+        // Once per process: another instance does not ask again.
+        await new GraphicsCaptureService(() => { }, () =>
+        {
+            requests++;
+            return Allowed();
+        }, CropFake).CaptureAsync(area, [area], default).WaitAsync(TimeSpan.FromSeconds(5));
         Assert.Equal(1, requests);
     }
 }

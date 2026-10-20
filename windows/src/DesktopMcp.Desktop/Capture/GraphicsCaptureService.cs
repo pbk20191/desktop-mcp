@@ -31,7 +31,9 @@ public sealed class GraphicsCaptureService : IScreenCapture
     private readonly Action _ensureRuntime;
     private readonly Func<Task<string>> _requestAccess;
     private readonly MonitorCapture _captureMonitor;
-    private int _accessRequested;
+    // Once per process, like BorderlessAccess. A request that times out keeps running on the thread pool and is not
+    // repeated; a capture made while it is still pending (or after it was refused) may show the border.
+    private static int _accessRequested;
 
     public GraphicsCaptureService() : this(AppRuntime.EnsureInitialized)
     {
@@ -61,6 +63,13 @@ public sealed class GraphicsCaptureService : IScreenCapture
 
     /// <summary>Diagnostics: whether the last capture could turn the capture border off (null before the first).</summary>
     internal static bool? LastBorderSuppressed { get; private set; }
+
+    /// <summary>Tests: forget that the borderless access was requested, so the next capture requests it again.</summary>
+    internal static void ResetAccessRequest()
+    {
+        Volatile.Write(ref _accessRequested, 0);
+        BorderlessAccess = null;
+    }
 
     /// <summary>Diagnostics: the result of GraphicsCaptureAccess.RequestAccessAsync(Borderless), or why it failed.</summary>
     internal static string? BorderlessAccess { get; private set; }
@@ -97,27 +106,30 @@ public sealed class GraphicsCaptureService : IScreenCapture
     {
         var abandon = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var work = Task.Run(() => _captureMonitor(monitor, area, abandon.Token), CancellationToken.None);
+        // CancelAsync, not Cancel: Cancel runs the token's callbacks on this thread, and an abandoned job's continuation
+        // (FrameArrived -=, session and pool Dispose: unbounded WinRT calls) would then run here before the error is thrown.
+        Task? cancelling = null;
         try
         {
             return await work.WaitAsync(MonitorTimeout, cancellationToken).ConfigureAwait(false);
         }
         catch (TimeoutException)
         {
-            abandon.Cancel();
+            cancelling = abandon.CancelAsync();
             throw new DesktopException(
                 $"{Operation} failed: Windows.Graphics.Capture did not deliver the monitor {monitor.ToXyxy()} within {MonitorTimeout.TotalSeconds:0.###} s.");
         }
         catch (OperationCanceledException) when (!work.IsCompleted)
         {
-            abandon.Cancel();
+            cancelling = abandon.CancelAsync();
             throw;
         }
         finally
         {
-            // An abandoned capture still holds the token; release it once the work ends (it disposes its own frame and
-            // session), and observe its failure so it does not surface as an unobserved task exception.
-            if (work.IsCompleted) abandon.Dispose();
-            else _ = work.ContinueWith(static (task, state) =>
+            // An abandoned capture still holds the token; release it once the work and the cancellation end (the work disposes
+            // its own frame and session), and observe the failure so it does not surface as an unobserved task exception.
+            if (work.IsCompleted && cancelling is null) abandon.Dispose();
+            else _ = Task.WhenAll(work, cancelling ?? Task.CompletedTask).ContinueWith(static (task, state) =>
             {
                 _ = task.Exception;
                 ((CancellationTokenSource)state!).Dispose();
@@ -162,18 +174,34 @@ public sealed class GraphicsCaptureService : IScreenCapture
             using (device.Lock())
             {
                 using var bitmap = CanvasBitmap.CreateFromDirect3D11Surface(device, frame.Surface);
-                // The frame may differ from the monitor rectangle (a mode change between the two reads): crop what exists.
                 var size = bitmap.SizeInPixels;
-                var shown = new ScreenRect(monitor.Left, monitor.Top, monitor.Left + (int)size.Width, monitor.Top + (int)size.Height);
-                if (ScreenRect.Clip(shown, area) is not { } crop) return null;
-                var bytes = bitmap.GetPixelBytes(crop.Left - monitor.Left, crop.Top - monitor.Top, crop.Width, crop.Height);
-                return (crop, new CapturedImage(crop.Width, crop.Height, Pack(bytes, crop.Width, crop.Height)));
+                if (Crop(monitor, (int)size.Width, (int)size.Height, area) is not { } crop) return null;
+                var bytes = Pack(bitmap.GetPixelBytes(crop.Left - monitor.Left, crop.Top - monitor.Top, crop.Width, crop.Height), crop.Width, crop.Height);
+                return (crop, new CapturedImage(crop.Width, crop.Height, MakeOpaque(bytes)));
             }
         }
         finally
         {
             pool.FrameArrived -= onFrameArrived;
         }
+    }
+
+    /// <summary>
+    /// The part of a frame (its top-left at the monitor's) to read: inside the frame, the monitor and the area, or null.
+    /// The frame may differ from the monitor rectangle after a mode change between the two reads: a smaller frame is read
+    /// as far as it goes, and a larger one is cut at the monitor so it cannot overwrite a neighbouring monitor.
+    /// </summary>
+    internal static ScreenRect? Crop(ScreenRect monitor, int frameWidth, int frameHeight, ScreenRect area)
+    {
+        var shown = new ScreenRect(monitor.Left, monitor.Top, monitor.Left + frameWidth, monitor.Top + frameHeight);
+        return ScreenRect.Clip(shown, monitor) is { } onMonitor ? ScreenRect.Clip(onMonitor, area) : null;
+    }
+
+    /// <summary>Sets every alpha byte to 255: screenshots are opaque RGB upstream, so a translucent frame must not make a translucent PNG.</summary>
+    internal static byte[] MakeOpaque(byte[] bgra)
+    {
+        for (var i = 3; i < bgra.Length; i += 4) bgra[i] = 0xFF;
+        return bgra;
     }
 
     /// <summary>Returns rows packed at Width * 4 bytes, repacking when the source rows are padded.</summary>
