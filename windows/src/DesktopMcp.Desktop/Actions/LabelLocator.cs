@@ -78,14 +78,23 @@ public readonly record struct LocateResult
 /// centre). By RuntimeId under the stored point and up to <see cref="MaxAncestors"/> ancestors, else by a bounded walk of
 /// the label's top-level window; then enabled, on a monitor (scrolled into view when it can be), and the action point.
 /// </summary>
-internal sealed class LabelLocator(IElementSource source, IReadOnlyList<ScreenRect> monitors, ScreenRect windowBounds)
+internal sealed class LabelLocator(IElementSource source, IReadOnlyList<ScreenRect> monitors, ScreenRect windowBounds, TimeProvider? time = null)
 {
     public const int MaxAncestors = 32;
     public const int MaxVisited = 2000;
 
+    /// <summary>
+    /// How long the walk may run, from the start of <see cref="Locate"/>, before it stops as stale: inside the 5 s locate
+    /// deadline, so a slow but responsive window ends in a result instead of the worker's timeout.
+    /// </summary>
+    public static readonly TimeSpan WalkBudget = TimeSpan.FromSeconds(4);
+
+    private readonly TimeProvider _time = time ?? TimeProvider.System;
+
     public LocateResult Locate(ElementIdentity identity, ScreenPoint storedCenter, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
+        var started = _time.GetUtcNow();
         if (!source.WindowExists(identity.Window)) return LocateResult.Failed(LocateFailure.Stale);
         if (!Responds(identity.Window)) return LocateResult.Failed(LocateFailure.NotResponding);
 
@@ -93,7 +102,7 @@ internal sealed class LabelLocator(IElementSource source, IReadOnlyList<ScreenRe
         var element = FindUnderPoint(identity, storedCenter, ct);
         if (element is null)
         {
-            var (found, failure) = Walk(identity, ct);
+            var (found, failure) = Walk(identity, started, ct);
             if (failure is { } f) return LocateResult.Failed(f);
             element = found!;
         }
@@ -119,8 +128,9 @@ internal sealed class LabelLocator(IElementSource source, IReadOnlyList<ScreenRe
         return null;
     }
 
-    // Decisions 2: explicit stack, depth 256, at most MaxVisited elements, the WM_NULL check before each children read.
-    private (UiaElementData? Element, LocateFailure? Failure) Walk(ElementIdentity identity, CancellationToken ct)
+    // Decisions 2: explicit stack, depth 256, at most MaxVisited elements, the WM_NULL check before each children read; a
+    // walk past WalkBudget is stale (the window answers but is too slow to search in full).
+    private (UiaElementData? Element, LocateFailure? Failure) Walk(ElementIdentity identity, DateTimeOffset started, CancellationToken ct)
     {
         var root = source.ReadWindow(identity.Window);
         var canMatch = identity.AutomationId.Length > 0 || identity.Name.Length > 0;
@@ -133,6 +143,7 @@ internal sealed class LabelLocator(IElementSource source, IReadOnlyList<ScreenRe
         while (stack.Count > 0)
         {
             ct.ThrowIfCancellationRequested();
+            if (_time.GetUtcNow() - started >= WalkBudget) return (null, LocateFailure.Stale);
             if (visited >= MaxVisited)
             {
                 cut = true;

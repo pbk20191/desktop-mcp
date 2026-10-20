@@ -2,6 +2,7 @@ using DesktopMcp.Core.Snapshots;
 using DesktopMcp.Desktop.Actions;
 using DesktopMcp.Desktop.Errors;
 using DesktopMcp.Desktop.Tests.Tree;
+using DesktopMcp.Desktop.Tree;
 using DesktopMcp.Desktop.Uia;
 
 namespace DesktopMcp.Desktop.Tests.Actions;
@@ -157,10 +158,24 @@ public class TypeReadBackTests
     }
 
     [Fact]
-    public async Task ATimeoutBlocksTheWindowAndReadsAsNull()
+    public async Task ATimeoutOfASlowButRespondingWindowReadsAsNullWithoutBlocking()
     {
         var windows = new FakeWindowSystem();
         windows.Foreground.Enqueue(9);
+        var blocks = Blocks();
+        var readBack = new UiaTypeReadBack(windows, blocks, (_, _) => throw new UiaTimeoutException("late"));
+        Assert.Null(await readBack.ReadFocusedValueAsync(default));
+        Assert.False(blocks.IsBlocked(9, windows.GetProcessId(9)));
+    }
+
+    [Theory]
+    [InlineData((int)WindowResponse.Hung)]
+    [InlineData((int)WindowResponse.NotResponding)]
+    public async Task ATimeoutBlocksAWindowThatAlsoFailsTheResponseCheckAndReadsAsNull(int response)
+    {
+        var windows = new FakeWindowSystem();
+        windows.Foreground.Enqueue(9);
+        windows.Responses[9] = (WindowResponse)response;
         var blocks = Blocks();
         var readBack = new UiaTypeReadBack(windows, blocks, (_, _) => throw new UiaTimeoutException("late"));
         Assert.Null(await readBack.ReadFocusedValueAsync(default));

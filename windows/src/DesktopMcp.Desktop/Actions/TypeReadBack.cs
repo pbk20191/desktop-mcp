@@ -78,7 +78,8 @@ public static class TypeReadBack
 /// <summary>
 /// The read-back on the UIA worker: one job with a 2 s deadline per read. The foreground window must not be on the hang
 /// block list and must answer the WM_NULL check (P2 Decisions 36-38) before the job's
-/// <c>GetFocusedElementBuildCache(ActionRequest)</c>; a window whose read passes the deadline is blocked like a label's.
+/// <c>GetFocusedElementBuildCache(ReadBackRequest)</c>; a window whose read passes the deadline is blocked like a label's
+/// when it also fails the WM_NULL check.
 /// Only ValuePattern's cached value is read, never TextPattern.
 /// </summary>
 public sealed class UiaTypeReadBack : ITypeReadBack
@@ -117,8 +118,10 @@ public sealed class UiaTypeReadBack : ITypeReadBack
         }
         catch (UiaTimeoutException)
         {
-            // The job passed its deadline and its thread was abandoned: skip this application for a while (P2 Decisions 2).
-            _blocks.Block(window, processId);
+            // The job passed its deadline and its thread was abandoned. The application is skipped for a while (P2
+            // Decisions 2) only when it also fails the WM_NULL check or Windows considers it hung; a slow but responsive
+            // one is just not read this time.
+            if (_windows.CheckResponding(window) != WindowResponse.Responding) _blocks.Block(window, processId);
             return null;
         }
         catch (DesktopException)

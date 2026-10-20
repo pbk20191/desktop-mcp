@@ -177,6 +177,31 @@ public class LabelLocatorTests
     }
 
     [Fact]
+    public void TheWalkStopsAsStaleOnceItsTimeBudgetIsSpent()
+    {
+        // The RuntimeId match is the tenth element; every children read takes a second of the four-second budget.
+        List<FakeElement> elements = [.. Enumerable.Range(0, 9).Select(i => Button($"5.{i}", new(10, 10, 50, 30), automationId: $"x{i}", name: $"n{i}"))];
+        elements.Add(Button("1.2", new(10, 10, 50, 30)));
+        var source = FakeElementSource.Window([.. elements], pointMap: false);
+        var time = new ManualTime();
+        source.OnChildren = () => time.Now += TimeSpan.FromSeconds(1);
+        Assert.Equal(TimeSpan.FromSeconds(4), LabelLocator.WalkBudget);
+        Assert.Equal(LocateFailure.Stale, new LabelLocator(source, [Monitor], Monitor, time).Locate(Id(), new(30, 20), default).Failure);
+        Assert.Equal(4, source.Calls.Count(call => call == "Children"));
+    }
+
+    [Fact]
+    public void AWalkWithinItsTimeBudgetFindsTheElement()
+    {
+        List<FakeElement> elements = [.. Enumerable.Range(0, 9).Select(i => Button($"5.{i}", new(10, 10, 50, 30), automationId: $"x{i}", name: $"n{i}"))];
+        elements.Add(Button("1.2", new(10, 10, 50, 30)));
+        var source = FakeElementSource.Window([.. elements], pointMap: false);
+        var time = new ManualTime();
+        source.OnChildren = () => time.Now += TimeSpan.FromMilliseconds(300);
+        Assert.Null(new LabelLocator(source, [Monitor], Monitor, time).Locate(Id(), new(30, 20), default).Failure);
+    }
+
+    [Fact]
     public void OffscreenFlagAloneNeverFailsALabel()
     {
         var source = FakeElementSource.Window(
@@ -298,9 +323,13 @@ internal sealed class FakeElementSource : IElementSource
         return _root;
     }
 
+    /// <summary>Runs on every Children call (a test moves its clock here).</summary>
+    public Action? OnChildren { get; set; }
+
     public IReadOnlyList<UiaElementData> Children(UiaElementData parent, out bool capped)
     {
         Calls.Add("Children");
+        OnChildren?.Invoke();
         capped = _capChildren && parent == _root;
         return _children.GetValueOrDefault(parent.RuntimeId!) ?? [];
     }

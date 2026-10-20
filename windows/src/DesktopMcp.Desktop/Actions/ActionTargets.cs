@@ -141,8 +141,10 @@ public sealed class ActionTargets : IActionTargets
         }
         catch (UiaTimeoutException)
         {
-            // The worker's locate deadline passed; UIA's own timeouts are already NotResponding inside the job.
-            _blocks.Block(identity.Window, processId);
+            // The worker's locate deadline passed; UIA's own timeouts are already NotResponding inside the job. Only a
+            // window that also fails the WM_NULL check (or that Windows considers hung) is blocked: a slow but responsive
+            // application gets the same error without being skipped by Snapshot and later actions.
+            if (_windows.CheckResponding(identity.Window) != WindowResponse.Responding) _blocks.Block(identity.Window, processId);
             throw new DesktopException(LabelErrors.For(LocateFailure.NotResponding, label, element));
         }
         if (result.Failure is { } failure) throw new DesktopException(LabelErrors.For(failure, label, element));

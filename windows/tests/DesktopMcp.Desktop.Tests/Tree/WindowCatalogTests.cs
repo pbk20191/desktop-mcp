@@ -38,7 +38,10 @@ internal sealed class FakeWindowSystem : IWindowSystem
     public ScreenRect GetBounds(long window) => default;
     public long WindowFromPoint(ScreenPoint point) => PointWindow;
     public string GetTitle(long window) => Titles.GetValueOrDefault(window, "");
-    public WindowResponse CheckResponding(long window) => WindowResponse.Responding;
+    /// <summary>The WM_NULL answer per window; Responding when absent.</summary>
+    public Dictionary<long, WindowResponse> Responses { get; } = [];
+
+    public WindowResponse CheckResponding(long window) => Responses.GetValueOrDefault(window, WindowResponse.Responding);
 }
 
 public class WindowCatalogTests

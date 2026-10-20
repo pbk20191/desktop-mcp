@@ -53,13 +53,25 @@ public class ActionTargetsTests
             (await Assert.ThrowsAsync<DesktopException>(() => rig.Targets.LabelAsync(0, default))).Message);
     }
 
-    [Fact]
-    public async Task ALocateTimeoutBlocksTheWindow()
+    [Theory]
+    [InlineData((int)WindowResponse.Hung)]
+    [InlineData((int)WindowResponse.NotResponding)]
+    public async Task ALocateTimeoutBlocksAWindowThatAlsoFailsTheResponseCheck(int response)
     {
         var rig = new TargetsRig(interactive: 1, locateThrows: new UiaTimeoutException("UI Automation label lookup timed out"));
+        rig.Windows.Responses[TargetsRig.NotepadWindow] = (WindowResponse)response;
         await Assert.ThrowsAsync<DesktopException>(() => rig.Targets.LabelAsync(0, default));
         Assert.True(rig.Blocks.IsBlocked(TargetsRig.NotepadWindow, 0));
         Assert.True(rig.Blocks.IsBlocked(0, TargetsRig.NotepadProcess));
+    }
+
+    [Fact]
+    public async Task ALocateTimeoutOfASlowButRespondingWindowDoesNotBlockIt()
+    {
+        var rig = new TargetsRig(interactive: 1, locateThrows: new UiaTimeoutException("UI Automation label lookup timed out"));
+        Assert.Equal("Notepad is not responding; no input was sent.",
+            (await Assert.ThrowsAsync<DesktopException>(() => rig.Targets.LabelAsync(0, default))).Message);
+        Assert.False(rig.Blocks.IsBlocked(TargetsRig.NotepadWindow, TargetsRig.NotepadProcess));
     }
 
     [Fact]
@@ -202,7 +214,8 @@ internal sealed class TargetsRig
             }, 1);
         }
 
-        var windows = new FakeWindowSystem { PointWindow = PointWindow };
+        var windows = Windows;
+        windows.PointWindow = PointWindow;
         windows.Titles[PointWindow] = "Task Manager";
         windows.Processes[PointWindow] = TaskManagerProcess;
         windows.ProcessNames[TaskManagerProcess] = "Taskmgr.exe";
@@ -227,6 +240,7 @@ internal sealed class TargetsRig
     public ActionTargets Targets { get; }
     public int Locates { get; private set; }
     public int SessionChecks { get; private set; }
+    public FakeWindowSystem Windows { get; } = new();
     public HangBlockList Blocks { get; } = new(TimeProvider.System, HangBlockList.DefaultDuration);
 
     private static UiElement Element(int i, bool identity, string name) =>
