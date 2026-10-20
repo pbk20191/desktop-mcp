@@ -114,13 +114,51 @@ public class SnapshotToolTests
         Assert.Equal("Error capturing screenshot: The Windows App SDK runtime 2.5.1.0 or later is not installed. Please try again.", ToolCalls.OkText(result));
     }
 
-    [Fact]
-    public async Task CaptureRunsOffTheCallersThread()
+    private sealed class PoolPostingContext : SynchronizationContext
     {
-        var snapshots = new FakeSnapshots(_ => Sample(null));
-        var caller = Environment.CurrentManagedThreadId;
-        await Task.Run(async () => await CallAsync("Snapshot", snapshots, "{}"));
+        public override void Post(SendOrPostCallback d, object? state) => ThreadPool.QueueUserWorkItem(_ => d(state));
+    }
+
+    [Fact]
+    public void CaptureDoesNotRunItsSynchronousWorkOnTheCallersThread()
+    {
+        var snapshots = new FakeSnapshots(_ =>
+        {
+            Thread.Sleep(50); // synchronous work before the first await, like the scan and the tree walk
+            return Sample(null);
+        });
+        var tool = ToolCalls.Create("Snapshot", ToolServices.CreateDefault() with { Snapshots = snapshots });
+        var callerId = 0;
+        var caller = new Thread(() =>
+        {
+            SynchronizationContext.SetSynchronizationContext(new PoolPostingContext());
+            callerId = Environment.CurrentManagedThreadId;
+            ToolCalls.CallAsync(tool, "{}").GetAwaiter().GetResult();
+        });
+        caller.Start();
+        Assert.True(caller.Join(TimeSpan.FromSeconds(30)));
         Assert.NotEqual(0, snapshots.ThreadId);
-        Assert.NotEqual(caller, snapshots.ThreadId);
+        Assert.NotEqual(callerId, snapshots.ThreadId);
+    }
+
+    [Fact]
+    public async Task CancellationByTheCallerIsRethrown()
+    {
+        using var cts = new CancellationTokenSource();
+        var snapshots = new FakeSnapshots(_ =>
+        {
+            cts.Cancel();
+            throw new OperationCanceledException(cts.Token);
+        });
+        var tool = ToolCalls.Create("Snapshot", ToolServices.CreateDefault() with { Snapshots = snapshots });
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => ToolCalls.CallAsync(tool, "{}", cts.Token));
+    }
+
+    [Fact]
+    public async Task CancellationNotFromTheCallerBecomesTheErrorText()
+    {
+        var snapshots = new FakeSnapshots(_ => throw new OperationCanceledException("capture was abandoned"));
+        var result = await CallAsync("Snapshot", snapshots, "{}");
+        Assert.Equal("Error capturing desktop state: capture was abandoned. Please try again.", ToolCalls.OkText(result));
     }
 }
