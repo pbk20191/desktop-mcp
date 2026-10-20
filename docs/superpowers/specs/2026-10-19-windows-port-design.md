@@ -29,13 +29,13 @@ environment variables `DESKTOP_MCP_*` in place of `WINDOWS_MCP_*`. `ANONYMIZED_T
 | Topic | Decision | Why |
 |---|---|---|
 | Language | C# on .NET 10 (LTS), NativeAOT | Schannel TLS and IOCP sockets come from the platform; probes showed every needed area works under AOT with zero trim/AOT warnings. The Release `desktop-mcp.exe` is 10,399,744 bytes (win-x64) and 11,318,784 bytes (win-arm64), with Win2D linked in statically. |
-| Win32/COM bindings | CsWin32 (`Microsoft.Windows.CsWin32` 0.3.347, `allowMarshaling: false`, `public: false`, `PrivateAssets=all`) in both `DesktopMcp.Core` and `DesktopMcp.Desktop` (user decision, 2026-10-19); P2 adds `comInterop.useComSourceGenerators` (`[GeneratedComInterface]`) for UIA | AOT-safe; generates every Win32 entry point and UIA interface we need. `Interop.UIAutomationClient` relies on built-in COM interop, which NativeAOT does not support. |
+| Win32/COM bindings | CsWin32 (`Microsoft.Windows.CsWin32` 0.3.347, `allowMarshaling: false`, `public: false`, `PrivateAssets=all`) in both `DesktopMcp.Core` and `DesktopMcp.Desktop` (user decision, 2026-10-19); since P2, DesktopMcp.Desktop sets `allowMarshaling: true`, `comInterop.useComSourceGenerators` and `CsWin32RunAsBuildTask`, so UIA and the shell interfaces are `[GeneratedComInterface]` interfaces; DesktopMcp.Core keeps `allowMarshaling: false` (P2 plan, Decisions 1) | AOT-safe; generates every Win32 entry point and UIA interface we need. `Interop.UIAutomationClient` relies on built-in COM interop, which NativeAOT does not support. |
 | WinRT | CsWinRT through the `net10.0-windows10.0.22621.0` TFM | Toasts, `Windows.Graphics.Capture`, and the Windows App SDK's `Microsoft.UI.Dispatching` and `Microsoft.UI.Windowing`. |
 | MCP protocol | Official MCP C# SDK (`ModelContextProtocol`, `.AspNetCore`) | Protocol versions, sampling and cancellation come from the SDK. Accepted cost: the wire serialisation is the SDK's (field order, escaping) and the legacy SSE message path is `/message`. |
 | HTTP | Kestrel via `WebApplication.CreateSlimBuilder` | AOT-supported; HTTP/1.1 + HTTP/2 over Schannel with ALPN. HttpListener is ruled out (urlacl and `netsh http add sslcert` need admin). |
 | Tool contract | Per-port: `spec/macos/tools.json`, `spec/windows/tools.json` | The upstream servers expose different tool sets. |
 | Abstraction level | Prefer WinRT and libraries over raw Win32 where an AOT-friendly option exists | Screen capture uses Windows.Graphics.Capture; imaging and drawing use Win2D (`Microsoft.Graphics.Win2D` 1.4.0, linked statically; see the Win2D row). ImageSharp was dropped: 4.x refuses a Release build without a Six Labors license key, and the key-free 3.1.x / 2.1.x line fails restore with known-vulnerability errors (NU1902/NU1903). Direct2D was the fallback for imaging and was not needed. UIA, input injection, hooks and the other Win32 areas listed in the WinRT first row stay on thin CsWin32 or hand-declared wrappers because neither WinRT nor the Windows App SDK has an API for them. |
-| WinRT first | Wherever WinRT or the Windows App SDK has the API, use it; raw Win32/COM stays only where neither has one | The Windows App SDK removes hand-written interop and its failure modes. Raw Win32/COM remains for the UIA client, `SendInput`, low-level hooks and Raw Input, foreign-window control, virtual desktops, Shell app listing, Job Objects and Task Scheduler. Done: the dispatcher thread is `DispatcherQueueController.CreateOnDedicatedThread()`, and display ids come from `Microsoft.UI.Windowing.DisplayArea`. Done in P1: Clipboard through WinRT `Clipboard` first, with a bounded Win32 fallback (§8). Planned: P2 DisplayInventory through `DisplayArea` plus `GetDpiForMonitor`; P4 overlays evaluate `AppWindow` with WinUI 3 or Composition plus Win2D first. Notifications stay on WinRT `ToastNotificationManager`: upstream's `app_id` parameter needs arbitrary AUMIDs, and `AppNotificationManager` cannot send under another app's identity. |
+| WinRT first | Wherever WinRT or the Windows App SDK has the API, use it; raw Win32/COM stays only where neither has one | The Windows App SDK removes hand-written interop and its failure modes. Raw Win32/COM remains for the UIA client, `SendInput`, low-level hooks and Raw Input, foreign-window control, virtual desktops, Shell app listing, Job Objects and Task Scheduler. Done: the dispatcher thread is `DispatcherQueueController.CreateOnDedicatedThread()`, and capture gets each monitor's display id from the Windows App SDK's `Win32Interop.GetDisplayIdFromMonitor`. P2 decided to keep DisplayInventory and display selection on Win32 rather than `DisplayArea` (user decision; P2 plan, Decisions 15 and Task 8). Done in P1: Clipboard through WinRT `Clipboard` first, with a bounded Win32 fallback (§8). Evaluated in P2: `DisplayArea` agrees with `GetMonitorInfo`, but DisplayInventory stays on Win32 because device names and indices need it and DisplayInventory needs no runtime (P2 plan, Decisions 15); P4 overlays evaluate `AppWindow` with WinUI 3 or Composition plus Win2D first. Notifications stay on WinRT `ToastNotificationManager`: upstream's `app_id` parameter needs arbitrary AUMIDs, and `AppNotificationManager` cannot send under another app's identity. |
 | Windows App SDK runtime | Framework-dependent and unpackaged; the user's machine must have the system Windows App SDK 2.5 runtime installed. The build references the component packages `Microsoft.WindowsAppSDK.Runtime` 2.5.1 and `Microsoft.WindowsAppSDK.InteractiveExperiences` 2.1.9, not the `Microsoft.WindowsAppSDK` metapackage | The dispatcher, `DisplayArea` and Win2D need it (user decision, 2026-10-19). `AppRuntime.EnsureInitialized()` bootstraps it lazily through kernelbase `TryCreatePackageDependency` / `AddPackageDependency`, the way windows-rs `windows-reactor` does: family `Microsoft.WindowsAppRuntime.2_8wekyb3d8bbwe`, minimum version 2.5.1.0, process lifetime. There is no `Microsoft.WindowsAppRuntime.Bootstrap.dll` and no SDK auto-initializer. If the runtime is missing, it throws with an install hint. |
 | Win2D | `Microsoft.Graphics.Win2D` 1.4.0, linked statically into the NativeAOT exe from the user's fork | One exe with no companion DLL. Win2D-WinUI 1.4.0 (source SHA 25680382) is built as static libraries on the public fork https://github.com/pbk20191/Win2D, branch `static-lib`, by a GitHub Actions workflow, and published as release `win2d-static-v1.4.0-1` (x64 and ARM64 zips with `winrt.lib`, the `win2dmod.lib` shim and their PDBs, plus `SHA256SUMS.txt`). NativeAOT publishes download the zip for the RID, verify the SHA-256 pinned in the repo and link the libs with `/WHOLEARCHIVE`; CsWinRT's `ActivationFactory.ActivationHandler` routes `Microsoft.Graphics.Canvas.*` to the linked `Win2DStatic_DllGetActivationFactory`. JIT builds and tests use the package's normal DLL. This is unofficial and unsupported: we own the build. |
 | Threads | One dedicated thread, driven by a Windows App SDK `DispatcherQueue` | See §5. |
@@ -171,10 +171,13 @@ fallback, a `MsgWaitForMultipleObjectsEx` loop with its own work queue, was not 
 
 ### Everything else runs on the thread pool
 
-- **UIA** calls run on thread-pool threads (MTA, the AOT default), serialised by a `SemaphoreSlim`.
-  They must not run on the dispatcher thread: a UIA client calling from a thread that owns windows
-  can deadlock on its own windows. `IUIAutomation2` connection and transaction timeouts bound how
-  long a hung target app can block a call.
+- **UIA** calls run one at a time on one dedicated MTA worker thread (`UiaWorker`), never on the
+  dispatcher thread: a UIA client calling from a thread that owns windows can deadlock on its own
+  windows. `IUIAutomation2` connection (2 s) and transaction (5 s) timeouts and per-job deadlines
+  (window probe 5 s, window walk 20 s) bound a hung target app; a job past its deadline abandons the
+  worker thread, the next job gets a new one, and the window and its process are skipped for 90 s
+  (P2 plan, Decisions 2). These bounds protect the server, not the target app: a walk can still
+  hold a Chromium app's UI thread (§12).
 - Input injection, capture, PowerShell, HTTP and the MCP SDK run on the thread pool.
 
 ### Tool-call serialisation
@@ -221,8 +224,10 @@ exposes immutable `UiNode` records.
 - **Windows walked**: `EnumWindows` filtered to visible windows on the current virtual desktop
   (documented `IVirtualDesktopManager`) that our process does not own, plus `Progman`,
   `Shell_TrayWnd` and `Shell_SecondaryTrayWnd`; processes named in
-  `DESKTOP_MCP_EXCLUDE_PROCESSES` are skipped before any UIA call. As upstream, the walk covers the
-  active window plus non-app windows, and other app windows only when a `region` overlaps them.
+  `DESKTOP_MCP_EXCLUDE_PROCESSES` are left out of the tree walk before any UIA call on their
+  windows (the window list still probes their top-level windows, as upstream does). As upstream,
+  the walk covers the active window plus non-app windows, and other app windows only when a
+  `region` overlaps them.
 - **Classification**: upstream's `tree/config.py` constants and rules are ported into
   `TreeConfig.cs` (interactive, scrollable and informative types, roles, browser special cases,
   Word nodes from TextPattern, modal-dialog reset, window-name fixes such as Progman to "Desktop").
@@ -235,7 +240,8 @@ exposes immutable `UiNode` records.
   `AutomationId == "RootWebArea"`, including upstream's DOM corrections. Firefox falls back to MSAA
   `IAccessible` from `AccessibleObjectFromWindow(OBJID_CLIENT)`; the few IAccessible2 interfaces we
   need are declared by hand with `[GeneratedComInterface]` because they are not in the Windows SDK
-  metadata.
+  metadata. P2 walks `RootWebArea` like any element and answers `use_dom=True` with an error text
+  until P6 (P2 plan, Decisions 4).
 - **Region and display selection**, validation and error strings follow upstream.
 
 ### Snapshot text
@@ -265,12 +271,14 @@ by the AI and releases them on preemption, cancellation or shutdown.
   frame pool, one frame read into a byte array. The frame pool's `IDirect3DDevice` is Win2D's shared
   device (`CanvasDevice.GetSharedDevice()`), and frames are read with
   `CanvasBitmap.CreateFromDirect3D11Surface(...).GetPixelBytes()`, so there is no hand-written D3D11
-  code. The capture item comes from `GraphicsCaptureItem.TryCreateFromDisplayId`, with the display id
-  from `Microsoft.UI.Windowing.DisplayArea.Primary.DisplayId`; this works under AOT. A full
+  code. Each monitor's capture item comes from `GraphicsCaptureItem.TryCreateFromDisplayId`: the
+  monitor from `MonitorFromRect` and its display id from the Windows App SDK's
+  `Win32Interop.GetDisplayIdFromMonitor` (P2 Task 15); this works under AOT. A full
   virtual-desktop capture composites the monitors it covers. `IsBorderRequired = false` is set
   unconditionally, because the minimum OS has the property.
-  `GraphicsCaptureAccess.RequestAccessAsync(Borderless)` is not called yet. Windows marked
-  `WDA_EXCLUDEFROMCAPTURE`, including our overlays, are excluded by the system.
+  `GraphicsCaptureAccess.RequestAccessAsync(Borderless)` is requested once per process (P2:
+  Allowed). Windows marked `WDA_EXCLUDEFROMCAPTURE`, including our overlays, are excluded by the
+  system.
 - **Imaging**: Win2D, linked statically in NativeAOT builds (§2). Scaling
   (`scale = min(DESKTOP_MCP_SCREENSHOT_SCALE clamped to [0.1, 1], 1920/w, 1080/h)`,
   `HighQualityCubic`), annotation (2 px boxes and filled index labels in Arial 12, the cursor
@@ -280,17 +288,18 @@ by the AI and releases them on preemption, cancellation or shutdown.
 - `IScreenCapture` and `IImageRenderer` hide both choices. Both passed the P0 probe, so no fallback
   was needed. Callers of the Win2D entry points (`Win2DRenderer`, `GraphicsCaptureService`) must call
   `AppRuntime.EnsureInitialized()` first, which also installs the static activation hook; a missing call
-  works under the JIT but fails under AOT with `REGDB_E_CLASSNOTREG`. P2 moves the call into the entry
-  points themselves.
+  works under the JIT but fails under AOT with `REGDB_E_CLASSNOTREG`. Since P2 the entry points
+  call it themselves.
 
 ### Displays
 
 DisplayInventory and display selection use `EnumDisplayMonitors`, `GetMonitorInfo`,
 `GetDpiForMonitor` (falling back to the system DPI) and `EnumDisplaySettings`, producing upstream's
 fields (`index`, `device`, `primary`, `bounds`, `work_area`, `resolution`, `orientation`,
-`effective_dpi`, `scale`). P2 evaluates `Microsoft.UI.Windowing.DisplayArea` for the bounds and
-work area, with `GetDpiForMonitor` for the DPI (WinRT first, §2). The process is PerMonitorV2 DPI-aware through its manifest, so UIA,
-input and capture share physical virtual-desktop coordinates.
+`effective_dpi`, `scale`). P2 evaluated `Microsoft.UI.Windowing.DisplayArea`: for a PerMonitorV2
+process it reports the same bounds and work areas, but the Win32 path stays (P2 plan, Decisions
+15). The process is PerMonitorV2 DPI-aware through its manifest, so UIA, input and capture share
+physical virtual-desktop coordinates.
 
 ## 7. Desktop control
 
@@ -422,11 +431,12 @@ uses System.Text.Json source generation.
 - **Clipboard**: WinRT `Clipboard` first, on a dedicated STA thread and bounded by 5 s; the Win32
   clipboard with `CF_UNICODETEXT` on a thread-pool thread is the fallback, with its own 5 s bound.
   Same messages. Probe outcome under NativeAOT (P1, Task 12): WinRT works on an STA thread and
-  Win32 works; a WinRT clipboard call on an MTA thread blocks instead of throwing, and after that
-  WinRT can block on STA in the same process too, so the bounded fallback carries the call.
-  P2 measured: a live main STA does not help, because `GetContent` returns at once and the block
-  is the `GetTextAsync` operation, whose `Completed` handler never fires under NativeAOT (it fires
-  on an STA thread under the JIT), so the root cause stays open (P2 plan, Task 18).
+  Win32 works, and a WinRT clipboard call on an MTA thread blocks, so the bounded fallback carries
+  the call. P1 observed the JIT throwing where NativeAOT blocks, and WinRT then blocking on STA in
+  the same process too. P2 measured (P2 plan, Task 18): under the JIT the MTA read succeeds; under
+  NativeAOT `GetContent` returns at once and the block is the `GetTextAsync` operation, whose
+  `Completed` handler never fires (under the JIT it fires on an STA thread). A live main STA does
+  not help. The root cause stays open, and the STA block after an MTA call is unverified.
 - **Notification**: CsWinRT `ToastNotificationManager.CreateToastNotifier(app_id).Show()` with
   ToastGeneric XML; never reads `notifier.Setting` (throws for unpackaged apps). It stays on
   `ToastNotificationManager` and not the Windows App SDK's `AppNotificationManager`, because `app_id`
@@ -491,7 +501,7 @@ logs focus changes at debug level.
 | Core unit | config precedence and strict TOML types; ServePlan validation messages; SSRF rules; HTML to Markdown; OAuth/PKCE flows; PowerShell runner against real pwsh (encoding, timeout, tree kill); FileSystem formats; Shortcut parsing; table formatter; Snapshot text rendering from synthetic `UiNode`s; fuzzy matching; control state machine with a fake `TimeProvider` (takeover, idle return, lease, policy classification) | always |
 | Server | ContractTests (`tools/list` equals `spec/windows/tools.json` as JSON); in-memory Kestrel tests of middleware order, 401/403 bodies, CORS, OPTIONS, trusted host, `/health`; stdio initialize, tools/list and call | always |
 | Desktop integration | Notepad: Snapshot finds the edit control, Type, Shortcut, App switch and resize; capture and annotation; hooks, overlay, takeover; input-lock safety (heartbeat stops, input returns within 1 s) | `Category=Desktop`, run by hand in an interactive session |
-| AOT smoke | `build-release.ps1` publishes win-x64 and win-arm64, launches the x64 exe and runs initialize, tools/list and the headless tools that leave the desktop alone over stdio, then runs the probe's `imaging` step (the AOT activation check); any IL2xxx/IL3xxx warning fails the build | every release build |
+| AOT smoke | `build-release.ps1` publishes win-x64 and win-arm64, launches the x64 exe and runs initialize, tools/list and the headless tools that leave the desktop alone over stdio, then DisplayInventory and Snapshot without vision (a named virtual desktop and at least one tree element; the graphics stack must still be unloaded), then Screenshot and Snapshot with vision (valid PNGs); `DESKTOP_MCP_EXCLUDE_PROCESSES` keeps Code.exe out of the walk (§12). It then runs the probe's `imaging` step (the AOT activation check) and `uia` step (the AOT UIA check); any IL2xxx/IL3xxx warning fails the build. The desktop calls need an unlocked interactive session; `smoke-stdio.ps1 -SkipCapture` leaves out the two capture calls | every release build |
 
 xUnit runs under the JIT, so AOT-only failures are caught by the smoke step.
 
@@ -512,6 +522,27 @@ the server started and passed initialize, the contract comparison, Wait and the 
 which backs the lazy-initialisation claim in §10. The kill-on-close check failed there, because
 processes the server starts after it joins its job are not placed in that job on that host. The
 P4 follow-up "Kill-on-close job inheritance" tracks this.
+
+P2 results (2026-10-20, Windows build 10.0.26220.9739): default suite 1158 tests passed (Core 844,
+Server 87, Desktop non-desktop 227); Desktop suite by hand: 33 run, 32 passed, and
+`ClipboardTests.SystemClipboardRoundTripsThroughWinRt` failed twice (the WinRT read after a WinRT
+write returned null; the clipboard code is unchanged since P1, and Windows Sandbox and Chrome Remote
+Desktop were open, both of which can sync the clipboard; not investigated). Three Desktop tests that
+read or walk the user's real windows were not run, so that nothing could reach VS Code (§12):
+`SnapshotServiceDesktopTests`, `WindowCatalogDesktopTests.ListsTheTestWindowAsANormalApplicationWindow`
+and `UiaSessionTests.CachesTheTraversalPropertiesForTheRootsChildren`. build-release: win-x64
+18,015,744 bytes, win-arm64 19,213,824 bytes, each dist folder holding only the exe and its pdb, no
+publish warnings; stdio smoke OK under NativeAOT (adds DisplayInventory and Snapshot without vision
+before the graphics check, 59 modules, then Screenshot and Snapshot with vision; Code.exe excluded;
+1 display, active desktop "Desktop 1", 54 tree elements of which 33 labelled, a 1728x1080
+Screenshot PNG and the 200x120 region PNG; the server exited 23-25 ms after stdin closed on the
+five runs that recorded it); AOT activation and UIA checks OK; capture probe 2560x1600 in 174 ms, borderSuppressed=True,
+borderlessAccess=Allowed; capture border with the user watching: not checked (pending, see the
+follow-ups); DisplayArea evaluation: agrees on 1 monitor (2560x1600 at 144 DPI), multi-monitor and
+mixed DPI unproven; multi-monitor capture composition is tested with fakes only; Windows Sandbox:
+not run (pending). Clipboard probe as in P1; toast probe: shown. Desktop tests need a PerMonitorV2
+test process (`TestDpi`) and use their own test window. Tests that touch user state: the clipboard
+tests save and restore the clipboard text, and the toast test leaves a notification.
 
 ## 10. Differences from upstream (for the Windows README)
 
@@ -540,6 +571,11 @@ P4 follow-up "Kill-on-close job inheritance" tracks this.
   (`docs/superpowers/plans/2026-10-19-windows-p1-headless.md`), which also records the rulings
   made during P1's reviews (codec names, FileSystem overlap and links, Registry, Process, Scrape
   address rules, HTML to Markdown limits).
+- **P2 decisions**: P2's departures from upstream for Snapshot, Screenshot and DisplayInventory are
+  listed in the P2 plan's "Decisions on upstream ambiguities"
+  (`docs/superpowers/plans/2026-10-19-windows-p2-desktop-read.md`): the text layout and labels,
+  `Screenshot Backend: wgc`, regions clipped to the screen, window order, the UIA hang breaker, and
+  `use_dom` before P6.
 
 ## 11. Phases
 
@@ -551,7 +587,7 @@ work first.
 | P0 Foundations and probes | Move `spec/tools.json` to `spec/macos/` and fix the macOS test path; write `spec/windows/tools.json`; solution skeleton and build settings; AOT probes for `DispatcherQueue` + LL hooks, Windows.Graphics.Capture, Win2D imaging; spec-driven `McpServerTool` base class and ContractTests | An empty server answers `tools/list` |
 | P0b Single exe | Windows 11 22H2 minimum; self-bootstrap of the system Windows App SDK 2.5 through the Dynamic Dependencies API; dispatcher and display ids on the Windows App SDK; Win2D linked statically from the pinned fork release; publish output trimmed to one exe | `dist/<rid>/desktop-mcp.exe` runs alone in an empty folder |
 | P1 Server core and headless tools | CLI, config, ServePlan, stdio; Wait, PowerShell, FileSystem, Clipboard, Process, Registry, Notification, Scrape without sampling | A useful server without desktop access (done; results in §9) |
-| P2 Desktop read | Dispatcher, UIA wrapper, Tree, Snapshot without DOM, capture, imaging, Screenshot, DisplayInventory, virtual desktops | The agent can see the screen |
+| P2 Desktop read | Dispatcher (fixed in P2, first started in P4: P2 plan, Decisions 21), UIA wrapper, Tree, Snapshot without DOM, capture, imaging, Screenshot, DisplayInventory, virtual desktops | The agent can see the screen (done; results in §9) |
 | P3 Desktop act | Input, InputLedger, Click, Type, Scroll, Move, Shortcut, MultiSelect, MultiEdit, App, WaitFor | Upstream's core workflows |
 | P4 Desktop control | InputMonitor, state machine, overlay, capture flash, gate, notifier, ControlStatus | Protection against fighting the user |
 | P5 HTTP | Kestrel, Streamable HTTP and SSE, middleware, TLS, OAuth, `/health`, Scrape sampling, telemetry | Remote use |
@@ -564,7 +600,7 @@ P0 probe results were measured on Windows build 10.0.26220 (Insider).
 | Risk | Status / mitigation |
 |---|---|
 | `DispatcherQueue` creation/projection or LL hook delivery fails under AOT | Measured in P0: the DispatcherQueue thread is created and projected under AOT; startup plus the first invoke takes about 10 ms; timer ticks run on the dispatcher; a `WH_MOUSE_LL` hook installed on it received 2 of 2 injected signed moves, flagged injected, on the dispatcher thread. The `MsgWaitForMultipleObjectsEx` fallback behind `IDesktopDispatcher` was not needed. |
-| Windows.Graphics.Capture needs D3D11/WinRT interop that misbehaves under AOT, or its border cannot be hidden | Measured in P0: the primary monitor (2560x1600, physical, PerMonitorV2) was captured in 146-157 ms under AOT. `IsBorderRequired = false` was accepted without error. Whether a border was visible is not yet confirmed by the user; recheck in P2 with the user watching. The GDI fallback behind `IScreenCapture` was not needed. |
+| Windows.Graphics.Capture needs D3D11/WinRT interop that misbehaves under AOT, or its border cannot be hidden | Measured in P0: the primary monitor (2560x1600, physical, PerMonitorV2) was captured in 146-157 ms under AOT. `IsBorderRequired = false` was accepted without error. P2: the AOT capture probe reports borderSuppressed=True and borderlessAccess=Allowed (2560x1600); whether a border or a capture indicator is visible was not checked with the user watching, and that check stays pending in the follow-ups. The GDI fallback behind `IScreenCapture` was not needed. |
 | The imaging library produces trim/AOT warnings or adds too much size | Measured in P0 with Win2D: a 1920x1080 frame with 40 annotations at scale 0.75 gives a 45 KB PNG in 102-149 ms; the probe exe grew by about 461 KB; 0 warnings. In P0b the statically linked build rendered the same image in 94 ms. ImageSharp was dropped for licensing and vulnerability reasons (§2). |
 | The Windows App SDK metapackage copied about 113 MB per RID of unused files (DirectML, onnxruntime, AI.MachineLearning, WebView2) into publish output | Solved in P0b: the build references the Runtime and InteractiveExperiences component packages, and `build-release.ps1` fails unless each `dist/<rid>` folder holds only `desktop-mcp.exe` and its `.pdb`. |
 | The Windows App SDK 2.5 runtime is not installed on the user's machine | `AppRuntime.EnsureInitialized()` throws with an install hint; documented as an installation requirement (§10). |
@@ -577,6 +613,7 @@ P0 probe results were measured on Windows build 10.0.26220 (Insider).
 | The undocumented virtual-desktop interface changes in a new Windows build | Only desktop names depend on it; fall back to registry names, then `Desktop N` |
 | The MCP SDK's serialisation or legacy SSE support changes | Pin the SDK version; ContractTests and HTTP tests catch drift |
 | LL hooks swallow input and lock the user out | Heartbeat-renewed suppression deadline, `LowLevelHooksTimeout`, integration tests |
-| UIA calls into hung apps | `IUIAutomation2` connection and transaction timeouts, serialised UIA access |
+| UIA calls into hung apps | IUIAutomation2 timeouts, per-job deadlines, a replaceable UIA worker and a 90 s block of hung windows (P2 plan, Decisions 2) |
+| Snapshot's UIA walk hangs a Chromium app (known issue) | Windows logged an AppHang for VS Code (Code.exe 1.142) twice on 2026-10-20, the second during the P2 smoke's Snapshot; VS Code closed. Suspected, unproven: the walk's cache requests (up to 10,000 children with about 35 properties each) or Chromium turning on its accessibility tree hold the app's UI thread. The hang breaker protects only the server. The smoke and the P2 Desktop runs exclude Code.exe through `DESKTOP_MCP_EXCLUDE_PROCESSES`, which keeps it out of the walk but not out of the window list's probe. Investigation is P2 Task 21: measure the cache request size, Chromium's accessibility first-enable and upstream's behaviour; candidates are chunked child caching, Chromium-specific handling and a default exclude list. |
 | The Job Object kills every process the server started when the server exits, including apps started through the PowerShell tool (Start-Process) | Spec §5 behaviour, kept in P1; upstream has no job. Revisit if users report it; JOB_OBJECT_LIMIT_BREAKAWAY_OK plus CREATE_BREAKAWAY_FROM_JOB would let chosen launches escape. |
-| Under NativeAOT, a WinRT clipboard call on an MTA thread blocks instead of throwing, and WinRT can then block on STA in the same process | Known issue (measured in P1). `SystemClipboard` calls WinRT only on its STA thread, bounds it by 5 s and falls back to the Win32 clipboard, bounded by its own 5 s. P2 measured: a live main STA does not help; the block is the `GetTextAsync` operation, whose `Completed` handler never fires under NativeAOT, and the root cause stays open. |
+| Under NativeAOT, a WinRT clipboard call on an MTA thread blocks | Known issue. P1 observed the block (where it saw the JIT throw) and WinRT then blocking on STA in the same process. P2 measured that under the JIT the MTA read succeeds, and that under NativeAOT the `GetTextAsync` operation's `Completed` handler never fires; a live main STA does not help. The root cause stays open, and the STA block is unverified. `SystemClipboard` calls WinRT only on its STA thread, bounds it by 5 s and falls back to the Win32 clipboard, bounded by its own 5 s. |

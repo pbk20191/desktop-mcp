@@ -11,12 +11,10 @@ All other P1 items are done (see docs/superpowers/plans/2026-10-19-windows-p1-he
 
 ## P1 leftovers (minor review findings deferred from the P1 tasks)
 
-- `build-release.ps1` silently skips the AOT activation check on a non-x64 host or without win-x64; print a skip line.
 - Fuzzy matching: `.5` ties use a different float formula from rapidfuzz (rare mismatch), and lengths count UTF-16 units rather than code points; `PyText.Repr` escapes fewer non-printables than Python.
 - `ConfigFile.Load` maps only `TomlException`: an I/O or access error, or a directory path, surfaces raw or as "not found"; invalid UTF-8 is replaced, not rejected.
 - An explicit empty list flag (`--tools ""`) falls back to the config file, unlike an explicit empty `--auth-key`; config lists are not trimmed.
 - CLI: `--config` does not reject a directory (click's `dir_okay=False`); parse-error wording differs from click's; `--control-idle-timeout` is parsed by System.CommandLine, not click's float rules.
-- `smoke-stdio.ps1`: if `Close()` throws, the server process is not killed, and a throw in `finally` masks the body's error.
 - PowerShell: the cancellation test does not check that the tree died; the post-Ctrl+Break grace waits on process exit, not on the end of the output streams (a grandchild holding a pipe).
 - FileSystem: `SameVolume` compares roots, not volumes, so a volume mounted on a folder deletes the destination and then errors; a cross-volume move follows links where upstream's `copytree(symlinks=True)` keeps them; an AppExecLink in the copy fallback fails; add a comment on the delete walk's TOCTOU (same as CPython); thin tests for links, 8.3 names, UNC and drive roots.
 - Registry: a provider path with a doubled separator after the hive is not normalised; `PS*` names are shown where pwsh hides them; `Format-List` empty values and multi-line values differ in trailing space and indent.
@@ -39,40 +37,35 @@ All other P1 items are done (see docs/superpowers/plans/2026-10-19-windows-p1-he
 
 ## P2 (desktop read: UIA, tree, Snapshot, capture, Screenshot)
 
-- Translate COMException/HRESULT failures into a Desktop-level exception with a user-facing message at the `IScreenCapture` / `IImageRenderer` / `IDesktopDispatcher` boundary (spec §3 rule).
-- DisplayInventory: evaluate `Microsoft.UI.Windowing.DisplayArea` for bounds and work area, plus `GetDpiForMonitor` for the DPI (spec §2 "WinRT first").
-- Win2D entry points (`Win2DRenderer`, `GraphicsCaptureService`) call `AppRuntime.EnsureInitialized()` themselves. A missing call works under the JIT but fails under AOT with `REGDB_E_CLASSNOTREG`.
-- `DispatcherQueueThread`:
-  - `Start()` leaks the controller when `TryEnqueue` fails, and it waits without a timeout.
-  - `DisposeAsync` should hop off the dying thread (`AsTask().ConfigureAwait(false)`).
-  - The dispatcher thread is the process's main STA (`APTTYPE_MAINSTA`) because nothing else in the process is STA. Revisit this if a later phase expects to own the main STA itself.
-- `Win2DRenderer`:
-  - Use the buffer and length that `ReadAsync` returns.
-  - Validate the length of `Bgra`.
-  - Clamp label positions (no negative x; no label off-canvas) and guard boxes under 2 px.
-  - Pick a label text colour that contrasts with yellow and cyan palette entries.
-  - Retry once when the shared `CanvasDevice` is lost.
-  - Add tests that pin the right and bottom box edges and the label position.
-- `AppRuntime`:
-  - Add a race test for concurrent first calls (`EnsureInitializedIsIdempotentAndThreadSafe` runs 8 parallel calls but cannot pin the lock).
-  - Make the failure message name the failing call (`TryCreatePackageDependency` or `AddPackageDependency`).
-  - Comment the X86OnArm64 / 64-bit architecture handling in `CurrentArchitecture()`.
-  - Label the `PackageFullName` fallback (the family name, used when the OS returns no full name) so diagnostics do not mistake it for a resolved package.
-  - Verify the downloads page link (`DownloadsPage`) for the 2.5 runtime.
-  - A machine with only an older 2.x runtime (below 2.5.1) gets the install hint; check that its wording says "or later".
-- `GraphicsCaptureService`:
-  - Dispose a late frame on timeout or cancel, and unsubscribe `FrameArrived`.
-  - Confirm multithread protection on the shared device.
-  - Make `Pack` internal and unit-test the padded-stride branch.
-  - Remove the diagnostic static `LastBorderSuppressed` from the public API.
-  - Call `GraphicsCaptureAccess.RequestAccessAsync(Borderless)` where available.
-  - Re-check with the user watching whether a capture border appears.
-- UIA hang breaker (from desk-mcp, idea only): put a hard deadline on every UIA call, make the UIA worker replaceable when a call hangs, and block a timed-out process or HWND for about 90 s. Snapshot skips a blocked window and does not apply the 3x retry to a timeout.
-- Scrape use_dom: read DOM text nodes from the last snapshot once Snapshot exists (spec §8); P1 always returns "No DOM information found".
-- OCR fallback in Snapshot: when UIA yields nothing for a window, run WinRT `Windows.Media.Ocr` on the captured frame in memory (tiled, with de-duplication) and report the text lines. This changes the Snapshot text, not the tool schema.
+All other P2 items are done (see docs/superpowers/plans/2026-10-19-windows-p2-desktop-read.md). Pending checks that need the user:
+
+- Capture border, with the user watching (P2 Task 19 could not run it). Run a Snapshot with `use_vision` (or `foreach ($i in 1..3) { probes/out/desktop-mcp-probe.exe capture $env:TEMP\border.png; Start-Sleep 1 }; Remove-Item $env:TEMP\border.png` from `windows/`) and say whether a yellow border appears around the screen, or a capture indicator appears in the taskbar or the notification area (tray). The probe reports borderSuppressed=True and borderlessAccess=Allowed. Record the answer in spec §9 and §12.
+- Windows Sandbox without the Windows App SDK runtime (P2 Task 19 could not run it): see the P6 item.
 
 ## P2 leftovers
 
+Minor review findings deferred from the P2 tasks, one line per task (from the SDD ledger). The final P2 review may still fix them; Task 14's items 1-3 are marked for its triage.
+
+- Task 1: the MTA thread plus TCS helper is duplicated between the probe and a test (UiaWorker now owns the pattern); a foreground hang beyond the UIA timeout fails the probe after 30 s; RuntimeId presence does not gate the probe's exit code; the locked-session behaviour is unverified.
+- Task 2: `Round` with negative digits throws; `RoundToInteger` with NaN, infinity or out-of-range values; `Capitalize` vs Python (final sigma, titlecase, dotted I); `ProcessService.Round1` duplicates `PyText.Round`; unchecked int geometry; no negative or empty rect tests; the deep-chain test covers only `PruneStructural`.
+- Task 3: a region JSON `null` or `""` should mean no region (upstream `_as_region`); the invalid-JSON test asserts only NotEmpty; integers beyond long give the type message; `DisplayUnion` on an empty list; a shared Metadata reference; thin semantic and region tests; float underscores.
+- Task 4: truthiness (scale 0, an empty backend or note) differs from upstream; test gaps (no active window, a non-empty windows table, multiple displays, an Informative node, a note with details); `childPrefix` is allocated for leaves.
+- Task 5: redundant `map[0x80131505]`; awkward CLASSNOTREG wording; no facility-7 UnauthorizedAccess test; call sites must wrap COM and WinRT calls only.
+- Task 6: an Assert inside a raw thread can crash the test host on a timeout; missing-lock detection is probabilistic.
+- Task 7: a `TryEnqueue` throw leaks the controller and is untranslated (no callers until P4); the worst-case start is twice `StartTimeout` (document it); a test event can be disposed early on failure.
+- Task 8: no `GetDeviceCaps` fallback for the system DPI; the null dpi/scale branch is untested; duplicate-index test; an `EnumDisplayMonitors` failure looks like "no displays".
+- Task 9: the Explorer-restart drop uses `IsDeadElement` without `RPC_S_SERVER_UNAVAILABLE` and is untested (or create the manager per call); a wall-clock under-500 ms assert; duplicate ImmersiveShell setup per read; a late abandonment mark from a descheduled caller (bounded, practically unreachable); the concurrency test proves less than it claims; `ContinueWith` OOM; the full-timeout test has 400 ms of slack.
+- Task 10: fake-clock awaits in `UiaWorkerTests` (about lines 59, 67, 81) lack a real-time `WaitAsync` bound; test naming (`CancellationAtTheGate`); the Post/Dispose race keeps the timer alive.
+- Task 11: `MaxChildren` bounds only the managed side; the visible-range loop is not counted in steps; `PostThreadMessage` and child `CreateWindow` results unchecked; a taskbar button for the off-screen test window; `CreationLock` TryEnter; the race test passes vacuously; no real Toggle or Range test; the vartype check is not isolated by its test; `UiaValuesTests` leaks an array on assert failure; `TestWindow.Dispose` is not idempotent and can mask test exceptions; FontSize is read for all visible ranges up front.
+- Task 12: the deep test's semantic tree is flat; pending frames are bounded by depth times the child cap rather than the visits left; `TryConsume(0)` semantics.
+- Task 13: excluded processes are still probed by the window catalog (upstream parity; see the Chromium hang item); upstream's effective retry delays are 1/2/4 s (the plan halves them); pseudo-process names; `Parallel.For` test naming; `Debug.Assert(!Exhausted)` in `Slice`; no test for a persistent dead element while the window exists; 100 ms wasted after the last active-window attempt; a dead element in the focused read is retried without `IsWindow`.
+- Task 14 (final review should triage 1-3): (1) abandoned renders can pile up behind a wedged device lock (needs a single-slot gate); (2) a `TimeoutException` race at the deadline escapes untranslated; (3) a short `ReadAsync` silently truncates the PNG; null Annotations; label contrast for green and its doc; grid alpha, label ink box and cursor ring stroke vs PIL; a label right-edge test; banker's rounding.
+- Task 15: blank overflow, OOM and `RO_E_CLOSED` outside the `DesktopException` contract; a lock wedged in `device.Lock` leaks threads per call; `IsSupported` uncached and unbounded; `Compose` is test-only; the FirstFrame won-race branch is untested; a CTS leak if the work never completes; an unobserved exception from a timed-out access request; process-wide static access state can race parallel test classes; the `MakeOpaque` wiring is untested.
+- Task 16: profile field names vs upstream; `InvalidOperationException` wrapping breadth; `TheDefaultServiceIsCheap` asserts nothing (the smoke covers it); a redundant `Distinct`; `GetCursorPos` and `ProcessIdToSessionId` results unchecked; storing the PNG; the scan and tree run synchronous work on the caller's thread; the render gets no token; no comment that a failed snapshot's sequence never stores.
+- Task 18: a long follow-ups line; no comment on the probe's timeout path.
+- Task 19: the AOT smoke's exe took 0.03-7.5 s to exit after a capture in the interrupted first Task 19 attempt, the one during which VS Code hung (its last thread in process teardown, no CPU), then 23-25 ms on five measured runs with Code.exe excluded; cause unknown, so the capture session waits up to 30 s. `ClipboardTests.SystemClipboardRoundTripsThroughWinRt` failed twice on 2026-10-20 (the WinRT read after a WinRT write returned null) while Windows Sandbox and Chrome Remote Desktop were open; the clipboard code is unchanged since P1; rerun with both closed. Three Desktop tests that read the user's real windows were left out of the Task 19 run to keep away from VS Code (`SnapshotServiceDesktopTests`, `WindowCatalogDesktopTests.ListsTheTestWindowAsANormalApplicationWindow`, `UiaSessionTests.CachesTheTraversalPropertiesForTheRootsChildren`); run them once Task 21 settles the hang. In the UI tree text, labels count down within a window (the highest label is printed first); check against upstream.
+- **Chromium hang (scheduled as P2 Task 21).** Snapshot's UIA walk hung VS Code: Windows logged an AppHang for Code.exe 1.142 twice on 2026-10-20 (07:09 and 11:50, the second during the Task 19 smoke), and VS Code closed. Investigate: measure the cache request size (up to 10,000 children with about 35 properties each) against Chromium's accessibility first-enable, and compare with upstream's behaviour. Candidates: chunked child caching, Chromium-specific handling, a default exclude list. Until then `smoke-stdio.ps1` passes `DESKTOP_MCP_EXCLUDE_PROCESSES=Code.exe` (`-ExcludeProcesses`); the exclusion keeps Code.exe out of the walk, but the window list still probes its top-level windows.
+- **Control characters in the tree text (decided by the user, 2026-10-20; scheduled as P2 Task 20).** In the tree text and the window table, names and values get `\r`, `\n` and `\t` written as the two-character escapes, and other control characters removed, so an element name cannot inject a fake labelled line. This differs from upstream and becomes a Decision in the P2 plan.
 - Clipboard: WinRT on an MTA thread blocks under NativeAOT; root cause still unknown. Rejected hypothesis: a missing live main STA (P2 Task 18: `desktop-mcp-probe clipboard-mta`, 2026-10-20, NativeAOT fresh=blocks, after-sta=blocks (first STA thread was MainSTA), with-dispatcher=blocks (dispatcher thread is MainSTA), each twice with the same result; JIT fresh=OK, after-sta=OK, with-dispatcher=OK, all on the implicit MTA). Narrowed with temporary, uncommitted probe steps: `Clipboard.GetContent()` and `DataPackageView.Contains(Text)` return in about 15 ms under both runtimes, and `GetTextAsync()` returns an operation that stays `Started` when polled for 12 s under both. The operation completes only once a `Completed` handler is attached. Under the JIT the handler fires about 12 ms later on an STA thread, not the main STA. Under NativeAOT it never fires, from the thread pool with or without the dispatcher. So the block is in delivering the operation's completion to the CsWinRT AOT `AsyncOperationCompletedHandler<string>`, not in `GetContent`. On an explicitly initialised MTA thread (`CoInitializeEx`), `GetTextAsync` fails at once with `RPC_E_WRONG_THREAD 0x8001010E` under both runtimes. Next step: check whether the AOT delegate CCW is agile (`IAgileObject`, free-threaded marshaller), and repeat the P1 claim that WinRT then blocks on STA too, in a fresh process. `SystemClipboard` keeps its STA thread, its 5 s bound and the Win32 fallback.
 
 ## P3 (desktop act)
@@ -83,6 +76,7 @@ Ideas from the desk-mcp analysis (`DigitalDog1/desk-mcp` at e6d42fc, Apache-2.0)
 - Check the count `SendInput` returns. When input is blocked (UIPI, elevated target), return a clear "input blocked: the target window runs elevated" error.
 - Add a short pause between moving the cursor and pressing the button, because WinForms has been seen dropping instant clicks. Add a WinForms target to the desktop tests.
 - `Coercion.JsonList` returns non-arrays: the `loc`/`region` callers must check `ValueKind`, or `JsonList` must reject them.
+- WaitFor and the label-based tools: add the metadata P2 does not read (IsEnabled for element_enabled, selection state) to UiaElementData and UiElement (P2 plan, Decisions 6).
 
 ## P4 (desktop control)
 
@@ -130,3 +124,8 @@ Ideas from the desk-mcp analysis (`DigitalDog1/desk-mcp` at e6d42fc, Apache-2.0)
 - NOTICE line 3 is about 110 characters.
 - Registry list wraps nothing: if a client depends on PowerShell's Format-List line wrapping, reproduce it; P1 prints each value on one line (P1 plan, Decisions 13).
 - Spec polish: re-flow the long line in §4 and the ragged line in §5.
+- Scrape use_dom: read DOM text nodes from the last snapshot once Snapshot exists (spec §8); P1 always returns "No DOM information found" (deferred from P2: P2 plan, Decisions 4 and 20).
+- OCR fallback in Snapshot: when UIA yields nothing for a window, run WinRT `Windows.Media.Ocr` on the captured frame in memory (tiled, with de-duplication) and report the text lines. This changes the Snapshot text, not the tool schema (deferred from P2: P2 plan, Decisions 4 and 20).
+- Browser DOM mode: enter it below RootWebArea, build the browser window's semantic tree from the DOM lists, accept use_dom=True in Snapshot and Scrape, and add the IA2 path for Firefox (P2 plan, Decisions 4).
+- DESKTOP_MCP_WATCHDOG: a UIA focus-changed handler that logs at debug level (P2 plan, Decisions 22).
+- Windows Sandbox: rerun smoke-stdio.ps1 -SkipCapture there to show Snapshot without vision needs no runtime. Pending user steps (P2 Task 19 could not run them): install PowerShell 7 in the Sandbox; copy `windows/dist/win-x64/desktop-mcp.exe`, `windows/scripts/smoke-stdio.ps1` and `spec/windows/tools.json` into it; run `pwsh smoke-stdio.ps1 -Exe .\desktop-mcp.exe -Spec .\tools.json -SkipCapture` and expect the `smoke OK` line with `DisplayInventory (...) and Snapshot without vision OK` (the kill-on-close ping check is known to fail there, see the P4 item); then call Screenshot once through a manual stdio session and check that the text starts with `Error capturing screenshot: The Windows App SDK runtime ` and names the downloads page.
