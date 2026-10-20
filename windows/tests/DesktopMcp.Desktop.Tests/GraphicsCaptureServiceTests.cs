@@ -183,6 +183,22 @@ public class GraphicsCaptureServiceTests
     }
 
     [Fact]
+    public async Task ATimedOutMonitorCaptureHoldsTheGateUntilItEnds()
+    {
+        var finish = new TaskCompletionSource<(ScreenRect, CapturedImage)?>();
+        var first = true;
+        var service = new GraphicsCaptureService(() => { }, Allowed, (_, _, _) =>
+            Interlocked.Exchange(ref first, false) ? finish.Task : Task.FromResult<(ScreenRect, CapturedImage)?>(null))
+        { MonitorTimeout = TimeSpan.FromMilliseconds(50) };
+        var area = new ScreenRect(0, 0, 1, 1);
+        await Assert.ThrowsAsync<DesktopException>(() => service.CaptureAsync(area, [area], default));
+        var error = await Assert.ThrowsAsync<DesktopException>(() => service.CaptureAsync(area, [area], default));
+        Assert.Equal("Screen capture failed: an earlier graphics call is still running after its deadline; try again later.", error.Message);
+        finish.SetResult(null);
+        Assert.NotNull(await service.CaptureAsync(area, [area], default));
+    }
+
+    [Fact]
     public async Task AnAbandonedCaptureCleansUpOffTheCallersThread()
     {
         // The abandoned job's cleanup (here a token callback standing in for FrameArrived -= and the session's Dispose)

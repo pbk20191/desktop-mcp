@@ -96,6 +96,23 @@ public class Win2DRendererBoundsTests
         }
     }
 
+    [Fact]
+    public async Task ATimedOutRenderHoldsTheGateUntilItEnds()
+    {
+        var finish = new TaskCompletionSource<byte[]>();
+        var first = true;
+        var renderer = new Win2DRenderer(() => { }, (_, _) =>
+        {
+            if (!Interlocked.Exchange(ref first, false)) return Task.FromResult(new byte[] { 7 });
+            return finish.Task;
+        }) { Timeout = TimeSpan.FromMilliseconds(100) };
+        await Assert.ThrowsAsync<DesktopException>(() => renderer.RenderPngAsync(Pixel, RenderOptions.Plain(1)));
+        var error = await Assert.ThrowsAsync<DesktopException>(() => renderer.RenderPngAsync(Pixel, RenderOptions.Plain(1)));
+        Assert.Equal("Image rendering failed: an earlier graphics call is still running after its deadline; try again later.", error.Message);
+        finish.SetResult([1]);
+        Assert.Equal([7], await renderer.RenderPngAsync(Pixel, RenderOptions.Plain(1)));
+    }
+
     /// <summary>
     /// Fires each deadline timer as soon as it is created, after <paramref name="beforeFire"/>, then runs
     /// <paramref name="afterFire"/>: the deadline passes first and the work completes just after it.

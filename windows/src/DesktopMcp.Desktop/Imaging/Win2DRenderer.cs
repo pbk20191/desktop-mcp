@@ -36,20 +36,25 @@ public sealed class Win2DRenderer : IImageRenderer
 
     private readonly Action _ensureRuntime;
     private readonly Func<CapturedImage, RenderOptions, Task<byte[]>> _render;
+    private readonly GpuGate _gate;
 
-    public Win2DRenderer() : this(AppRuntime.EnsureInitialized)
+    public Win2DRenderer() : this(AppRuntime.EnsureInitialized, RenderOnSharedDeviceAsync, GpuGate.Shared)
     {
     }
 
-    internal Win2DRenderer(Action ensureRuntime) : this(ensureRuntime, RenderOnSharedDeviceAsync)
+    internal Win2DRenderer(Action ensureRuntime) : this(ensureRuntime, RenderOnSharedDeviceAsync, GpuGate.Shared)
     {
     }
 
-    /// <summary>Tests replace the Win2D work (everything after the runtime is initialised) with a fake.</summary>
-    internal Win2DRenderer(Action ensureRuntime, Func<CapturedImage, RenderOptions, Task<byte[]>> render)
+    /// <summary>
+    /// Tests replace the Win2D work (everything after the runtime is initialised) with a fake, and pass their own gate
+    /// (none: a private one, so a test's abandoned render does not block the others).
+    /// </summary>
+    internal Win2DRenderer(Action ensureRuntime, Func<CapturedImage, RenderOptions, Task<byte[]>> render, GpuGate? gate = null)
     {
         _ensureRuntime = ensureRuntime;
         _render = render;
+        _gate = gate ?? new GpuGate();
     }
 
     /// <summary>
@@ -75,6 +80,8 @@ public sealed class Win2DRenderer : IImageRenderer
         if (image.Width <= 0 || image.Height <= 0 || image.Bgra.Length != (long)image.Width * image.Height * 4)
             throw new ArgumentException($"A {image.Width}x{image.Height} image needs {(long)image.Width * image.Height * 4} bytes of BGRA, not {image.Bgra.Length}.", nameof(image));
         Task<byte[]>? work = null;
+        // One slot for the shared device: a render that timed out keeps it until its thread-pool work ends.
+        using var lease = await _gate.EnterAsync(Operation, Timeout, CancellationToken.None).ConfigureAwait(false);
         try
         {
             _ensureRuntime();
@@ -85,7 +92,10 @@ public sealed class Win2DRenderer : IImageRenderer
         catch (TimeoutException e) when (work is not null && work.Exception?.InnerException != e)
         {
             if (!work.IsCompleted)
+            {
+                lease.AbandonUntil(work);
                 throw new DesktopException($"{Operation} failed: Win2D did not finish within {Timeout.TotalSeconds:0.###} s.");
+            }
         }
         catch (Exception e) when (ComErrors.ShouldTranslate(e))
         {
