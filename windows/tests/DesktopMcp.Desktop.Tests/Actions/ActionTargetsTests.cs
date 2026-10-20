@@ -5,6 +5,7 @@ using DesktopMcp.Desktop.Input;
 using DesktopMcp.Desktop.Snapshots;
 using DesktopMcp.Desktop.Tests.Tree;
 using DesktopMcp.Desktop.Tree;
+using DesktopMcp.Desktop.Uia;
 
 namespace DesktopMcp.Desktop.Tests.Actions;
 
@@ -50,6 +51,51 @@ public class ActionTargetsTests
         var rig = new TargetsRig(interactive: 1, locateThrows: new UiaTimeoutException("UI Automation label lookup timed out"));
         Assert.Equal("Notepad is not responding; no input was sent.",
             (await Assert.ThrowsAsync<DesktopException>(() => rig.Targets.LabelAsync(0, default))).Message);
+    }
+
+    [Fact]
+    public async Task ALocateTimeoutBlocksTheWindow()
+    {
+        var rig = new TargetsRig(interactive: 1, locateThrows: new UiaTimeoutException("UI Automation label lookup timed out"));
+        await Assert.ThrowsAsync<DesktopException>(() => rig.Targets.LabelAsync(0, default));
+        Assert.True(rig.Blocks.IsBlocked(TargetsRig.NotepadWindow, 0));
+        Assert.True(rig.Blocks.IsBlocked(0, TargetsRig.NotepadProcess));
+    }
+
+    [Fact]
+    public async Task ABlockedWindowMakesNoLocateCall()
+    {
+        var rig = new TargetsRig(interactive: 1);
+        rig.Blocks.Block(TargetsRig.NotepadWindow, 0);
+        Assert.Equal("Notepad is not responding; no input was sent.",
+            (await Assert.ThrowsAsync<DesktopException>(() => rig.Targets.LabelAsync(0, default))).Message);
+        Assert.Equal(0, rig.Locates);
+    }
+
+    [Fact]
+    public async Task ABlockedProcessMakesNoLocateCall()
+    {
+        var rig = new TargetsRig(interactive: 1);
+        rig.Blocks.Block(999, TargetsRig.NotepadProcess);
+        await Assert.ThrowsAsync<DesktopException>(() => rig.Targets.LabelAsync(0, default));
+        Assert.Equal(0, rig.Locates);
+    }
+
+    [Fact]
+    public void TheInternalConstructorRejectsNullSeams()
+    {
+        var store = new DesktopStateStore();
+        var windows = new FakeWindowSystem();
+        var blocks = new HangBlockList(TimeProvider.System, HangBlockList.DefaultDuration);
+        Func<ElementIdentity, ScreenPoint, CancellationToken, Task<LocateResult>> locate = (_, p, _) => Task.FromResult(new LocateResult(null, p, null));
+        Func<ScreenRect> screen = () => default;
+        Func<int, bool> higher = _ => false;
+        Assert.Throws<ArgumentNullException>(() => new ActionTargets(null!, locate, windows, screen, higher, blocks));
+        Assert.Throws<ArgumentNullException>(() => new ActionTargets(store, null!, windows, screen, higher, blocks));
+        Assert.Throws<ArgumentNullException>(() => new ActionTargets(store, locate, null!, screen, higher, blocks));
+        Assert.Throws<ArgumentNullException>(() => new ActionTargets(store, locate, windows, null!, higher, blocks));
+        Assert.Throws<ArgumentNullException>(() => new ActionTargets(store, locate, windows, screen, null!, blocks));
+        Assert.Throws<ArgumentNullException>(() => new ActionTargets(store, locate, windows, screen, higher, null!));
     }
 
     [Fact]
@@ -123,6 +169,7 @@ internal sealed class TargetsRig
 {
     public const long NotepadWindow = 100;
     public const long PointWindow = 5;
+    public const int NotepadProcess = 300;
     private const int TaskManagerProcess = 900;
 
     /// <param name="snapshot">Null: nothing is stored (no Snapshot yet).</param>
@@ -148,6 +195,7 @@ internal sealed class TargetsRig
         windows.Titles[PointWindow] = "Task Manager";
         windows.Processes[PointWindow] = TaskManagerProcess;
         windows.ProcessNames[TaskManagerProcess] = "Taskmgr.exe";
+        windows.Processes[NotepadWindow] = NotepadProcess;
         if (elevatedForeground) windows.Foreground.Enqueue(PointWindow);
         var elevated = elevatedAtPoint || elevatedForeground;
 
@@ -156,13 +204,14 @@ internal sealed class TargetsRig
             Locates++;
             if (locateThrows is not null) throw locateThrows;
             return Task.FromResult(locate ?? new LocateResult(null, center, null));
-        }, windows, () => new ScreenRect(0, 0, 1920, 1080), processId => elevated && processId == TaskManagerProcess);
+        }, windows, () => new ScreenRect(0, 0, 1920, 1080), processId => elevated && processId == TaskManagerProcess, Blocks);
     }
 
     public UiElement[] Interactive { get; }
     public UiElement[] Scrollable { get; }
     public ActionTargets Targets { get; }
     public int Locates { get; private set; }
+    public HangBlockList Blocks { get; } = new(TimeProvider.System, HangBlockList.DefaultDuration);
 
     private static UiElement Element(int i, bool identity, string name) =>
         new(i, name, "Button", "Notepad", new ScreenRect(10 + 50 * i, 10, 50 + 50 * i, 30), new ScreenPoint(30 + 50 * i, 20), UiMetadata.Empty)

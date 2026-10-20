@@ -4,6 +4,7 @@ using DesktopMcp.Desktop.Errors;
 using DesktopMcp.Desktop.Input;
 using DesktopMcp.Desktop.Snapshots;
 using DesktopMcp.Desktop.Tree;
+using DesktopMcp.Desktop.Uia;
 
 namespace DesktopMcp.Desktop.Actions;
 
@@ -76,22 +77,31 @@ public sealed class ActionTargets : IActionTargets
     private readonly IWindowSystem _windows;
     private readonly Func<ScreenRect> _virtualScreen;
     private readonly Func<int, bool> _higherIntegrity;
+    private readonly HangBlockList _blocks;
 
     public ActionTargets(DesktopMachine machine, DesktopStateStore store)
-        : this(store, Locator(machine).LocateAsync, machine.Windows, machine.Displays.GetVirtualScreen, ProcessIntegrity.IsHigherThanCurrent)
+        : this(store, Locator(machine).LocateAsync, machine.Windows, machine.Displays.GetVirtualScreen, ProcessIntegrity.IsHigherThanCurrent,
+            machine.Blocks)
     {
     }
 
     /// <param name="locate">The label locator (preflight F18: no label argument; the real one never needs it).</param>
+    /// <param name="blocks">The hang block list shared with Snapshot (P2 Decisions 2).</param>
     internal ActionTargets(DesktopStateStore store, Func<ElementIdentity, ScreenPoint, CancellationToken, Task<LocateResult>> locate,
-        IWindowSystem windows, Func<ScreenRect> virtualScreen, Func<int, bool> higherIntegrity)
+        IWindowSystem windows, Func<ScreenRect> virtualScreen, Func<int, bool> higherIntegrity, HangBlockList blocks)
     {
         ArgumentNullException.ThrowIfNull(store);
+        ArgumentNullException.ThrowIfNull(locate);
+        ArgumentNullException.ThrowIfNull(windows);
+        ArgumentNullException.ThrowIfNull(virtualScreen);
+        ArgumentNullException.ThrowIfNull(higherIntegrity);
+        ArgumentNullException.ThrowIfNull(blocks);
         _store = store;
         _locate = locate;
         _windows = windows;
         _virtualScreen = virtualScreen;
         _higherIntegrity = higherIntegrity;
+        _blocks = blocks;
     }
 
     private static UiaLabelLocator Locator(DesktopMachine machine)
@@ -106,6 +116,12 @@ public sealed class ActionTargets : IActionTargets
         var element = Element(tree, label) ?? throw new ArgumentException(LabelErrors.NotFound(label));
         if (element.Identity is not { } identity) return Point(element.Center);
 
+        // A window or process that made a UIA call time out (here or in Snapshot) is skipped while it is blocked, so a
+        // hung application costs one abandoned worker thread, not one per action (P2 Decisions 2).
+        var processId = _windows.GetProcessId(identity.Window);
+        if (_blocks.IsBlocked(identity.Window, processId))
+            throw new DesktopException(LabelErrors.For(LocateFailure.NotResponding, label, element));
+
         LocateResult result;
         try
         {
@@ -114,21 +130,29 @@ public sealed class ActionTargets : IActionTargets
         catch (UiaTimeoutException)
         {
             // The worker's locate deadline passed; UIA's own timeouts are already NotResponding inside the job.
+            _blocks.Block(identity.Window, processId);
             throw new DesktopException(LabelErrors.For(LocateFailure.NotResponding, label, element));
         }
         if (result.Failure is { } failure) throw new DesktopException(LabelErrors.For(failure, label, element));
 
         // Decisions 22: the point actually used. The checks are those of a point; the target is the label's window.
-        Point(result.Point);
+        CheckPoint(result.Point);
         return new ActionTarget(result.Point, identity.Window, element.WindowName);
     }
 
     public ActionTarget Point(ScreenPoint point)
     {
+        var window = CheckPoint(point);
+        return new ActionTarget(point, window, window == 0 ? "" : _windows.GetTitle(window));
+    }
+
+    // The bounds check, then the integrity check of the top-level window under the point (0 when none), which it returns.
+    private long CheckPoint(ScreenPoint point)
+    {
         if (MouseCoordinates.OutsideMessage(point, _virtualScreen()) is { } outside) throw new ArgumentException(outside);
         var window = _windows.WindowFromPoint(point);
         CheckIntegrity(window);
-        return new ActionTarget(point, window, window == 0 ? "" : _windows.GetTitle(window));
+        return window;
     }
 
     public void CheckLabels(IReadOnlyList<long> labels, string wrapper)

@@ -29,6 +29,7 @@ public class LabelLocatorTests
         var result = new LabelLocator(source, [Monitor], Monitor).Locate(Id(), new(30, 20), default);
         Assert.Equal(new ScreenPoint(30, 20), result.Point);
         Assert.DoesNotContain("Children", source.Calls);
+        Assert.Equal([100L], source.ElementAtWindows);
     }
 
     [Fact]
@@ -227,6 +228,9 @@ internal sealed class FakeElementSource : IElementSource
 
     public List<string> Calls { get; } = [];
 
+    /// <summary>The window argument of every ElementAt call.</summary>
+    public List<long> ElementAtWindows { get; } = [];
+
     /// <summary>The answer of every CheckWindow after the first.</summary>
     public WindowResponse? ResponseAfterFirstCheck { get; set; }
 
@@ -278,6 +282,7 @@ internal sealed class FakeElementSource : IElementSource
     public UiaElementData? ElementAt(ScreenPoint point, long window)
     {
         Calls.Add("ElementAt");
+        ElementAtWindows.Add(window);
         return _atPoint;
     }
 

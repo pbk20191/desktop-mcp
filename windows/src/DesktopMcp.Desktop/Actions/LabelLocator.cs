@@ -24,8 +24,8 @@ internal interface IElementSource
     long RootAt(ScreenPoint point);
 
     /// <summary>
-    /// The element under the point, or null when there is none, the point's top-level window is not
-    /// <paramref name="window"/>, or that window does not answer.
+    /// The element under the point, or null when there is none or the point's top-level window is not
+    /// <paramref name="window"/> (whose WM_NULL check the caller has made).
     /// </summary>
     UiaElementData? ElementAt(ScreenPoint point, long window);
 
@@ -224,9 +224,9 @@ internal sealed unsafe class UiaElementSource(UiaSession session) : IElementSour
 
     public UiaElementData? ElementAt(ScreenPoint point, long window)
     {
-        // Checked again here (the caller checked it too): no UIA call goes into another application's window, and the
-        // label's window must answer WM_NULL before UIA calls into it (Decisions 38). Otherwise the walk follows.
-        if (RootAt(point) != window || Win32WindowSystem.CheckResponding(window) != WindowResponse.Responding) return null;
+        // The root is checked again here (cheap; the caller checked it too), so no UIA call goes into another
+        // application's window. The WM_NULL check of the label's window (Decisions 38) is the caller's, made just before.
+        if (RootAt(point) != window) return null;
         var element = session.Automation.ElementFromPointBuildCache(new System.Drawing.Point(point.X, point.Y), session.ActionRequest);
         return element is null ? null : UiaTreeSource.ReadAction(element);
     }
