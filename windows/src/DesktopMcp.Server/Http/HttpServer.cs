@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using DesktopMcp.Core.Config;
 using DesktopMcp.Core.Net;
+using DesktopMcp.Core.Security;
 using DesktopMcp.Server.Control;
 using DesktopMcp.Server.Hosting;
 using DesktopMcp.Server.Tools;
@@ -113,8 +114,15 @@ public static class HttpServer
         await using var app = builder.Build();
         var logger = McpServerSetup.AfterBuild(app.Services, plan, services, desktopLog);
         using var releaseOnStop = McpServerSetup.ReleaseHeldInputOnStop(app.Services, services, logger);
-        HttpPipeline.Use(app, plan, validateOAuthToken: null);
+        // Decisions 12: the OAuth routes and their tokens only when both the client id and secret are configured. The
+        // issuer names the port Kestrel bound, known once the host has started (no request arrives before that).
+        var boundPort = plan.Port;
+        OAuthServer? oauth = plan.OAuthClientId is { } clientId && plan.OAuthClientSecret is { } clientSecret
+            ? new OAuthServer(clientId, clientSecret, services.Time)
+            : null;
+        HttpPipeline.Use(app, plan, oauth is null ? null : oauth.ValidateToken);
         app.MapGet("/health", new RequestDelegate(HttpPipeline.Health));
+        if (oauth is not null) OAuthEndpoints.Map(app, oauth, context => Issuer(plan, Volatile.Read(ref boundPort), context));
         MapTransport(app, plan);
 
         try
@@ -136,7 +144,8 @@ public static class HttpServer
         Volatile.Write(ref starting, 0);
         // With a DNS name that resolves to several addresses and port 0, each listener gets its own ephemeral port and
         // the announcement names the first one's (Decisions 7).
-        var endpoint = new Uri($"{plan.Scheme}://{UrlHost(plan.Host)}:{BoundPort(app, plan)}{EndpointPath(plan)}");
+        Volatile.Write(ref boundPort, BoundPort(app, plan));
+        var endpoint = new Uri($"{plan.Scheme}://{UrlHost(plan.Host)}:{boundPort}{EndpointPath(plan)}");
         // Decisions 8: one line whatever the log level, as uvicorn's "Uvicorn running on ...".
         announce.WriteLine($"desktop-mcp: serving {plan.Transport} on {endpoint.OriginalString}");
         listening?.Invoke(endpoint);
@@ -151,6 +160,23 @@ public static class HttpServer
         IOException or SocketException => $"Error: Could not listen on {UrlHost(plan.Host)}:{plan.Port}: {(e.InnerException ?? e).Message}",
         _ => null,
     };
+
+    /// <summary>
+    /// The OAuth issuer (Decisions 12): <c>{scheme}://{host}:{port}</c> with the port Kestrel bound and an IPv6 host
+    /// bracketed; for a wildcard bind (<c>0.0.0.0</c>, <c>::</c>, empty), which no client can connect to, the request's
+    /// <c>Host</c> header in place of <c>{host}:{port}</c> (the local address the request arrived on when it has none).
+    /// </summary>
+    internal static string Issuer(ServePlan plan, int boundPort, HttpContext context)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentNullException.ThrowIfNull(context);
+        if (!IsWildcard(plan.Host)) return $"{plan.Scheme}://{UrlHost(plan.Host)}:{boundPort}";
+        var host = context.Request.Host;
+        if (host.HasValue) return $"{plan.Scheme}://{host.ToUriComponent()}";
+        var local = context.Connection.LocalIpAddress;
+        var address = local is null ? "127.0.0.1" : local.IsIPv4MappedToIPv6 ? local.MapToIPv4().ToString() : local.ToString();
+        return $"{plan.Scheme}://{UrlHost(address)}:{(context.Connection.LocalPort > 0 ? context.Connection.LocalPort : boundPort)}";
+    }
 
     /// <summary>The MCP endpoint's path: <c>/sse</c> for the legacy SSE transport, else <c>/mcp</c>.</summary>
     internal static string EndpointPath(ServePlan plan) => plan.Transport == "sse" ? "/sse" : "/mcp";
@@ -214,6 +240,14 @@ public static class HttpServer
         {
             return [];
         }
+    }
+
+    /// <summary>Whether <paramref name="host"/> binds every address: empty, or an any-address literal (brackets allowed).</summary>
+    private static bool IsWildcard(string host)
+    {
+        if (host.Length == 0) return true;
+        var bare = host.Length > 2 && host[0] == '[' && host[^1] == ']' ? host[1..^1] : host;
+        return IpAddressText.TryParse(bare, out var ip) && (ip.Equals(IPAddress.Any) || ip.Equals(IPAddress.IPv6Any));
     }
 
     /// <summary>The host as a URL names it: an IPv6 address in brackets (the empty host is <c>::</c>).</summary>

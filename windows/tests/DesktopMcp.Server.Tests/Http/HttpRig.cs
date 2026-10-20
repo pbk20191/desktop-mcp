@@ -1,6 +1,8 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using DesktopMcp.Core.Config;
 using DesktopMcp.Server.Control;
 using DesktopMcp.Server.Http;
@@ -52,8 +54,50 @@ public sealed class HttpRig : IAsyncDisposable
     /// </summary>
     public static ServePlan Plan(ServeArguments arguments, DesktopMcpConfig? config = null) => ServePlan.Resolve(arguments, config ?? new());
 
-    /// <summary>A client that never uses a proxy: the server is on loopback and nothing here may leave the machine.</summary>
-    public static HttpClient CreateClient() => new(new SocketsHttpHandler { UseProxy = false }) { Timeout = Timeout };
+    /// <summary>
+    /// A client that never uses a proxy: the server is on loopback and nothing here may leave the machine. Without
+    /// <paramref name="followRedirects"/> a 302 is returned as is.
+    /// </summary>
+    public static HttpClient CreateClient(bool followRedirects = true) =>
+        new(new SocketsHttpHandler { UseProxy = false, AllowAutoRedirect = followRedirects }) { Timeout = Timeout };
+
+    /// <summary>The redirect URI <see cref="OAuthTokenAsync"/> registers; nothing ever connects to it.</summary>
+    public const string OAuthRedirectUri = "http://127.0.0.1:9/cb";
+
+    /// <summary>
+    /// The OAuth code flow for client <c>client</c> with secret <c>s3cret</c>: <c>GET /oauth/authorize</c> without following
+    /// the 302, the <c>code</c> from its <c>Location</c>, then <c>POST /oauth/token</c> as a form or as JSON. Returns
+    /// <c>access_token</c>.
+    /// </summary>
+    public async Task<string> OAuthTokenAsync(string challenge, string verifier, bool form)
+    {
+        using var noRedirects = CreateClient(followRedirects: false);
+        var authorize = new Uri(Base, "/oauth/authorize?response_type=code&client_id=client&redirect_uri="
+            + Uri.EscapeDataString(OAuthRedirectUri) + "&code_challenge=" + Uri.EscapeDataString(challenge) + "&code_challenge_method=S256");
+        using var redirect = await noRedirects.GetAsync(authorize);
+        Assert.Equal(HttpStatusCode.Found, redirect.StatusCode);
+        var location = redirect.Headers.Location!.OriginalString;
+        Assert.StartsWith(OAuthRedirectUri + "?code=", location, StringComparison.Ordinal);
+        var code = Uri.UnescapeDataString(location[(OAuthRedirectUri + "?code=").Length..]);
+
+        var fields = new Dictionary<string, string>
+        {
+            ["grant_type"] = "authorization_code",
+            ["code"] = code,
+            ["code_verifier"] = verifier,
+            ["client_id"] = "client",
+            ["client_secret"] = "s3cret",
+            ["redirect_uri"] = OAuthRedirectUri,
+        };
+        using HttpContent content = form
+            ? new FormUrlEncodedContent(fields)
+            : new StringContent(JsonSerializer.Serialize(fields, RigJson.Default.DictionaryStringString), Encoding.UTF8, "application/json");
+        using var response = await noRedirects.PostAsync(new Uri(Base, "/oauth/token"), content);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.True(response.StatusCode == HttpStatusCode.OK, body);
+        using var document = JsonDocument.Parse(body);
+        return document.RootElement.GetProperty("access_token").GetString()!;
+    }
 
     /// <summary>
     /// Serves <paramref name="arguments"/> on 127.0.0.1 (or 127.0.0.1/::1 when the arguments name it) on port 0 with
@@ -214,3 +258,6 @@ public sealed class HttpRig : IAsyncDisposable
         }
     }
 }
+
+[JsonSerializable(typeof(Dictionary<string, string>))]
+internal sealed partial class RigJson : JsonSerializerContext;
