@@ -52,21 +52,25 @@ internal sealed unsafe class Win32WindowSystem : IWindowSystem
         return windows;
     }
 
-    /// <summary>How long <see cref="IsResponding"/> waits for the window's UI thread (Decisions 38).</summary>
+    /// <summary>How long <see cref="CheckResponding"/> waits for the window's UI thread (Decisions 38).</summary>
     public static readonly TimeSpan ResponseTimeout = TimeSpan.FromMilliseconds(250);
 
     /// <summary>
     /// Whether the window's UI thread answers WM_NULL within <see cref="ResponseTimeout"/> (SMTO_ABORTIFHUNG returns at once
-    /// for a thread Windows already considers hung). A window that no longer exists counts as responding, so the next UIA
-    /// call reports it as a dead element instead of a hang.
+    /// for a thread Windows already considers hung). <see cref="WindowResponse.Hung"/> when Windows considers the window
+    /// hung (IsHungAppWindow); <see cref="WindowResponse.NotResponding"/> when the call timed out (ERROR_TIMEOUT); any other
+    /// failure, such as a window that no longer exists, counts as responding, so the next UIA call reports it.
     /// </summary>
-    public static bool IsResponding(long window)
+    public static WindowResponse CheckResponding(long window)
     {
         nuint result;
-        return PInvoke.SendMessageTimeout(Hwnd(window), PInvoke.WM_NULL, default, default,
-                   SEND_MESSAGE_TIMEOUT_FLAGS.SMTO_ABORTIFHUNG | SEND_MESSAGE_TIMEOUT_FLAGS.SMTO_BLOCK,
-                   (uint)ResponseTimeout.TotalMilliseconds, &result) != 0
-            || !PInvoke.IsWindow(Hwnd(window));
+        if (PInvoke.SendMessageTimeout(Hwnd(window), PInvoke.WM_NULL, default, default,
+                SEND_MESSAGE_TIMEOUT_FLAGS.SMTO_ABORTIFHUNG | SEND_MESSAGE_TIMEOUT_FLAGS.SMTO_BLOCK,
+                (uint)ResponseTimeout.TotalMilliseconds, &result) != 0)
+            return WindowResponse.Responding;
+        var error = (WIN32_ERROR)Marshal.GetLastPInvokeError();
+        if (PInvoke.IsHungAppWindow(Hwnd(window))) return WindowResponse.Hung;
+        return error == WIN32_ERROR.ERROR_TIMEOUT ? WindowResponse.NotResponding : WindowResponse.Responding;
     }
 
     public bool IsWindow(long window) => PInvoke.IsWindow(Hwnd(window));

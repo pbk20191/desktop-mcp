@@ -24,7 +24,7 @@ namespace DesktopMcp.Probe;
 /// app's accessibility).</item>
 /// <item><c>probe</c>: the WindowCatalog probe (<see cref="UiaTreeSource.ProbeWindow"/>).</item>
 /// <item><c>walk</c>: the product's single-window walk (UiaTreeSource with its responsiveness guard, TreeWalker, ElementBudget, same caps).</item>
-/// <item><c>walk-mc100</c>: the walk with at most 100 children kept per element (the product's MaxChildren cut).</item>
+/// <item><c>walk-mc100</c>: the walk with at most the last 100 children kept per element from one TreeScope_Children fetch (the cut the product made before Task 22).</item>
 /// <item><c>walk-min</c>: the walk with a minimal property set (no patterns).</item>
 /// <item><c>walk-sib</c>, <c>walk-sib100</c>, <c>walk-sib-min</c>: children read one at a time through the control view
 /// walker (one cross-process call per child) instead of one BuildUpdatedCache(TreeScope_Children); <c>100</c> stops
@@ -400,10 +400,10 @@ internal static class UiaHangProbe
     /// <summary>The product source, timed per GetChildren call.</summary>
     private sealed class Counting(UiaTreeSource inner, WalkStats stats) : ITreeSource
     {
-        public IReadOnlyList<UiaElementData> GetChildren(UiaElementData parent)
+        public IReadOnlyList<UiaElementData> GetChildren(UiaElementData parent, out bool capped)
         {
             var clock = Stopwatch.StartNew();
-            var children = inner.GetChildren(parent);
+            var children = inner.GetChildren(parent, out capped);
             stats.Record(clock.ElapsedMilliseconds, children.Count);
             return children;
         }
@@ -412,7 +412,7 @@ internal static class UiaHangProbe
 
         public void Release(UiaElementData element) => inner.Release(element);
 
-        public bool IsWindowResponding() => inner.IsWindowResponding();
+        public WindowResponse CheckWindow() => inner.CheckWindow();
     }
 
     /// <summary>A walk source with another property set, child cap or child-reading strategy.</summary>
@@ -430,8 +430,9 @@ internal static class UiaHangProbe
         public bool NoWords { get; init; }
         public int Pause { get; init; }
 
-        public IReadOnlyList<UiaElementData> GetChildren(UiaElementData parent)
+        public IReadOnlyList<UiaElementData> GetChildren(UiaElementData parent, out bool capped)
         {
+            capped = false;
             var element = (IUIAutomationElement)parent.Handle!;
             var clock = Stopwatch.StartNew();
             var result = new List<UiaElementData>();
@@ -479,7 +480,7 @@ internal static class UiaHangProbe
         {
         }
 
-        public bool IsWindowResponding() => true;
+        public WindowResponse CheckWindow() => WindowResponse.Responding;
 
         private UiaElementData Read(IUIAutomationElement element) => minimal ? ReadMinimal(element) : UiaTreeSource.Read(element);
 

@@ -31,16 +31,24 @@ public class TreeWalkerTests
         public Action<UiaElementData>? BeforeWords { get; set; }
 
         /// <summary>Answers each responsiveness check; the window answers by default.</summary>
-        public Func<bool> Responding { get; set; } = () => true;
+        public Func<WindowResponse> Responding { get; set; } = () => WindowResponse.Responding;
 
         /// <summary>How many responsiveness checks the walk made.</summary>
         public int Checks { get; private set; }
 
+        /// <summary>Parents whose child list the source cut at its cap.</summary>
+        public HashSet<UiaElementData> Capped { get; } = new(ReferenceEqualityComparer.Instance);
+
+        /// <summary>Every check, children read and word read in order: "check", "children:Name", "words:Name".</summary>
+        public List<string> Log { get; } = [];
+
         /// <summary>Elements whose words were read, in order.</summary>
         public List<UiaElementData> WordsRead { get; } = [];
 
-        public IReadOnlyList<UiaElementData> GetChildren(UiaElementData parent)
+        public IReadOnlyList<UiaElementData> GetChildren(UiaElementData parent, out bool capped)
         {
+            Log.Add($"children:{parent.Name}");
+            capped = Capped.Contains(parent);
             ChildrenRead.Add(parent);
             BeforeChildren?.Invoke(parent);
             var children = Children.GetValueOrDefault(parent, []);
@@ -50,6 +58,7 @@ public class TreeWalkerTests
 
         public IReadOnlyList<WordBox> GetWords(UiaElementData element, int maxWords)
         {
+            Log.Add($"words:{element.Name}");
             WordsRead.Add(element);
             BeforeWords?.Invoke(element);
             return Words.GetValueOrDefault(element, []).Take(maxWords).ToArray();
@@ -57,8 +66,9 @@ public class TreeWalkerTests
 
         public void Release(UiaElementData element) => Released++;
 
-        public bool IsWindowResponding()
+        public WindowResponse CheckWindow()
         {
+            Log.Add("check");
             Checks++;
             return Responding();
         }
@@ -476,10 +486,9 @@ public class TreeWalkerTests
         var source = new FakeSource();
         var edit = Text("Notes");
         source.Words[edit] = [new WordBox("hello", new ScreenRect(5, 5, 40, 20))];
-        Walk(source, source.Add(Window(), edit, Button("A")));
-        // children of the window, A and the edit, plus the edit's words
-        Assert.Equal(source.ChildrenRead.Count + source.WordsRead.Count, source.Checks);
-        Assert.Equal(4, source.Checks);
+        Walk(source, source.Add(Window("App"), edit, Button("A")));
+        // children of the window, A and the edit, plus the edit's words, each right after its check
+        Assert.Equal(["check", "children:App", "check", "children:A", "check", "words:Notes", "check", "children:Notes"], source.Log);
     }
 
     [Fact]
@@ -490,8 +499,9 @@ public class TreeWalkerTests
         source.Add(pane, Button("Inner"));
         var root = source.Add(Window(), pane, Button("A"));
         var checks = 0;
-        source.Responding = () => ++checks < 3; // the window, then A, answer; the pane's check fails
-        var error = Assert.Throws<UiaTimeoutException>(() => Walk(source, root));
+        // the window, then A, answer; the pane's check fails
+        source.Responding = () => ++checks < 3 ? WindowResponse.Responding : WindowResponse.NotResponding;
+        var error = Assert.Throws<UiaNotRespondingException>(() => Walk(source, root));
         Assert.True(ComErrors.IsTimeout(error));
         Assert.Equal(2, source.ChildrenRead.Count);
         Assert.DoesNotContain(pane, source.ChildrenRead);
@@ -506,8 +516,27 @@ public class TreeWalkerTests
         source.Words[edit] = [new WordBox("hello", new ScreenRect(5, 5, 40, 20))];
         var root = source.Add(Window(), edit);
         var checks = 0;
-        source.Responding = () => ++checks < 2; // the window answers; the check before the edit's words fails
-        Assert.Throws<UiaTimeoutException>(() => Walk(source, root));
+        source.Responding = () => ++checks < 2 ? WindowResponse.Responding : WindowResponse.NotResponding; // fails before the words
+        Assert.Throws<UiaNotRespondingException>(() => Walk(source, root));
         Assert.Empty(source.WordsRead);
+    }
+
+    [Fact]
+    public void AHungWindowStopsTheWalkWithTheHangBreakersTimeout()
+    {
+        var source = new FakeSource { Responding = () => WindowResponse.Hung };
+        Assert.Throws<UiaTimeoutException>(() => Walk(source, source.Add(Window(), Button("A"))));
+        Assert.Empty(source.ChildrenRead);
+    }
+
+    [Fact]
+    public void ACutChildListMarksTheWalk()
+    {
+        var source = new FakeSource();
+        var pane = source.Add(Pane("Long"), Button("A"));
+        var root = source.Add(Window(), pane);
+        Assert.False(Walk(source, root).Walk.ChildrenCapped);
+        source.Capped.Add(pane);
+        Assert.True(Walk(source, root).Walk.ChildrenCapped);
     }
 }

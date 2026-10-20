@@ -155,10 +155,15 @@ public class TreeServiceTests
         Assert.Equal(["B3"], tree.Interactive.Select(e => e.Name));
     }
 
-    /// <summary>Walks each window with the real walker over a one-button tree; the listed windows stop answering WM_NULL.</summary>
-    private sealed class GuardedWalker(HashSet<long> unresponsive) : IWindowWalker
+    /// <summary>
+    /// Walks each window through <see cref="UiaWindowWalker.Walk"/> over a window with a button and an empty pane (the
+    /// button is visited first). A window in <c>Answers</c> gives its answers to the checks in order (then Responding).
+    /// </summary>
+    private sealed class GuardedWalker : IWindowWalker
     {
         public List<long> Walked { get; } = [];
+        public List<long> WindowsRead { get; } = [];
+        public Dictionary<long, Queue<WindowResponse>> Answers { get; } = [];
 
         public Task<WindowWalk> WalkAsync(long window, bool isBrowser, ScreenRect screen, ElementBudget budget, Func<int> nextId, CancellationToken cancellationToken)
         {
@@ -169,32 +174,82 @@ public class TreeServiceTests
                 Name = $"B{window}", ControlType = TreeConfig.Button, LocalizedControlType = "button", LegacyRole = 0x2B,
                 Bounds = new ScreenRect(0, 0, 10, 10),
             };
-            var source = new OneButtonSource(root, button, () => !unresponsive.Contains(window));
-            return Task.FromResult(new TreeWalker(source, budget, nextId).Walk(root, new WindowContext($"W{window}", isBrowser, root.Bounds, screen), cancellationToken));
+            var pane = new UiaElementData { Name = "", ControlType = TreeConfig.Pane, Bounds = new ScreenRect(0, 0, 50, 50) };
+            var answers = Answers.GetValueOrDefault(window);
+            var source = new Source(root, [pane, button], () => answers is { Count: > 0 } ? answers.Dequeue() : WindowResponse.Responding);
+            return Task.FromResult(UiaWindowWalker.Walk(source, () => { WindowsRead.Add(window); return root; }, isBrowser, screen, budget, nextId, cancellationToken));
         }
 
-        private sealed class OneButtonSource(UiaElementData root, UiaElementData button, Func<bool> responding) : ITreeSource
+        private sealed class Source(UiaElementData root, UiaElementData[] children, Func<WindowResponse> answer) : ITreeSource
         {
-            public IReadOnlyList<UiaElementData> GetChildren(UiaElementData parent) => ReferenceEquals(parent, root) ? [button] : [];
+            public IReadOnlyList<UiaElementData> GetChildren(UiaElementData parent, out bool capped)
+            {
+                capped = false;
+                return ReferenceEquals(parent, root) ? children : [];
+            }
+
             public IReadOnlyList<WordBox> GetWords(UiaElementData element, int maxWords) => [];
             public void Release(UiaElementData element) { }
-            public bool IsWindowResponding() => responding();
+            public WindowResponse CheckWindow() => answer();
         }
     }
 
+    private TreeService Service(IWindowWalker walker) =>
+        new(_system, walker, _blocks, _ => null, (delay, _) => { _delays.Add(delay); return Task.CompletedTask; });
+
     [Fact]
-    public async Task AnUnresponsiveWindowIsHandledAsATimeoutWhileTheOthersAreWalked()
+    public async Task AWindowThatStopsAnsweringIsLeftOutWithoutBlockingWhileTheOthersAreWalked()
     {
         _system.Processes[1] = 500;
         _system.Processes[2] = 500;
-        var walker = new GuardedWalker([1]);
-        var service = new TreeService(_system, walker, _blocks, _ => null, (delay, _) => { _delays.Add(delay); return Task.CompletedTask; });
-        var tree = await service.CaptureAsync(null, [1, 2, 3], Screen, default);
+        var walker = new GuardedWalker();
+        // Checks: before the window is read, its children, B1's children (B1 already found), then the pane's: no answer.
+        walker.Answers[1] = new Queue<WindowResponse>([WindowResponse.Responding, WindowResponse.Responding, WindowResponse.Responding, WindowResponse.NotResponding]);
+        var tree = await Service(walker).CaptureAsync(null, [1, 2, 3], Screen, default);
+        Assert.Equal([1L, 2L, 3L], walker.Walked);
+        Assert.Empty(_delays);
+        Assert.Equal(0, _blocks.Count);
+        Assert.Equal(["B2", "B3"], tree.Interactive.Select(e => e.Name)); // B1 was found, then dropped with its walk
+        Assert.Equal(["W2", "W3"], tree.Root!.Children.Select(c => c.Name));
+    }
+
+    [Fact]
+    public async Task AHungWindowIsBlockedWithItsProcessWithoutRetrying()
+    {
+        _system.Processes[1] = 500;
+        _system.Processes[2] = 500;
+        var walker = new GuardedWalker();
+        walker.Answers[1] = new Queue<WindowResponse>([WindowResponse.Responding, WindowResponse.Hung]);
+        var tree = await Service(walker).CaptureAsync(null, [1, 2, 3], Screen, default);
         Assert.Equal([1L, 3L], walker.Walked); // window 2 shares the blocked process
         Assert.Empty(_delays);
         Assert.True(_blocks.IsBlocked(1, 500));
         Assert.Equal(["B3"], tree.Interactive.Select(e => e.Name));
-        Assert.Equal([0], tree.Interactive.Select(e => e.Id));
+    }
+
+    [Fact]
+    public async Task AWindowThatDoesNotAnswerIsNotReadThroughUia()
+    {
+        _system.Processes[1] = 501;
+        _system.Processes[2] = 502;
+        _system.Processes[3] = 503;
+        var walker = new GuardedWalker();
+        walker.Answers[1] = new Queue<WindowResponse>([WindowResponse.NotResponding]);
+        walker.Answers[2] = new Queue<WindowResponse>([WindowResponse.Hung]);
+        var tree = await Service(walker).CaptureAsync(null, [1, 2, 3], Screen, default);
+        Assert.Equal([3L], walker.WindowsRead);
+        Assert.False(_blocks.IsBlocked(1, 501));
+        Assert.True(_blocks.IsBlocked(2, 502));
+        Assert.Equal(["B3"], tree.Interactive.Select(e => e.Name));
+    }
+
+    [Fact]
+    public void AssembleReportsTheChildCapWhenAWalkCutAChildList()
+    {
+        var plain = new WindowWalk(new SemanticNode(SemanticKind.Window, "Window", "A"));
+        var cut = new WindowWalk(new SemanticNode(SemanticKind.Window, "Window", "B")) { ChildrenCapped = true };
+        Assert.Null(TreeService.Assemble([plain], new ElementBudget(500)).ChildLimit);
+        Assert.Equal(300, TreeService.Assemble([plain, cut], new ElementBudget(500)).ChildLimit);
     }
 
     [Fact]

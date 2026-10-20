@@ -97,6 +97,12 @@ public sealed class SemanticNode(SemanticKind kind, string controlType, string n
 public sealed record TreeSnapshot(
     IReadOnlyList<UiElement> Interactive, IReadOnlyList<UiElement> Scrollable, SemanticNode? Root, bool Truncated, int ElementLimit)
 {
+    /// <summary>
+    /// The per-parent child cap when at least one element had more children than it (only the first ones were read),
+    /// else null. Port-only (Decisions 37): upstream reads every child.
+    /// </summary>
+    public int? ChildLimit { get; init; }
+
     /// <summary>No UI tree (Screenshot, or Snapshot with use_ui_tree=False).</summary>
     public static TreeSnapshot Empty { get; } = new([], [], null, false, 0);
 }

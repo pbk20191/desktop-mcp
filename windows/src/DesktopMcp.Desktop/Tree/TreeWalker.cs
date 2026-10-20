@@ -10,6 +10,9 @@ internal sealed record WindowContext(string WindowName, bool IsBrowser, ScreenRe
 /// <summary>One window's elements in visit order and its semantic node with children in document order.</summary>
 internal sealed class WindowWalk(SemanticNode window)
 {
+    /// <summary>At least one element had more children than the source reads (Decisions 37).</summary>
+    public bool ChildrenCapped { get; set; }
+
     public List<UiElement> Interactive { get; } = [];
     public List<UiElement> Scrollable { get; } = [];
     public SemanticNode Window { get; } = window;
@@ -112,10 +115,11 @@ internal sealed class TreeWalker(ITreeSource source, ElementBudget budget, Func<
             // Children of an element at the cap would not be visited; do not read them over COM.
             if (frame.Depth >= maxDepth) return;
             IReadOnlyList<UiaElementData> children;
-            ThrowIfNotResponding();
+            ThrowIfNotResponding(source);
             try
             {
-                children = source.GetChildren(node);
+                children = source.GetChildren(node, out var capped);
+                if (capped) walk.ChildrenCapped = true;
             }
             catch (Exception e) when (ComErrors.IsDeadElement(e))
             {
@@ -275,7 +279,7 @@ internal sealed class TreeWalker(ITreeSource source, ElementBudget budget, Func<
         // Decisions 36: Chromium's TextPattern (GetVisibleRanges) holds the app's UI thread for seconds to minutes on a
         // large page (P2 Task 21). Upstream skips words only below a browser's RootWebArea (tree/service.py:656).
         if (string.Equals(node.FrameworkId, ChromiumFramework, StringComparison.Ordinal)) return [];
-        ThrowIfNotResponding();
+        ThrowIfNotResponding(source);
         IReadOnlyList<WordBox> words;
         try
         {
@@ -292,13 +296,19 @@ internal sealed class TreeWalker(ITreeSource source, ElementBudget budget, Func<
     }
 
     /// <summary>
-    /// Decisions 38: a window that stops answering WM_NULL ends its walk as the hang breaker's timeout does (the caller
-    /// blocks the window and its process). The check cannot interrupt a call already inside the provider.
+    /// Decisions 38: a window that does not answer WM_NULL in time ends its walk like UIA's own timeout (left out, nothing
+    /// blocked); a window Windows considers hung ends it like the hang breaker's deadline (the caller blocks the window and
+    /// its process). The check cannot interrupt a call already inside the provider.
     /// </summary>
-    private void ThrowIfNotResponding()
+    internal static void ThrowIfNotResponding(ITreeSource source)
     {
-        if (!source.IsWindowResponding())
-            throw new UiaTimeoutException("UI Automation window walk stopped: the window is not responding.");
+        switch (source.CheckWindow())
+        {
+            case WindowResponse.Hung:
+                throw new UiaTimeoutException("UI Automation window walk stopped: the window is not responding (hung).");
+            case WindowResponse.NotResponding:
+                throw new UiaNotRespondingException("UI Automation window walk stopped: the window did not answer within 250 ms.");
+        }
     }
 
     private static string LegacyValue(UiaElementData node) =>

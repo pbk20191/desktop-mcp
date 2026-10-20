@@ -47,11 +47,27 @@ internal sealed record UiaElementData
 /// <summary>A word of a text control and one of its line boxes (upstream uia/controls.py:1267-1294).</summary>
 internal readonly record struct WordBox(string Word, ScreenRect Box);
 
+/// <summary>How the walked window answered the responsiveness check (Decisions 38).</summary>
+internal enum WindowResponse
+{
+    /// <summary>It answered, or the check could not tell (the window is gone, or another error).</summary>
+    Responding,
+
+    /// <summary>WM_NULL timed out: the UI thread is busy, but Windows does not consider it hung.</summary>
+    NotResponding,
+
+    /// <summary>Windows considers the window hung (IsHungAppWindow).</summary>
+    Hung,
+}
+
 /// <summary>What the tree walk reads beyond an element's cached properties; the walker's only external dependency.</summary>
 internal interface ITreeSource
 {
-    /// <summary>The element's children in the control view with their properties cached; empty when it is gone.</summary>
-    IReadOnlyList<UiaElementData> GetChildren(UiaElementData parent);
+    /// <summary>
+    /// The element's children in the control view with their properties cached; empty when it is gone.
+    /// <paramref name="capped"/> is true when the element has more children than the source reads.
+    /// </summary>
+    IReadOnlyList<UiaElementData> GetChildren(UiaElementData parent, out bool capped);
 
     /// <summary>
     /// The visible words with their boxes, one entry per box (a word wrapped over two lines gives two), up to
@@ -63,6 +79,6 @@ internal interface ITreeSource
     /// <summary>The walk is done with the element: the source may drop what it holds for it.</summary>
     void Release(UiaElementData element);
 
-    /// <summary>Whether the walked window's UI thread still answers; checked before every children and word read.</summary>
-    bool IsWindowResponding();
+    /// <summary>Whether the walked window's UI thread still answers; checked before the window and every children and word read.</summary>
+    WindowResponse CheckWindow();
 }

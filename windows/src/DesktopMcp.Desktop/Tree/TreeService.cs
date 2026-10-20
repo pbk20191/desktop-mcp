@@ -28,11 +28,23 @@ internal sealed class UiaWindowWalker(UiaWorker<UiaSession> worker) : IWindowWal
         worker.RunAsync((session, token) => UiaJob.Run("UI Automation window walk", () =>
         {
             var source = new UiaTreeSource(session, window);
-            var root = source.ReadWindow(window);
-            // upstream tree/service.py:939-941 strips the title before app_name_correction.
-            var name = TreeConfig.WindowName(root.Name.Trim(), root.ClassName);
-            return new TreeWalker(source, budget, nextId).Walk(root, new WindowContext(name, isBrowser, root.Bounds, screen), token);
+            return Walk(source, () => source.ReadWindow(window), isBrowser, screen, budget, nextId, token);
         }), Deadline, cancellationToken);
+
+    /// <summary>
+    /// Reads the top-level window through <paramref name="readWindow"/> and walks it. The window must answer the
+    /// responsiveness check first (Decisions 38), so a hung window costs at most one check and no UIA call.
+    /// </summary>
+    internal static WindowWalk Walk(
+        ITreeSource source, Func<UiaElementData> readWindow, bool isBrowser, ScreenRect screen, ElementBudget budget, Func<int> nextId,
+        CancellationToken cancellationToken)
+    {
+        TreeWalker.ThrowIfNotResponding(source);
+        var root = readWindow();
+        // upstream tree/service.py:939-941 strips the title before app_name_correction.
+        var name = TreeConfig.WindowName(root.Name.Trim(), root.ClassName);
+        return new TreeWalker(source, budget, nextId).Walk(root, new WindowContext(name, isBrowser, root.Bounds, screen), cancellationToken);
+    }
 }
 
 /// <summary>
@@ -134,7 +146,10 @@ internal sealed class TreeService(
         root.Children.AddRange(walks.Select(walk => walk.Window));
         SemanticTree.DropElements(root, interactive.Select(e => e.Id).Concat(scrollable.Select(e => e.Id)).ToHashSet());
         SemanticTree.PruneStructural(root);
-        return new TreeSnapshot(interactive, scrollable, root, budget.Truncated, budget.Limit);
+        return new TreeSnapshot(interactive, scrollable, root, budget.Truncated, budget.Limit)
+        {
+            ChildLimit = walks.Any(walk => walk.ChildrenCapped) ? UiaTreeSource.MaxChildren : null,
+        };
     }
 
     /// <summary>Element ids from 0, safe to take from an abandoned walk's thread while the next walk runs.</summary>

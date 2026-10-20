@@ -52,9 +52,12 @@ public static class ComErrors
     /// <summary>The element no longer exists (upstream UIADeadElementError).</summary>
     public static bool IsDeadElement(Exception error) => error is COMException && DeadElement.Contains(error.HResult);
 
-    /// <summary>UIA's own timeout (UIA_E_TIMEOUT, RPC_E_TIMEOUT) or the hang breaker's deadline.</summary>
+    /// <summary>
+    /// UIA's own timeout (UIA_E_TIMEOUT, RPC_E_TIMEOUT), the hang breaker's deadline, or a walked window that stopped
+    /// answering (<see cref="UiaNotRespondingException"/>).
+    /// </summary>
     public static bool IsTimeout(Exception error) =>
-        error is UiaTimeoutException || (error is COMException && Timeout.Contains(error.HResult));
+        error is UiaTimeoutException or UiaNotRespondingException || (error is COMException && Timeout.Contains(error.HResult));
 
     /// <summary>
     /// True for the COM/WinRT failures <see cref="Translate"/> wraps: every <see cref="COMException"/>, and the projected

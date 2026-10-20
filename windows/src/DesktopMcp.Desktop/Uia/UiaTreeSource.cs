@@ -62,21 +62,25 @@ internal sealed unsafe class UiaTreeSource(UiaSession session, long window = 0) 
 
     // upstream tree/cache_utils.py:173-213 reads all children with one cached TreeScope_Children fetch; this port steps
     // through the control view instead, so the cap also bounds the provider's work (Decisions 37).
-    public IReadOnlyList<UiaElementData> GetChildren(UiaElementData parent) => ReadSiblings(
+    public IReadOnlyList<UiaElementData> GetChildren(UiaElementData parent, out bool capped) => ReadSiblings(
         Element(parent),
         element => session.ControlView.GetFirstChildElementBuildCache(element, session.ElementRequest),
         child => session.ControlView.GetNextSiblingElementBuildCache(child, session.ElementRequest),
         Read,
-        MaxChildren);
+        MaxChildren,
+        out capped);
 
     /// <summary>
-    /// The first <paramref name="max"/> children in document order, one step each, so no step is taken past the cap. A
-    /// dead parent has no children; a sibling that dies during the steps ends the list with what was read (upstream
-    /// tree/service.py:902-905 keeps what was found). Timeouts and other failures propagate.
+    /// The first <paramref name="max"/> children in document order, one step each, plus one step past the cap that sets
+    /// <paramref name="capped"/> when a further child exists (it is not read). A dead parent has no children; a sibling
+    /// that dies during the steps ends the list with what was read (upstream tree/service.py:902-905 keeps what was
+    /// found). Timeouts and other failures propagate.
     /// </summary>
-    internal static List<UiaElementData> ReadSiblings<T>(T parent, Func<T, T?> first, Func<T, T?> next, Func<T, UiaElementData> read, int max)
+    internal static List<UiaElementData> ReadSiblings<T>(
+        T parent, Func<T, T?> first, Func<T, T?> next, Func<T, UiaElementData> read, int max, out bool capped)
         where T : class
     {
+        capped = false;
         var result = new List<UiaElementData>();
         try
         {
@@ -84,7 +88,12 @@ internal sealed unsafe class UiaTreeSource(UiaSession session, long window = 0) 
             while (child is not null)
             {
                 result.Add(read(child));
-                if (result.Count >= max) break;
+                if (result.Count >= max)
+                {
+                    // One more step only confirms that a child beyond the cap exists; it is not read.
+                    capped = next(child) is not null;
+                    break;
+                }
                 child = next(child);
             }
         }
@@ -149,7 +158,7 @@ internal sealed unsafe class UiaTreeSource(UiaSession session, long window = 0) 
     }
 
     /// <summary>The walked window answers WM_NULL within <see cref="Win32WindowSystem.ResponseTimeout"/> (Decisions 38).</summary>
-    public bool IsWindowResponding() => window == 0 || Win32WindowSystem.IsResponding(window);
+    public WindowResponse CheckWindow() => window == 0 ? WindowResponse.Responding : Win32WindowSystem.CheckResponding(window);
 
     /// <summary>upstream uia/controls.py:1396-1411: the line box shrunk to the font's pixel height, kept on its bottom edge.</summary>
     internal static ScreenRect ShrinkToFontSize(ScreenRect box, double points, int dpi)

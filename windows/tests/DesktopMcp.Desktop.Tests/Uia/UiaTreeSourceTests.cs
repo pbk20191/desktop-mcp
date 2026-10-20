@@ -55,7 +55,7 @@ public sealed class UiaTreeSourceDesktopTests : IDisposable
         var (window, children) = await Run(source =>
         {
             var root = source.ReadWindow(_window.Handle);
-            return (root, source.GetChildren(root));
+            return (root, source.GetChildren(root, out _));
         });
         Assert.Equal(_window.Title, window.Name);
         Assert.NotNull(window.RuntimeId);
@@ -72,7 +72,7 @@ public sealed class UiaTreeSourceDesktopTests : IDisposable
         var words = await Run(source =>
         {
             var root = source.ReadWindow(_window.Handle);
-            var edit = source.GetChildren(root).Single(c => c.ControlType == 50004);
+            var edit = source.GetChildren(root, out _).Single(c => c.ControlType == 50004);
             return source.GetWords(edit, maxWords: 100);
         });
         Assert.Equal(["hello", "world"], words.Select(w => w.Word));
@@ -85,7 +85,7 @@ public sealed class UiaTreeSourceDesktopTests : IDisposable
         var words = await Run(source =>
         {
             var root = source.ReadWindow(_window.Handle);
-            return source.GetWords(source.GetChildren(root).Single(c => c.ControlType == 50004), maxWords: 1);
+            return source.GetWords(source.GetChildren(root, out _).Single(c => c.ControlType == 50004), maxWords: 1);
         });
         Assert.Equal("hello", Assert.Single(words).Word);
     }

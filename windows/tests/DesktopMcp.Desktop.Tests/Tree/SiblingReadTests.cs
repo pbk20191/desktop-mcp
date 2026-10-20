@@ -34,25 +34,46 @@ public class SiblingReadTests
 
     private static UiaElementData Read(Node node) => new() { Name = $"c{node.Index}" };
 
-    private static List<UiaElementData> ReadAll(FakeSiblings siblings) =>
-        UiaTreeSource.ReadSiblings(new Node(-1), siblings.First, siblings.Next, Read, UiaTreeSource.MaxChildren);
+    private static List<UiaElementData> ReadAll(FakeSiblings siblings) => ReadAll(siblings, out _);
+
+    private static List<UiaElementData> ReadAll(FakeSiblings siblings, out bool capped) =>
+        UiaTreeSource.ReadSiblings(new Node(-1), siblings.First, siblings.Next, Read, UiaTreeSource.MaxChildren, out capped);
 
     [Fact]
     public void AThousandChildrenGiveTheFirst300InDocumentOrder()
     {
         var siblings = new FakeSiblings(1_000);
-        var children = ReadAll(siblings);
+        var children = ReadAll(siblings, out var capped);
         Assert.Equal(300, UiaTreeSource.MaxChildren);
         Assert.Equal(Enumerable.Range(0, 300).Select(i => $"c{i}"), children.Select(c => c.Name));
-        Assert.Equal(300, siblings.Navigations); // no step past the cap
+        Assert.True(capped);
+        Assert.Equal(301, siblings.Navigations); // one step past the cap confirms a 301st child, which is not read
     }
 
     [Fact]
     public void FewerChildrenThanTheCapAreAllRead()
     {
         var siblings = new FakeSiblings(3);
-        Assert.Equal(["c0", "c1", "c2"], ReadAll(siblings).Select(c => c.Name));
+        Assert.Equal(["c0", "c1", "c2"], ReadAll(siblings, out var capped).Select(c => c.Name));
+        Assert.False(capped);
         Assert.Equal(4, siblings.Navigations);
+    }
+
+    [Fact]
+    public void ExactlyThreeHundredChildrenAreNotCut()
+    {
+        var siblings = new FakeSiblings(300);
+        Assert.Equal(300, ReadAll(siblings, out var capped).Count);
+        Assert.False(capped);
+        Assert.Equal(301, siblings.Navigations);
+    }
+
+    [Fact]
+    public void AThreeHundredAndFirstChildThatDiesDoesNotCountAsCut()
+    {
+        var siblings = new FakeSiblings(1_000) { FailAt = i => i == 300 ? DeadElement : null };
+        Assert.Equal(300, ReadAll(siblings, out var capped).Count);
+        Assert.False(capped);
     }
 
     [Fact]

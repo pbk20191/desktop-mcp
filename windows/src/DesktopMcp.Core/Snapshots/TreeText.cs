@@ -60,6 +60,10 @@ public static class TreeText
         "(filter by window, scroll to the area of interest, use_dom=True for a browser page) or raise " +
         $"{SnapshotSettings.MaxTreeElementsVariable} for a complete tree.]";
 
+    /// <summary>Port-only (Decisions 37): some child lists were cut at the per-parent cap.</summary>
+    public static string ChildLimitNote(int childLimit) =>
+        $"... [truncated: some elements have more than {childLimit} children; only the first {childLimit} of each were read.]";
+
     /// <summary>upstream tree/views.py:185-193 semantic_tree_to_string, iterative, with labels.</summary>
     public static string Render(TreeSnapshot tree)
     {
@@ -81,7 +85,10 @@ public static class TreeText
                 stack.Push((node.Children[i], childPrefix, i == node.Children.Count - 1));
         }
         var text = string.Join("\n", lines);
-        return tree.Truncated ? text + "\n\n" + TruncationNote(tree.ElementLimit) : text;
+        var notes = new List<string>();
+        if (tree.Truncated) notes.Add(TruncationNote(tree.ElementLimit));
+        if (tree.ChildLimit is { } childLimit) notes.Add(ChildLimitNote(childLimit));
+        return notes.Count == 0 ? text : text + "\n\n" + string.Join("\n", notes);
     }
 
     // upstream tree/views.py:126-138, plus the label.
