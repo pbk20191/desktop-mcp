@@ -60,7 +60,16 @@ public sealed class HttpRig : IAsyncDisposable
         var listening = new TaskCompletionSource<Uri>(TaskCreationOptions.RunContinuationsAsynchronously);
         var stop = new CancellationTokenSource();
         var serving = Task.Run(() => HttpServer.RunAsync(plan, services ?? ToolServices.CreateDefault(), stop.Token, uri => listening.TrySetResult(uri), announce));
-        var first = await Task.WhenAny(listening.Task, serving).WaitAsync(Timeout);
+        Task first;
+        try
+        {
+            first = await Task.WhenAny(listening.Task, serving).WaitAsync(Timeout);
+        }
+        catch (TimeoutException)
+        {
+            await StopAsync(stop, serving);
+            throw;
+        }
         if (first != listening.Task)
         {
             stop.Dispose();
@@ -100,9 +109,20 @@ public sealed class HttpRig : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         Http.Dispose();
-        await _stop.CancelAsync();
-        var exitCode = await _serving.WaitAsync(Timeout);
-        _stop.Dispose();
-        Assert.Equal(0, exitCode);
+        Assert.Equal(0, await StopAsync(_stop, _serving));
+    }
+
+    /// <summary>Cancels the server and waits for its exit code; the token source is disposed even when that times out.</summary>
+    private static async Task<int> StopAsync(CancellationTokenSource stop, Task<int> serving)
+    {
+        try
+        {
+            await stop.CancelAsync();
+            return await serving.WaitAsync(Timeout);
+        }
+        finally
+        {
+            stop.Dispose();
+        }
     }
 }

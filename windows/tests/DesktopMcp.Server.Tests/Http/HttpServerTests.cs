@@ -56,8 +56,10 @@ public class HttpServerTests
     public async Task StreamableHttpMapsNoLegacySse()
     {
         await using var rig = await HttpRig.StartAsync(new ServeArguments { Transport = "streamable-http" });
-        Assert.Equal(HttpStatusCode.NotFound, (await rig.Http.GetAsync(new Uri(rig.Base, "/sse"))).StatusCode);
-        Assert.Equal(HttpStatusCode.NotFound, (await rig.Http.PostAsync(new Uri(rig.Base, "/message"), new StringContent("{}"))).StatusCode);
+        using var sse = await rig.Http.GetAsync(new Uri(rig.Base, "/sse"));
+        Assert.Equal(HttpStatusCode.NotFound, sse.StatusCode);
+        using var message = await rig.Http.PostAsync(new Uri(rig.Base, "/message"), new StringContent("{}"));
+        Assert.Equal(HttpStatusCode.NotFound, message.StatusCode);
     }
 
     [Fact]
@@ -72,6 +74,55 @@ public class HttpServerTests
         Assert.Equal(1, await HttpServer.RunAsync(plan, ToolServices.CreateDefault(), timeout.Token, announce: error));
         Assert.StartsWith($"Error: Could not listen on 127.0.0.1:{port}: ", error.ToString());
         Assert.Single(error.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries));
+    }
+
+    /// <summary>
+    /// Kestrel reports some bind failures as a bare SocketException (WSAEACCES in an excluded port range,
+    /// AddressNotAvailable) and others as an IOException around one; both are the one Error: line.
+    /// </summary>
+    [Fact]
+    public void BindFailuresAreOneErrorLine()
+    {
+        var plan = HttpRig.Plan(new ServeArguments { Transport = "streamable-http", Host = "127.0.0.1", Port = 8000 });
+        var denied = new SocketException((int)SocketError.AccessDenied);
+        Assert.Equal($"Error: Could not listen on 127.0.0.1:8000: {denied.Message}", HttpServer.BindFailure(denied, plan));
+        var unavailable = new SocketException((int)SocketError.AddressNotAvailable);
+        Assert.Equal($"Error: Could not listen on 127.0.0.1:8000: {unavailable.Message}",
+            HttpServer.BindFailure(new IOException("Failed to bind to address http://127.0.0.1:8000.", unavailable), plan));
+        Assert.Equal("Error: Could not listen on [::1]:8000: Failed to bind.",
+            HttpServer.BindFailure(new IOException("Failed to bind."), plan with { Host = "::1" }));
+        Assert.Null(HttpServer.BindFailure(new InvalidOperationException("not a bind failure"), plan));
+    }
+
+    /// <summary>
+    /// The slim builder reads ASPNETCORE_* into its host options before the configuration sources are cleared; the
+    /// server URLs from there must neither move the bind nor make Kestrel warn that it overrides them.
+    /// </summary>
+    [Fact]
+    public async Task AmbientUrlsDoNotMoveTheBind()
+    {
+        var urls = Environment.GetEnvironmentVariable("ASPNETCORE_URLS");
+        var prefer = Environment.GetEnvironmentVariable("ASPNETCORE_PREFERHOSTINGURLS");
+        var stderr = Console.Error;
+        var captured = new StringWriter();
+        try
+        {
+            Environment.SetEnvironmentVariable("ASPNETCORE_URLS", "http://127.0.0.2:0");
+            Environment.SetEnvironmentVariable("ASPNETCORE_PREFERHOSTINGURLS", "true");
+            Console.SetError(TextWriter.Synchronized(captured));
+            await using var rig = await HttpRig.StartAsync(new ServeArguments { Transport = "streamable-http" });
+            Assert.Matches(@"^desktop-mcp: serving streamable-http on http://127\.0\.0\.1:\d+/mcp$", rig.Announced);
+            using var response = await rig.Http.SendAsync(HttpRig.InitializeRequest(rig.Endpoint));
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        }
+        finally
+        {
+            Console.SetError(stderr);
+            Environment.SetEnvironmentVariable("ASPNETCORE_URLS", urls);
+            Environment.SetEnvironmentVariable("ASPNETCORE_PREFERHOSTINGURLS", prefer);
+        }
+        Assert.DoesNotContain("Overriding", captured.ToString());
+        Assert.DoesNotContain("127.0.0.2", captured.ToString());
     }
 
     /// <summary>

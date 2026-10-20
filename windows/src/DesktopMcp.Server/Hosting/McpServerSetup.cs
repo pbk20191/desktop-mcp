@@ -13,10 +13,12 @@ namespace DesktopMcp.Server.Hosting;
 internal static class McpServerSetup
 {
     /// <summary>
-    /// The registry key of the stdio session, whose <see cref="McpSession.SessionId"/> is null. The SDK gives every
-    /// request its own <see cref="McpServer"/> object, so the call's server cannot be the key (preflight F1).
+    /// The registry key of a session whose <see cref="McpSession.SessionId"/> is null: stdio's one session, and every
+    /// stateless HTTP request, which must therefore get a session TTL of zero (Task 2) so they never share this entry.
+    /// The SDK gives every request its own <see cref="McpServer"/> object, so the call's server cannot be the key
+    /// (preflight F1).
     /// </summary>
-    internal static readonly object StdioSessionKey = new();
+    internal static readonly object NoSessionIdKey = new();
 
     /// <summary>
     /// Registers, in this order, the control, the control notifier, the MCP server (server info, instructions, the
@@ -55,7 +57,7 @@ internal static class McpServerSetup
         // One registry entry per session (spec §7): the key is the session, the value the latest call's server, through
         // which a notification reaches the session (a newer call replaces it).
         server.WithRequestFilters(filters => filters.AddCallToolFilter(ControlGateFilter.Create(gate,
-            session => sessions.Remember(session.SessionId ?? StdioSessionKey, new McpServerSession(session)))));
+            session => sessions.Remember(session.SessionId ?? NoSessionIdKey, new McpServerSession(session)))));
         return server;
     }
 

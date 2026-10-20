@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -62,12 +63,19 @@ public static class HttpServer
             EnvironmentName = Environments.Production,
         });
         builder.Configuration.Sources.Clear();
+        // The builder has already copied ASPNETCORE_URLS and ASPNETCORE_PREFERHOSTINGURLS into its host options, and the
+        // web host falls back to that copy when "urls" is empty. ";" is a non-empty list of no URLs: no fallback, no
+        // server address, so only the ListenTargets below bind and Kestrel has nothing to warn that it overrides.
+        builder.Configuration.AddInMemoryCollection([new(WebHostDefaults.ServerUrlsKey, ";"), new(WebHostDefaults.PreferHostingUrlsKey, "false")]);
         builder.Logging.ClearProviders();
         builder.Logging.AddProvider(new StderrLoggerProvider());
         builder.Logging.SetMinimumLevel(plan.Debug ? LogLevel.Debug : LogLevel.Warning);
         // A failed start is reported as one Error: line below; the host's own "Hosting failed to start" and its stack
-        // trace only with --debug (Review Focus 5).
-        if (!plan.Debug) builder.Logging.AddFilter("Microsoft.Extensions.Hosting.Internal.Host", LogLevel.Critical);
+        // trace only with --debug (Review Focus 5). Only while starting: later host errors (a failed background
+        // service) are logged as usual.
+        var starting = 1;
+        var minimum = plan.Debug ? LogLevel.Debug : LogLevel.Warning;
+        builder.Logging.AddFilter(HostCategory, level => level >= minimum && (plan.Debug || Volatile.Read(ref starting) == 0));
         builder.WebHost.ConfigureKestrel(kestrel =>
         {
             foreach (var target in targets)
@@ -99,10 +107,9 @@ public static class HttpServer
         {
             await app.StartAsync(ct).ConfigureAwait(false);
         }
-        catch (IOException e)
+        catch (Exception e) when (BindFailure(e, plan) is { } line)
         {
-            // Kestrel wraps the bind failure (AddressInUseException or a SocketException) in an IOException.
-            announce.WriteLine($"Error: Could not listen on {UrlHost(plan.Host)}:{plan.Port}: {(e.InnerException ?? e).Message}");
+            announce.WriteLine(line);
             await StopAfterFailedStartAsync(app, logger).ConfigureAwait(false);
             return 1;
         }
@@ -112,6 +119,9 @@ public static class HttpServer
             return 0;
         }
 
+        Volatile.Write(ref starting, 0);
+        // With a DNS name that resolves to several addresses and port 0, each listener gets its own ephemeral port and
+        // the announcement names the first one's (Decisions 7).
         var endpoint = new Uri($"{plan.Scheme}://{UrlHost(plan.Host)}:{BoundPort(app, plan)}{EndpointPath(plan)}");
         // Decisions 8: one line whatever the log level, as uvicorn's "Uvicorn running on ...".
         announce.WriteLine($"desktop-mcp: serving {plan.Transport} on {endpoint.OriginalString}");
@@ -120,11 +130,21 @@ public static class HttpServer
         return 0;
     }
 
+    /// <summary>The one <c>Error:</c> line for a failed bind, or null when <paramref name="e"/> is not one.</summary>
+    internal static string? BindFailure(Exception e, ServePlan plan) => e switch
+    {
+        // Kestrel wraps most bind failures (AddressInUseException or a SocketException) in an IOException.
+        IOException or SocketException => $"Error: Could not listen on {UrlHost(plan.Host)}:{plan.Port}: {(e.InnerException ?? e).Message}",
+        _ => null,
+    };
+
     /// <summary>The MCP endpoint's path: <c>/sse</c> for the legacy SSE transport, else <c>/mcp</c>.</summary>
     internal static string EndpointPath(ServePlan plan) => plan.Transport == "sse" ? "/sse" : "/mcp";
 
     /// <summary>How long a session that called no tool still gets control notifications (Decisions 18).</summary>
     internal static TimeSpan? SessionTtl(ServePlan plan) => TimeSpan.FromSeconds(60);
+
+    private const string HostCategory = "Microsoft.Extensions.Hosting.Internal.Host";
 
     private const HttpProtocols Plain = HttpProtocols.Http1;
 
