@@ -156,22 +156,40 @@ public class TreeWalkerTests
     public void InteractiveAndScrollableElementsCarryTheirIdentity()
     {
         var button = Element("button", TreeConfig.Button, runtimeId: "42.1.2", automationId: "ok", name: " OK ", clickable: new ScreenPoint(15, 15));
-        var list = Element("list", 50008, runtimeId: "42.1.3", verticallyScrollable: true, enabled: false);
-        var walk = Walk(Window(children: [button, list]), handle: 4242);
+        var list = Element("list", 50008, runtimeId: "42.1.3", verticallyScrollable: true, enabled: false, selected: true);
+        var disabled = Element("button", TreeConfig.Button, runtimeId: "42.1.4", name: "off", enabled: false);
+        var walk = Walk(Window(children: [button, list, disabled]), handle: 4242);
         var element = Assert.Single(walk.Interactive);
         Assert.Equal(new ElementIdentity(4242, "42.1.2", TreeConfig.Button, "ok", "OK", new ScreenPoint(15, 15)), element.Identity);
         var scrollable = Assert.Single(walk.Scrollable);
         Assert.Equal("42.1.3", scrollable.Identity!.RuntimeId);
         Assert.False(scrollable.Metadata.IsEnabled);
+        Assert.True(scrollable.Metadata.IsSelected);
+        // A disabled element is never interactive (upstream), so interactive metadata is always enabled.
+        Assert.True(element.Metadata.IsEnabled);
+    }
+
+    [Fact]
+    public void TheWindowWalkerRecordsTheWalkedWindowInEachIdentity()
+    {
+        var source = new FakeSource();
+        var button = Element("button", TreeConfig.Button, runtimeId: "1.2", name: "OK");
+        var root = Window(children: [button]);
+        source.Children[root] = [button];
+        var walk = UiaWindowWalker.Walk(source, () => root, false, Screen, new ElementBudget(500), Counter(), CancellationToken.None, 77);
+        Assert.Equal(77, Assert.Single(walk.Interactive).Identity!.Window);
     }
 
     [Fact]
     public void WordsAndElementsWithoutARuntimeIdHaveNoIdentity()
     {
-        var edit = Element("edit", TreeConfig.Edit, runtimeId: null, name: "doc", words: [new WordBox("hello", new ScreenRect(1, 1, 20, 10))]);
-        var walk = Walk(Window(children: [edit]), handle: 1);
-        Assert.Equal(2, walk.Interactive.Count);
-        Assert.All(walk.Interactive, element => Assert.Null(element.Identity));
+        var edit = Element("edit", TreeConfig.Edit, runtimeId: "9", name: "doc", words: [new WordBox("hello", new ScreenRect(1, 1, 20, 10))]);
+        var bare = Element("button", TreeConfig.Button, runtimeId: null, name: "bare");
+        var walk = Walk(Window(children: [edit, bare]), handle: 1);
+        Assert.Equal(3, walk.Interactive.Count);
+        Assert.Equal("9", walk.Interactive.Single(e => e.Name == "doc").Identity!.RuntimeId);
+        Assert.Null(walk.Interactive.Single(e => e.Name == "bare").Identity);
+        Assert.Null(walk.Interactive.Single(e => e.ControlType == "Word").Identity);
     }
 
     [Fact]

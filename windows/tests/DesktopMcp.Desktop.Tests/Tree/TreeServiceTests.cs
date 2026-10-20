@@ -177,7 +177,7 @@ public class TreeServiceTests
             var pane = new UiaElementData { Name = "", ControlType = TreeConfig.Pane, Bounds = new ScreenRect(0, 0, 50, 50) };
             var answers = Answers.GetValueOrDefault(window);
             var source = new Source(root, [pane, button], () => answers is { Count: > 0 } ? answers.Dequeue() : WindowResponse.Responding);
-            return Task.FromResult(UiaWindowWalker.Walk(source, () => { WindowsRead.Add(window); return root; }, isBrowser, screen, budget, nextId, cancellationToken));
+            return Task.FromResult(UiaWindowWalker.Walk(source, () => { WindowsRead.Add(window); return root; }, isBrowser, screen, budget, nextId, cancellationToken, window));
         }
 
         private sealed class Source(UiaElementData root, UiaElementData[] children, Func<WindowResponse> answer) : ITreeSource

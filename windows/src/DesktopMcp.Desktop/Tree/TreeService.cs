@@ -37,7 +37,7 @@ internal sealed class UiaWindowWalker(UiaWorker<UiaSession> worker) : IWindowWal
     /// </summary>
     internal static WindowWalk Walk(
         ITreeSource source, Func<UiaElementData> readWindow, bool isBrowser, ScreenRect screen, ElementBudget budget, Func<int> nextId,
-        CancellationToken cancellationToken, long handle = 0)
+        CancellationToken cancellationToken, long handle)
     {
         TreeWalker.ThrowIfNotResponding(source);
         var root = readWindow();
