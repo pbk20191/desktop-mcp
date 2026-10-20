@@ -236,9 +236,9 @@ public struct DialogInfo: Sendable {
         let title = AX.string(AX.attribute(window, kAXTitleAttribute))
         if !title.isEmpty { return title }
         for child in AX.children(window) {
-            let raw = AX.attributes(child, [kAXRoleAttribute, kAXValueAttribute])
-            if AX.string(raw[kAXRoleAttribute]) == kAXStaticTextRole {
-                let text = AX.describe(raw[kAXValueAttribute]).trimmingCharacters(in: .whitespacesAndNewlines)
+            // The value only after the role: a password field's is never fetched.
+            if AX.string(AX.attribute(child, kAXRoleAttribute)) == kAXStaticTextRole {
+                let text = AX.describe(AX.attribute(child, kAXValueAttribute)).trimmingCharacters(in: .whitespacesAndNewlines)
                 if !text.isEmpty { return text }
             }
         }

@@ -147,6 +147,19 @@ public final class Desktop: Sendable {
         try await Input.click(x: x, y: y, button: button, count: clicks)
     }
 
+    /// Whether the element at the point, or its parent (a click often lands on the field's
+    /// inner element), is a password field. Only role and subrole are read; false on any error.
+    public func isSecureField(atX x: Int, y: Int) async -> Bool {
+        await offload {
+            var element: AXUIElement?
+            guard AXUIElementCopyElementAtPosition(AX.systemWide, Float(x), Float(y), &element) == .success,
+                  let element else { return false }
+            if SecureField.isSecure(element) { return true }
+            guard let parent = AX.element(AX.attribute(element, kAXParentAttribute)) else { return false }
+            return SecureField.isSecure(parent)
+        }
+    }
+
     public func type(x: Int, y: Int, text: String, caret: String, clear: Bool, pressEnter: Bool) async throws {
         try await Input.click(x: x, y: y)
         try await Input.pause(0.1)

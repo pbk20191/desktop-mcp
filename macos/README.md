@@ -44,7 +44,7 @@ Run `desktop-mcp permissions` to check the current state and trigger the system 
 |------|-------------|
 | `Snapshot` | Focused window, open apps, interactive and scrollable elements with coordinates. `use_vision=true` adds a screenshot with numbered boxes |
 | `Click` | left/right/middle; 0 = hover, 1 = single click, 2 = double click |
-| `Type` | Clicks the coordinates, then types. Supports `clear`, `caret_position`, `press_enter` |
+| `Type` | Clicks the coordinates, then types. Supports `clear`, `caret_position`, `press_enter`. Into a password field it reports only the length: `Typed 7 characters into a secure field at (x,y).` |
 | `Scroll` | vertical/horizontal, `wheel_times` |
 | `Move` | Moves the cursor, or drags with `drag=true` |
 | `Shortcut` | e.g. `command+shift+t` |
@@ -171,6 +171,7 @@ desktop-mcp sends no telemetry.
 - **`Type` doesn't depend on the input source.** The original sent US-layout key codes, so typing English while the Korean input source was active produced Hangul jamo. This port injects every character as Unicode, and while typing it temporarily switches to an ASCII layout and restores the previous input source afterwards.
 - **`Click` with `clicks=2` sends a real double-click** (click state 1 followed by 2).
 - **`Scrape` parses HTML with the system parser** (libxml2 through Foundation's `XMLDocument`), so broken markup is repaired the way libxml2 does it rather than the way Python's `html.parser` does, and HTML 4 entities are decoded while HTML5-only names (such as `&check;`) are left as written. The contents of `<script>` and `<style>` are dropped; the original's markdownify `strip` option kept their text.
+- **Password fields never leak.** An element whose role or subrole is `AXSecureTextField` never has its value or selection read: `Snapshot` shows it with `"value": "(hidden)"` (no length), named by its title, description or placeholder, or `(hidden)` when it has none. `Type` into one still types, but answers `Typed N characters into a secure field at (x,y).` instead of echoing the text. `Clipboard` is unaffected.
 - **Snapshot ordering:** the focused app's elements get the lowest ids (the original's order was nondeterministic). Metadata keeps non-ASCII characters as-is instead of `\uXXXX` escapes.
 - **`Shortcut` rejects unknown key names with an error.** The original logged a warning and pressed only part of the combination.
 - **No telemetry.** The original sends anonymous usage events to its PostHog project; this port sends nothing (the sender code is kept but not wired in).

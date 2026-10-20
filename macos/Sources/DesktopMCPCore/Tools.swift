@@ -346,7 +346,10 @@ public enum DesktopMCP {
                     let clear = try args.bool("clear") ?? false
                     let pressEnter = try args.bool("press_enter") ?? false
                     try Permissions.requireAccessibility()
+                    // Checked before typing: the click may move focus, and the text never comes back.
+                    let secure = await desktop.isSecureField(atX: x, y: y)
                     try await desktop.type(x: x, y: y, text: text, caret: caret, clear: clear, pressEnter: pressEnter)
+                    if secure { return [.text(SecureField.typedMessage(count: text.count, x: x, y: y))] }
                     return [.text("Typed \(text) at (\(x),\(y)).")]
                 }),
 

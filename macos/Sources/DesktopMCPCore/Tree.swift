@@ -59,17 +59,21 @@ struct EarlyAttributes {
         kAXSubroleAttribute, AXName.index, kAXChildrenAttribute,
     ]
 
-    var role: String
-    var hidden: Bool
-    var enabled: Bool
-    var help: String
-    var hasPopup: Bool
+    var role = ""
+    var hidden = false
+    var enabled = true
+    var help = ""
+    var hasPopup = false
     var titleUIElement: AXUIElement?
-    var subrole: String
-    var hasIndex: Bool
+    var subrole = ""
+    var hasIndex = false
     var rect: Rect?
-    var children: [AXUIElement]
+    var children: [AXUIElement] = []
 
+    var isSecure: Bool { SecureField.isSecure(role: role, subrole: subrole) }
+}
+
+extension EarlyAttributes {
     init(_ element: AXUIElement) {
         let raw = AX.attributes(element, Self.names)
         role = AX.string(raw[kAXRoleAttribute])
@@ -98,30 +102,47 @@ struct LateAttributes {
     static let linkLikeRoles: Set<String> = ["AXLink", "AXImage"]
     static let menuRoles: Set<String> = ["AXMenuItem", "AXMenuBarItem"]
 
-    static func names(for role: String?) -> [String] {
-        guard let role else { return always + textual + linkLike }
-        var names = always
-        if textualRoles.contains(role) { names += textual }
-        if linkLikeRoles.contains(role) { names += linkLike }
-        if menuRoles.contains(role) { names += menu }
-        return names
+    /// What a secure field is never asked for: its value and anything cut from it.
+    static let secret: Set<String> = [kAXValueAttribute, kAXSelectedTextAttribute, kAXSelectedTextRangeAttribute]
+
+    static func names(for role: String?, secure: Bool) -> [String] {
+        var names: [String]
+        if let role {
+            names = always
+            if textualRoles.contains(role) { names += textual }
+            if linkLikeRoles.contains(role) { names += linkLike }
+            if menuRoles.contains(role) { names += menu }
+        } else {
+            names = always + textual + linkLike
+        }
+        return secure ? names.filter { !secret.contains($0) } : names
     }
 
-    var title: String
-    var description: String
-    var identifier: String
+    var title = ""
+    var description = ""
+    var identifier = ""
     var value: AnyObject?
     var placeholder: String?
     var url: String?
     var filename: String?
     var expanded: Bool?
-    var shortcut: String
-    var selectedText: String
+    var shortcut = ""
+    var selectedText = ""
     var selectedRange: CFRange?
-    var label: String
+    /// A secure field's value is never fetched; this also keeps it out of anything built here.
+    var secure = false
 
-    init(_ element: AXUIElement, role: String?) {
-        let raw = AX.attributes(element, Self.names(for: role))
+    var label: String {
+        let valueString = secure ? "" : value.map { AX.describe($0) } ?? ""
+        return [title, description, valueString, placeholder ?? "", identifier].first { !$0.isEmpty } ?? ""
+    }
+}
+
+extension LateAttributes {
+    /// `secure` comes from the role and subrole, read before this so the value is never fetched.
+    init(_ element: AXUIElement, role: String?, secure: Bool) {
+        self.secure = secure
+        let raw = AX.attributes(element, Self.names(for: role, secure: secure))
         title = AX.string(raw[kAXTitleAttribute])
         description = AX.string(raw[kAXDescriptionAttribute])
         identifier = AX.string(raw[AXName.identifier])
@@ -136,8 +157,6 @@ struct LateAttributes {
             virtualKey: (raw[AXName.menuCmdVirtualKey] as? NSNumber)?.intValue)
         selectedText = raw[kAXSelectedTextAttribute].map { AX.describe($0) } ?? ""
         selectedRange = AX.range(raw[kAXSelectedTextRangeAttribute])
-        let valueString = value.map { AX.describe($0) } ?? ""
-        label = [title, description, valueString, placeholder ?? "", identifier].first { !$0.isEmpty } ?? ""
     }
 }
 
@@ -343,13 +362,15 @@ public final class Tree: Sendable {
                    !node.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     state.interactiveNodes.append(node)
                 }
-                if role == "AXTextArea" {
+                if role == "AXTextArea" && !early.isSecure {
                     appendWordNodes(element, windowName: windowName, clip: clip, into: &state)
                 }
             }
 
             if TreeConfig.scrollableRoles.contains(role) && isVisible {
-                let label = early.children.first.map { LateAttributes($0, role: nil).label } ?? ""
+                let label = early.children.first.map {
+                    LateAttributes($0, role: nil, secure: SecureField.isSecure($0)).label
+                } ?? ""
                 state.scrollableNodes.append(TreeNode(box: box, name: label, controlType: role, windowName: windowName))
             }
 
@@ -359,15 +380,36 @@ public final class Tree: Sendable {
 
     private func interactiveNode(_ element: AXUIElement, early: EarlyAttributes, box: BoundingBox,
                                  windowName: String, clip: BoundingBox?, isBrowser: Bool) -> TreeNode? {
-        let role = early.role
-        let late = LateAttributes(element, role: role)
+        let late = LateAttributes(element, role: early.role, secure: early.isSecure)
+        let linkedTitle = early.titleUIElement.flatMap(Self.linkedTitle)
+        let node = Self.describe(early: early, late: late, linkedTitle: linkedTitle, box: box, windowName: windowName)
+        return isBrowser
+            ? domCorrection(node, early: early, windowName: windowName, clip: clip)
+            : desktopCorrection(node, early: early, windowName: windowName, clip: clip)
+    }
 
-        var titleUIText: String?
-        if let titleElement = early.titleUIElement {
-            let raw = AX.attributes(titleElement, [kAXTitleAttribute, kAXValueAttribute, kAXDescriptionAttribute])
-            titleUIText = [raw[kAXTitleAttribute], raw[kAXValueAttribute], raw[kAXDescriptionAttribute]]
-                .map { AX.describe($0) }.first { !$0.isEmpty }
+    /// The text of an element's AXTitleUIElement: its title, else its value, else its description.
+    /// The value is fetched only when the title is empty and the element is not a secure field.
+    static func linkedTitle(_ titleElement: AXUIElement) -> String? {
+        let raw = AX.attributes(titleElement, [kAXRoleAttribute, kAXSubroleAttribute, kAXTitleAttribute, kAXDescriptionAttribute])
+        let title = AX.describe(raw[kAXTitleAttribute])
+        if !title.isEmpty { return title }
+        if !SecureField.isSecure(role: raw[kAXRoleAttribute] as? String, subrole: raw[kAXSubroleAttribute] as? String) {
+            let value = AX.describe(AX.attribute(titleElement, kAXValueAttribute))
+            if !value.isEmpty { return value }
         }
+        let description = AX.describe(raw[kAXDescriptionAttribute])
+        return description.isEmpty ? nil : description
+    }
+
+    /// Name and metadata of an interactive element from attributes already read. A secure
+    /// field shows `value: "(hidden)"` and nothing derived from its value or selection.
+    static func describe(early: EarlyAttributes, late: LateAttributes, linkedTitle titleUIText: String?,
+                         box: BoundingBox, windowName: String) -> TreeNode {
+        let role = early.role
+        var late = late
+        late.secure = late.secure || early.isSecure
+        let secure = late.secure
         let linkedTitle = titleUIText ?? ""
 
         var label: String
@@ -380,7 +422,11 @@ public final class Tree: Sendable {
 
         var metadata = OrderedJSON()
         let valueIsSet = AX.truthy(late.value)
-        switch role {
+        // A secure field takes its own branch whatever its role: nothing value-derived is emitted.
+        switch secure ? SecureField.role : role {
+        case SecureField.role:
+            if let p = late.placeholder, !p.isEmpty { metadata["placeholder"] = .string(p) }
+            metadata["value"] = .string(SecureField.hidden)
         case "AXTextField":
             if let p = late.placeholder, !p.isEmpty { metadata["placeholder"] = .string(p) }
             if valueIsSet { metadata["value"] = AX.json(late.value) }
@@ -411,7 +457,7 @@ public final class Tree: Sendable {
         }
 
         // Only a real selection is reported: it tells the caller typing would replace content.
-        if TreeConfig.textInputRoles.contains(role) || early.subrole == "AXSearchField",
+        if !secure, TreeConfig.textInputRoles.contains(role) || early.subrole == "AXSearchField",
            let selection = late.selectedRange, selection.length > 0 {
             metadata["selected_text"] = .string(late.selectedText)
             let total = AX.describe(late.value).utf16.count
@@ -425,11 +471,10 @@ public final class Tree: Sendable {
         if label.isEmpty, let name = TreeConfig.windowControlSubroles[early.subrole] { label = name }
         // Third-party menu bar extras are bare icons; the owning app's name is all there is.
         if label.isEmpty && role == "AXMenuBarItem" { label = windowName }
+        // An unlabelled password field would otherwise be dropped as nameless.
+        if label.isEmpty && secure { label = SecureField.hidden }
 
-        let node = TreeNode(box: box, name: label, controlType: role, windowName: windowName, metadata: metadata)
-        return isBrowser
-            ? domCorrection(node, early: early, windowName: windowName, clip: clip)
-            : desktopCorrection(node, early: early, windowName: windowName, clip: clip)
+        return TreeNode(box: box, name: label, controlType: role, windowName: windowName, metadata: metadata)
     }
 
     static func isReportableURL(_ url: String) -> Bool {
@@ -442,7 +487,7 @@ public final class Tree: Sendable {
         let childEarly = EarlyAttributes(child)
         guard childEarly.role == "AXHeading" else { return node }
         guard let rect = childEarly.rect else { return nil }
-        let childLate = LateAttributes(child, role: nil)
+        let childLate = LateAttributes(child, role: nil, secure: childEarly.isSecure)
         var box = BoundingBox(rect)
         if let clip { box = clip.intersection(box) }
         var metadata = OrderedJSON()
@@ -463,10 +508,11 @@ public final class Tree: Sendable {
         if early.role == "AXCell" || early.role == "AXGroup" {
             var current = early.children.first
             while let element = current {
-                let raw = AX.attributes(element, [kAXRoleAttribute, kAXValueAttribute, kAXChildrenAttribute])
+                let raw = AX.attributes(element, [kAXRoleAttribute, kAXChildrenAttribute])
                 if AX.string(raw[kAXRoleAttribute]) == kAXStaticTextRole {
-                    // An empty label still replaces the node, as in the original.
-                    return relabelled(AX.describe(raw[kAXValueAttribute]))
+                    // An empty label still replaces the node, as in the original. The value is
+                    // fetched only for static text, so a password field's never is.
+                    return relabelled(AX.describe(AX.attribute(element, kAXValueAttribute)))
                 }
                 current = AX.elements(raw[kAXChildrenAttribute]).first
             }
