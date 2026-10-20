@@ -11,15 +11,17 @@ public enum StdioServer {
     /// closes stdin after its last request expects. Signal dispositions are the caller's: with
     /// `SIGPIPE` at its default, a write to a closed stdout kills the process instead.
     /// An unterminated trailing line at EOF is dropped, as the SDK transport does.
+    /// `label` names the input in log lines (a socket connection's peer, say).
     public static func run(_ registry: ToolRegistry,
                            input: FileDescriptor = .standardInput,
-                           output: FileDescriptor = .standardOutput) async {
-        let transport = StdoutWatchingTransport(input: input, output: output)
+                           output: FileDescriptor = .standardOutput,
+                           label: String = "stdin") async {
+        let transport = StdoutWatchingTransport(input: input, output: output, label: label)
         let started: StartedServer
         do {
             started = try await registry.start(on: transport)
         } catch {
-            log("Could not start serving stdio: \(error)")
+            log("Could not start serving \(label): \(error)")
             return
         }
         await withTaskCancellationHandler {
@@ -44,6 +46,8 @@ public enum StdioServer {
 private actor StdoutWatchingTransport: Transport {
     nonisolated let logger: Logger
     private let inner: StdioTransport
+    /// What the input is called in log lines.
+    private let label: String
     private let messages: AsyncThrowingStream<Data, Swift.Error>
     private let continuation: AsyncThrowingStream<Data, Swift.Error>.Continuation
     private var forwarding: Task<Void, Never>?
@@ -53,8 +57,9 @@ private actor StdoutWatchingTransport: Transport {
     private var inputEnded = false
     private var outputClosed = false
 
-    init(input: FileDescriptor, output: FileDescriptor) {
+    init(input: FileDescriptor, output: FileDescriptor, label: String) {
         inner = StdioTransport(input: input, output: output)
+        self.label = label
         logger = inner.logger
         (messages, continuation) = AsyncThrowingStream.makeStream()
     }
@@ -62,11 +67,11 @@ private actor StdoutWatchingTransport: Transport {
     func connect() async throws {
         try await inner.connect()
         let incoming = await inner.receive()
-        forwarding = Task {
+        forwarding = Task { [label] in
             do {
                 for try await data in incoming { self.received(data) }
             } catch {
-                log("Could not read stdin: \(error)")
+                log("Could not read \(label): \(error)")
             }
             self.inputDidEnd()
         }
