@@ -8,12 +8,13 @@ namespace DesktopMcp.Desktop.Control;
 /// <summary>
 /// Whether the user can see and drive this session now (<c>control_win32.py:221-253</c>): the session's connect state is
 /// <c>WTSActive</c> (not disconnected, not session 0) and the input desktop is <c>Default</c> (not the lock screen or a UAC
-/// prompt; the check <see cref="DesktopSession"/> shares, P4 preflight F12). The coordinator's health check calls it.
+/// prompt; the check <see cref="DesktopSession"/> shares, P4 preflight F12, here strict: a desktop whose name cannot be
+/// read is not the user's). The coordinator's health check calls it.
 /// </summary>
 internal static unsafe class InteractiveDesktop
 {
     /// <summary>True only when the session is active and the input desktop is the user's. Never throws.</summary>
-    public static bool IsAvailable() => IsAvailable(SessionIsActive, DesktopSession.IsInputDesktopDefault);
+    public static bool IsAvailable() => IsAvailable(SessionIsActive, static () => DesktopSession.IsInputDesktopDefault(strict: true));
 
     /// <summary>The rule over its two checks; a check that throws counts as unavailable.</summary>
     internal static bool IsAvailable(Func<bool> sessionActive, Func<bool> inputDesktopDefault)

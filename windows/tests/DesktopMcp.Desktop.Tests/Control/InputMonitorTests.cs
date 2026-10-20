@@ -24,8 +24,23 @@ public class InputMonitorTests
 
     private PhysicalInputFilter NewFilter() => new(() => _now, TimeSpan.TicksPerSecond, ForeignInjectedPolicy.Physical, static () => { });
 
-    private InputMonitor NewMonitor(PhysicalInputFilter? filter = null, IDesktopDispatcher? dispatcher = null, TimeSpan? startLimit = null) =>
-        new(new DispatcherHost(() => dispatcher ?? _dispatcher), filter ?? NewFilter(), () => _now, _native, startLimit ?? TimeSpan.FromSeconds(3));
+    private readonly System.Collections.Concurrent.ConcurrentQueue<Exception> _reports = new();
+
+    private InputMonitor NewMonitor(PhysicalInputFilter? filter = null, IDesktopDispatcher? dispatcher = null, TimeSpan? startLimit = null,
+        TimeSpan? stopLimit = null, DispatcherHost? host = null) =>
+        new(host ?? new DispatcherHost(() => dispatcher ?? _dispatcher) { Report = _reports.Enqueue }, filter ?? NewFilter(), () => _now, _native,
+            startLimit ?? TimeSpan.FromSeconds(3), stopLimit ?? TimeSpan.FromSeconds(2));
+
+    private async Task<Exception> ReportedAsync()
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (_reports.TryPeek(out var report)) return report;
+            await Task.Delay(10);
+        }
+        throw new TimeoutException("Nothing was reported.");
+    }
 
     private FakeDispatcher.FakeTimer Timer(TimeSpan interval) => Assert.Single(_dispatcher.Timers, t => t.Interval == interval);
 
@@ -310,6 +325,94 @@ public class InputMonitorTests
     }
 
     [Fact]
+    public async Task AFailedNextHookCallIsRetriedSoTheChainStillRuns()
+    {
+        var filter = NewFilter();
+        await using var monitor = NewMonitor(filter);
+        await monitor.StartAsync(default);
+        _native.NextResult = 5; // a later hook's verdict, which must reach Windows
+        _native.NextHookFailures = 1;
+
+        Assert.Equal(5, monitor.Keyboard(0, (nint)WmKeyDown, 0, 0x41, 0, 0));
+        _native.NextHookFailures = 1;
+        Assert.Equal(5, monitor.Mouse(0, (nint)WmLButtonDown, 0, 0, 0, 0, 0, 0));
+        Assert.Equal(4, _native.NextHookCalls.Count);
+        Assert.True(filter.FailOpenRequested);
+    }
+
+    [Fact]
+    public async Task AStopWhileTheDispatcherIsStartingInstallsNothing()
+    {
+        using var release = new ManualResetEventSlim();
+        var host = new DispatcherHost(() => { release.Wait(); return _dispatcher; });
+        var monitor = NewMonitor(host: host);
+
+        var start = monitor.StartAsync(default);
+        await monitor.StopAsync();
+        await using (var other = NewMonitor()) // the slot is free at once
+        {
+            await other.StartAsync(default);
+            await other.StopAsync();
+        }
+        _native.Calls.Clear();
+        release.Set();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => start);
+        Assert.Empty(_native.Calls);
+        Assert.Empty(_native.Installed);
+        Assert.All(_dispatcher.Timers, t => Assert.True(t.Stopped));
+        await using var next = NewMonitor();
+        await next.StartAsync(default);
+    }
+
+    [Fact]
+    public async Task StopGivesUpOnAStalledDispatcherAfterItsBound()
+    {
+        var filter = NewFilter();
+        var stalled = new StalledDispatcher { Stalled = false };
+        var monitor = NewMonitor(filter, stalled, stopLimit: TimeSpan.FromMilliseconds(100));
+        await monitor.StartAsync(default);
+        filter.SetSuppression(true, _now + 10_000_000);
+        stalled.Stalled = true;
+
+        await monitor.StopAsync().WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.False(filter.Suppressing);
+        Assert.IsType<TimeoutException>(await ReportedAsync());
+        stalled.RunAll(); // the dispatcher wakes: the teardown runs then
+        Assert.Empty(_native.Installed);
+    }
+
+    [Fact]
+    public async Task AFailedUndoOfATimedOutStartIsReported()
+    {
+        var stalled = new StalledDispatcher();
+        var monitor = NewMonitor(dispatcher: stalled, startLimit: TimeSpan.FromMilliseconds(100));
+        await Assert.ThrowsAsync<TimeoutException>(() => monitor.StartAsync(default));
+        _native.DestroySinkThrows = true;
+
+        stalled.RunAll();
+
+        Assert.Equal("destroy sink", Assert.IsType<InvalidOperationException>(await ReportedAsync()).Message);
+    }
+
+    [Fact]
+    public async Task ARetryWhileTheTimedOutStartIsBeingUndoneSaysSo()
+    {
+        var stalled = new StalledDispatcher();
+        var monitor = NewMonitor(dispatcher: stalled, startLimit: TimeSpan.FromMilliseconds(100));
+        await Assert.ThrowsAsync<TimeoutException>(() => monitor.StartAsync(default));
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => monitor.StartAsync(default));
+        Assert.Equal("This input monitor's previous start is still being undone on the dispatcher; try again later.", error.Message);
+
+        stalled.RunAll();
+        stalled.Stalled = false;
+        await monitor.StartAsync(default);
+        await monitor.StopAsync();
+    }
+
+    [Fact]
     public async Task RawInputIsCountedAndOnlyRelativeDeviceMotionReachesTheFilter()
     {
         var filter = NewFilter();
@@ -351,6 +454,9 @@ public class InputMonitorTests
     {
         private readonly Queue<Action> _work = new();
 
+        /// <summary>While false, work runs inline as it is queued.</summary>
+        public bool Stalled { get; set; } = true;
+
         public bool HasThreadAccess => false;
         public int ManagedThreadId => -1;
         public event Action<Exception>? UnhandledException { add { } remove { } }
@@ -366,6 +472,7 @@ public class InputMonitorTests
                     try { done.SetResult(func()); }
                     catch (Exception e) { done.SetException(e); }
                 });
+            if (!Stalled) RunAll();
             return done.Task;
         }
 
@@ -412,6 +519,8 @@ internal sealed class FakeMonitorNative : IInputMonitorNative
     public int InstallFailures { get; set; }
     public bool SinkFails { get; set; }
     public bool NextHookThrows { get; set; }
+    public int NextHookFailures { get; set; }
+    public bool DestroySinkThrows { get; set; }
     public bool KeyStateThrows { get; set; }
     public nint NextResult { get; set; }
 
@@ -425,7 +534,11 @@ internal sealed class FakeMonitorNative : IInputMonitorNative
         Calls.Add("sink");
     }
 
-    public void DestroySink() => Calls.Add("destroy sink");
+    public void DestroySink()
+    {
+        Calls.Add("destroy sink");
+        if (DestroySinkThrows) throw new InvalidOperationException("destroy sink");
+    }
 
     public (nint Keyboard, nint Mouse) InstallHooks()
     {
@@ -455,6 +568,11 @@ internal sealed class FakeMonitorNative : IInputMonitorNative
     {
         NextHookCalls.Add((code, wParam, lParam));
         if (NextHookThrows) throw new InvalidOperationException("next hook");
+        if (NextHookFailures > 0)
+        {
+            NextHookFailures--;
+            throw new InvalidOperationException("next hook");
+        }
         return NextResult;
     }
 

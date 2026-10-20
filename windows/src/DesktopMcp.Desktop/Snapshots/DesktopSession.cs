@@ -40,10 +40,11 @@ internal static unsafe class DesktopSession
 
     /// <summary>
     /// Whether the input desktop is the user's "Default" desktop: false on the lock screen or a secure desktop (a UAC
-    /// prompt), or when the input desktop cannot be opened. A desktop whose name cannot be read counts as the user's.
-    /// Never throws. Shared by <see cref="ThrowIfUnavailable"/> and the control's interactive-desktop check (P4 preflight F12).
+    /// prompt), or when the input desktop cannot be opened. A desktop whose name cannot be read counts as the user's unless
+    /// <paramref name="strict"/> (the control's check, <c>control_win32.py:239-252</c>, which fails safe). Never throws.
+    /// Shared by <see cref="ThrowIfUnavailable"/> and the control's interactive-desktop check (P4 preflight F12).
     /// </summary>
-    public static bool IsInputDesktopDefault()
+    public static bool IsInputDesktopDefault(bool strict = false)
     {
         try
         {
@@ -53,8 +54,8 @@ internal static unsafe class DesktopSession
             {
                 var name = stackalloc char[NameChars];
                 uint needed;
-                return !PInvoke.GetUserObjectInformation((HANDLE)(nint)desktop.Value, USER_OBJECT_INFORMATION_INDEX.UOI_NAME, name, NameChars * sizeof(char), &needed)
-                    || NameOf(name, needed).Equals("Default", StringComparison.OrdinalIgnoreCase);
+                var read = PInvoke.GetUserObjectInformation((HANDLE)(nint)desktop.Value, USER_OBJECT_INFORMATION_INDEX.UOI_NAME, name, NameChars * sizeof(char), &needed);
+                return IsDefaultName(read ? NameOf(name, needed) : null, strict);
             }
             finally
             {
@@ -66,6 +67,10 @@ internal static unsafe class DesktopSession
             return false;
         }
     }
+
+    /// <summary>The rule over the input desktop's name; null when it could not be read.</summary>
+    internal static bool IsDefaultName(string? name, bool strict) =>
+        name is null ? !strict : name.Equals("Default", StringComparison.OrdinalIgnoreCase);
 
     // needed is the name's size in bytes, its terminator included; never read past the buffer or the terminator.
     private static string NameOf(char* name, uint needed)

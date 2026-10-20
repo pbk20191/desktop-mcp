@@ -63,6 +63,7 @@ internal interface IInputMonitorNative
 internal sealed class InputMonitor : IInputMonitor
 {
     internal static readonly TimeSpan StartLimit = TimeSpan.FromSeconds(3);
+    internal static readonly TimeSpan StopLimit = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan RehookInterval = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan TickInterval = TimeSpan.FromMilliseconds(100);
     private const uint WmKeyDown = 0x100;
@@ -75,6 +76,7 @@ internal sealed class InputMonitor : IInputMonitor
     private readonly Func<long> _now;
     private readonly IInputMonitorNative _native;
     private readonly TimeSpan _startLimit;
+    private readonly TimeSpan _stopLimit;
     private readonly Func<int, short> _keyState;
     private readonly Lock _gate = new();
 
@@ -97,12 +99,14 @@ internal sealed class InputMonitor : IInputMonitor
     private long _rawMessages;
 
     public InputMonitor(DispatcherHost host, PhysicalInputFilter filter, Func<long> now)
-        : this(host, filter, now, new Win32Native(), StartLimit)
+        : this(host, filter, now, new Win32Native(), StartLimit, StopLimit)
     {
     }
 
-    internal InputMonitor(DispatcherHost host, PhysicalInputFilter filter, Func<long> now, IInputMonitorNative native, TimeSpan startLimit)
+    internal InputMonitor(DispatcherHost host, PhysicalInputFilter filter, Func<long> now, IInputMonitorNative native, TimeSpan startLimit,
+        TimeSpan stopLimit)
     {
+        _stopLimit = stopLimit;
         _host = host;
         _filter = filter;
         _now = now;
@@ -130,8 +134,16 @@ internal sealed class InputMonitor : IInputMonitor
     /// </summary>
     public async Task StartAsync(CancellationToken ct)
     {
-        if (Interlocked.CompareExchange(ref s_current, this, null) is not null)
-            throw new InvalidOperationException("Another input monitor is running.");
+        if (Interlocked.CompareExchange(ref s_current, this, null) is { } running)
+        {
+            if (!ReferenceEquals(running, this)) throw new InvalidOperationException("Another input monitor is running.");
+            lock (_gate)
+            {
+                throw new InvalidOperationException(_stopping is null
+                    ? "This input monitor is already running."
+                    : "This input monitor's previous start is still being undone on the dispatcher; try again later.");
+            }
+        }
         lock (_gate)
         {
             _stopping = null;
@@ -143,7 +155,12 @@ internal sealed class InputMonitor : IInputMonitor
         try
         {
             var dispatcher = await _host.GetAsync(bound.Token).ConfigureAwait(false);
-            lock (_gate) _dispatcher = dispatcher;
+            lock (_gate)
+            {
+                // A StopAsync while the dispatcher was starting has already freed the slot: install nothing.
+                if (_stopping is not null) throw new OperationCanceledException("The input monitor was stopped while starting.");
+                _dispatcher = dispatcher;
+            }
             await dispatcher.InvokeAsync(SetUp).WaitAsync(bound.Token).ConfigureAwait(false);
             Task<IDisposable> rehook, tick;
             lock (_gate)
@@ -157,7 +174,9 @@ internal sealed class InputMonitor : IInputMonitor
         }
         catch (Exception e)
         {
-            _ = StopCoreAsync(); // queued behind the start on the dispatcher, so it undoes whatever the start did
+            // Queued behind the start on the dispatcher, so it undoes whatever the start did; nobody awaits it, so a failure is
+            // reported to the host's sink.
+            ReportFailure(StopCoreAsync());
             if (e is OperationCanceledException && bound.IsCancellationRequested && !ct.IsCancellationRequested)
                 throw new TimeoutException($"The input monitor did not start within {_startLimit.TotalSeconds:0.#} s.", e);
             throw;
@@ -168,10 +187,30 @@ internal sealed class InputMonitor : IInputMonitor
     /// Turns suppression off at once (a fail-safe), then on the dispatcher stops the timers, removes the hooks and the sink
     /// window and frees the process's monitor slot. Idempotent; a monitor that never started does nothing.
     /// </summary>
-    public Task StopAsync()
+    public async Task StopAsync()
     {
         _filter.SetSuppression(false, 0);
-        return StopCoreAsync();
+        var stopping = StopCoreAsync();
+        try
+        {
+            await stopping.WaitAsync(_stopLimit).ConfigureAwait(false);
+        }
+        catch (TimeoutException e)
+        {
+            // A stalled dispatcher: give up waiting (suppression is already off, and Windows bypasses hooks that do not
+            // answer). The teardown still runs when the dispatcher wakes; a later failure of it is reported then.
+            Report(new TimeoutException($"The input monitor did not stop within {_stopLimit.TotalSeconds:0.#} s; its teardown is still queued.", e));
+            ReportFailure(stopping);
+        }
+    }
+
+    private void ReportFailure(Task task) =>
+        task.ContinueWith(static (t, state) => ((InputMonitor)state!).Report(t.Exception!.GetBaseException()), this,
+            CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+
+    private void Report(Exception error)
+    {
+        if (_host.Report is { } report) TimerTicks.Report(report, error);
     }
 
     public async ValueTask DisposeAsync() => await StopAsync().ConfigureAwait(false);
@@ -183,9 +222,10 @@ internal sealed class InputMonitor : IInputMonitor
             if (_stopping is not null) return _stopping;
             if (_dispatcher is not { } dispatcher)
             {
-                // No dispatcher (it failed to start, or this monitor never started): nothing was installed.
+                // No dispatcher yet (still starting, failed, or this monitor never started): nothing was installed. The stop
+                // is recorded so a start still acquiring the dispatcher installs nothing.
                 Interlocked.CompareExchange(ref s_current, null, this);
-                return Task.CompletedTask;
+                return _stopping = Task.CompletedTask;
             }
             var rehook = _rehookTimer;
             var tick = _tickTimer;
@@ -314,37 +354,56 @@ internal sealed class InputMonitor : IInputMonitor
     /// <summary>The keyboard hook's work for a decoded <c>KBDLLHOOKSTRUCT</c>. Never throws.</summary>
     internal nint Keyboard(int code, nint wParam, nint lParam, uint vk, uint flags, nuint extraInfo)
     {
+        nint result = 0;
+        var called = false; // the next hook's verdict, once it has one, is what Windows gets
         try
         {
             if (code < 0) return _native.CallNextHook(code, wParam, lParam);
             var down = (uint)wParam is WmKeyDown or WmSysKeyDown;
             if (_filter.OnKey(vk, down, flags, extraInfo) == HookVerdict.Swallow) return 1;
-            var result = _native.CallNextHook(code, wParam, lParam);
+            result = _native.CallNextHook(code, wParam, lParam);
+            called = true;
             _filter.AfterKeyForwarded(vk, down, result);
             return result;
         }
         catch (Exception)
         {
             _filter.RequestFailOpen();
-            return 0;
+            return called ? result : CallNextGuarded(code, wParam, lParam);
         }
     }
 
     /// <summary>The mouse hook's work for a decoded <c>MSLLHOOKSTRUCT</c>. Never throws.</summary>
     internal nint Mouse(int code, nint wParam, nint lParam, int x, int y, uint mouseData, uint flags, nuint extraInfo)
     {
+        nint result = 0;
+        var called = false;
         try
         {
             if (code < 0) return _native.CallNextHook(code, wParam, lParam);
             var message = (uint)wParam;
             if (_filter.OnMouse(message, mouseData, x, y, flags, extraInfo) == HookVerdict.Swallow) return 1;
-            var result = _native.CallNextHook(code, wParam, lParam);
+            result = _native.CallNextHook(code, wParam, lParam);
+            called = true;
             _filter.AfterMouseForwarded(message, mouseData, result);
             return result;
         }
         catch (Exception)
         {
             _filter.RequestFailOpen();
+            return called ? result : CallNextGuarded(code, wParam, lParam);
+        }
+    }
+
+    // The chain must still run when our own work failed: one more, guarded, call to the next hook (0 if that fails too).
+    private nint CallNextGuarded(int code, nint wParam, nint lParam)
+    {
+        try
+        {
+            return _native.CallNextHook(code, wParam, lParam);
+        }
+        catch (Exception)
+        {
             return 0;
         }
     }
@@ -487,6 +546,10 @@ internal sealed class InputMonitor : IInputMonitor
             }
         }
 
+        /// <remarks>
+        /// <c>RIDEV_REMOVE</c> removes the process-wide registration for usage page 1, usage 2 (the mouse), whichever window
+        /// registered it: nothing else in this process may register mouse Raw Input (a note for Task 9's windows).
+        /// </remarks>
         public void DestroySink()
         {
             if (_rawRegistered)
