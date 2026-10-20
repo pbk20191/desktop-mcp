@@ -10,17 +10,15 @@
 #    an interactive session; -SkipCapture leaves those two out (Windows Sandbox has no runtime). The desktop calls
 #    need an unlocked interactive desktop session: on a locked screen, a secure desktop or in session 0 they fail.
 #    Snapshot must show a named virtual desktop (not the "Default Desktop" fallback) and at least one tree element.
-#    Both sessions run with DESKTOP_MCP_EXCLUDE_PROCESSES set to -ExcludeProcesses (default Code.exe): Snapshot's UIA
-#    walk hung VS Code, a Chromium app, twice on 2026-10-20 (see the P2 leftovers), and a developer runs this script from
-#    VS Code. The exclusion keeps those processes out of the tree walk; the window list still probes their
-#    top-level windows through UIA.
+#    Both sessions run with DESKTOP_MCP_EXCLUDE_PROCESSES set to -ExcludeProcesses (default empty). P2 excluded Code.exe
+#    after the walk hung VS Code; Decisions 36-38 fixed that, and a run with VS Code open confirmed it (2026-10-20).
 # 2. `serve --config <file excluding Registry>`: tools/list equals the spec less Registry, which proves the NativeAOT
 #    exe parsed the TOML file.
 param(
     [Parameter(Mandatory)][string]$Exe,
     [string]$Spec = (Join-Path $PSScriptRoot '../../spec/windows/tools.json'),
     [switch]$SkipCapture,
-    [string]$ExcludeProcesses = 'Code.exe'
+    [string]$ExcludeProcesses = ''
 )
 $ErrorActionPreference = 'Stop'
 
