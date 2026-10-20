@@ -13,12 +13,22 @@ internal sealed class ControlRig
 {
     public static readonly ControlSettings Settings = new(true, "relaxed", 10, 500, 500);
 
-    private ControlRig(int monitorStartFailures)
+    private ControlRig(int monitorStartFailures, int queueCapacity)
     {
-        Monitor = new FakeMonitor(Time, monitorStartFailures, () => Control!.Ledger.BlockNew());
+        Monitor = new FakeMonitor(Time, monitorStartFailures, () =>
+        {
+            Control!.Ledger.BlockNew();
+            OnBlockLedger?.Invoke();
+        }, queueCapacity);
         Control = new ControlCoordinator(Settings, Monitor, NewIndicator, () => Interactive, Time,
-            (level, message, _) => { lock (Logs) Logs.Add((level, message)); }) { LoopEnabled = false };
+            (level, message, _) => { lock (Logs) Logs.Add((level, message)); }, () => EnsureRuntime?.Invoke()) { LoopEnabled = false };
     }
+
+    /// <summary>The Windows App SDK start the coordinator calls before the monitor (nothing by default).</summary>
+    public Action? EnsureRuntime { get; set; }
+
+    /// <summary>Runs inside the hook's ledger block: after it set a chord's or fail-open's flag, before it queues the event.</summary>
+    public Action? OnBlockLedger { get; set; }
 
     public ManualTime Time { get; } = new();
 
@@ -49,11 +59,11 @@ internal sealed class ControlRig
         Assert.True(filter.TakeoverPending);
     }
 
-    public static ControlRig Create(int monitorStartFailures = 0) => new(monitorStartFailures);
+    public static ControlRig Create(int monitorStartFailures = 0, int queueCapacity = 4096) => new(monitorStartFailures, queueCapacity);
 
-    public static async Task<ControlRig> StartedAsync()
+    public static async Task<ControlRig> StartedAsync(int queueCapacity = 4096)
     {
-        var rig = Create();
+        var rig = Create(queueCapacity: queueCapacity);
         await rig.Control.StartAsync(default);
         Assert.Equal(ControlState.Ready, rig.Control.Status().State);
         return rig;
@@ -106,11 +116,11 @@ internal sealed class FakeMonitor : IInputMonitor
     private TaskCompletionSource? _holdStart;
     private readonly TaskCompletionSource _startEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    public FakeMonitor(ManualTime time, int startFailures, Action blockLedger)
+    public FakeMonitor(ManualTime time, int startFailures, Action blockLedger, int queueCapacity = 4096)
     {
         _time = time;
         _startFailures = startFailures;
-        Filter = new PhysicalInputFilter(time.GetTimestamp, time.TimestampFrequency, ForeignInjectedPolicy.Physical, blockLedger);
+        Filter = new PhysicalInputFilter(time.GetTimestamp, time.TimestampFrequency, ForeignInjectedPolicy.Physical, blockLedger, queueCapacity);
     }
 
     public PhysicalInputFilter Filter { get; }

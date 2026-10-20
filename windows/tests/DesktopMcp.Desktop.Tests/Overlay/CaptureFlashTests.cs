@@ -155,6 +155,22 @@ public class CaptureFlashTests
     }
 
     [Fact]
+    public async Task AReplacedFlashRendersNoFurtherStrips()
+    {
+        var rig = new FlashRig();
+        rig.Art.Hold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        rig.Flash.Show(new ScreenRect(200, 200, 600, 500), [Monitor]);
+        var first = rig.Flash.Pending;
+        Assert.True(SpinWait.SpinUntil(() => rig.Art.Renders >= 1, TimeSpan.FromSeconds(10)));   // its first strip is rendering
+        rig.Flash.Show(null, [Monitor]);
+        rig.Art.Hold.SetResult();
+        await first.WaitAsync(TimeSpan.FromSeconds(10));
+        await rig.Settled();
+        Assert.Equal(1 + 4, rig.Art.Renders);                               // the replaced flash stopped after the strip in flight
+        Assert.Equal(4, rig.Layers.Count);
+    }
+
+    [Fact]
     public async Task ANewerShowWhileTheArtRendersDoesNotAbandonTheSharedGate()
     {
         var gate = new GpuGate();
@@ -255,6 +271,16 @@ public class CaptureFlashTests
     {
         // Creating the real flash starts no dispatcher and loads no graphics; nothing to observe but that it does not throw.
         Assert.IsType<CaptureFlash>(CaptureFlash.CreateDefault(() => new ScreenRect(0, 0, 1920, 1080)));
+    }
+
+    [Fact]
+    public void AMachineBuiltOnAPrivateDispatcherFlashesOnIt()
+    {
+        var host = new DispatcherHost(() => throw new InvalidOperationException("never started"));
+        var machine = DesktopMachine.CreateDefault(host, log: null);
+        Assert.Same(host, machine.Dispatcher);
+        Assert.Same(host, Assert.IsType<CaptureFlash>(machine.Flash).Host);
+        Assert.Same(DispatcherHost.Shared, Assert.IsType<CaptureFlash>(DesktopMachine.CreateDefault().Flash).Host);
     }
 
     [Fact]

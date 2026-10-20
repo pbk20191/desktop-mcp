@@ -253,8 +253,9 @@ public sealed class ControlCoordinator : IDesktopControl
 
     /// <summary>
     /// Starts the monitor (Decisions 14). With no interactive desktop or a failed monitor start, control stays
-    /// <c>unavailable</c> and the heartbeat retries every 5 s; a missing Windows App SDK runtime
-    /// (<see cref="InvalidOperationException"/> from <see cref="AppRuntime"/>) is not retried. Then the heartbeat starts.
+    /// <c>unavailable</c> and the heartbeat retries every 5 s (a repeating failure warns once); a missing Windows App SDK
+    /// runtime (<see cref="InvalidOperationException"/> from <see cref="AppRuntime"/>) or an architecture with no runtime
+    /// build (<see cref="PlatformNotSupportedException"/>) is not retried. Then the heartbeat starts.
     /// </summary>
     public async Task StartAsync(CancellationToken ct)
     {
@@ -417,15 +418,17 @@ public sealed class ControlCoordinator : IDesktopControl
         {
             _ensureRuntime();
         }
-        catch (InvalidOperationException e)
+        catch (Exception e) when (e is InvalidOperationException or PlatformNotSupportedException)
         {
+            // Permanent: the runtime is missing, or this process's architecture has no runtime build.
             lock (_lock) _retryStart = false;
             Log(DesktopLogLevel.Error, "Desktop control is unavailable: the Windows App SDK runtime could not start.", e);
             return;
         }
         catch (Exception e)
         {
-            Log(DesktopLogLevel.Warning, "Desktop control could not start the Windows App SDK runtime; retrying in 5 s.", e);
+            var level = _startErrors.Allow(LogThrottle.Key(e), _time.GetTimestamp()) ? DesktopLogLevel.Warning : DesktopLogLevel.Debug;
+            Log(level, "Desktop control could not start the Windows App SDK runtime; retrying in 5 s.", e);
             return;
         }
         try
@@ -451,15 +454,8 @@ public sealed class ControlCoordinator : IDesktopControl
             if (!stale)
             {
                 _running = true;
+                // Ready or user: its change blocks the ledger, which stays blocked until a call enters ai (Begin enables it).
                 _machine.Start(_monitor.Filter.LastPhysical);
-                try
-                {
-                    Ledger.Enable();
-                }
-                catch (InvalidOperationException e)
-                {
-                    Log(DesktopLogLevel.Warning, "AI input is still held at control start.", e);
-                }
                 _nextHealth = 0;
                 QueueChangeLocked();
                 PublishLocked(_time.GetTimestamp());

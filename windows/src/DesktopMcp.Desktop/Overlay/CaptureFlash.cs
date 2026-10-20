@@ -87,12 +87,19 @@ internal sealed class CaptureFlash : ICaptureFlash
     /// nothing until the first flash.
     /// </summary>
     public static ICaptureFlash CreateDefault(Func<ScreenRect> virtualScreen, DesktopLog? log = null) =>
-        new CaptureFlash(DispatcherHost.Shared, new LayeredWindowFactory(log, LayeredWindow.FlashOverlay), OverlayArt.Shared, virtualScreen,
+        CreateDefault(DispatcherHost.Shared, virtualScreen, log);
+
+    /// <summary>The real flash on <paramref name="dispatcher"/> in place of the shared dispatcher.</summary>
+    public static ICaptureFlash CreateDefault(DispatcherHost dispatcher, Func<ScreenRect> virtualScreen, DesktopLog? log = null) =>
+        new CaptureFlash(dispatcher, new LayeredWindowFactory(log, LayeredWindow.FlashOverlay), OverlayArt.Shared, virtualScreen,
             Environment.GetEnvironmentVariable, TimeProvider.System, log);
 
     /// <summary>upstream <c>_flash_disabled</c>: 1, true, yes or on, trimmed, in any case.</summary>
     internal static bool Disabled(string? value) =>
         value?.Trim().ToLowerInvariant() is "1" or "true" or "yes" or "on";
+
+    /// <summary>The dispatcher the flash runs on, for tests.</summary>
+    internal DispatcherHost Host => _host;
 
     /// <summary>The last <see cref="Show"/>'s render and dispatcher step (it never faults), for tests.</summary>
     internal Task Pending
@@ -122,14 +129,27 @@ internal sealed class CaptureFlash : ICaptureFlash
     // ---- thread pool ----
 
     // The render is never cancelled: a cancelled Win2D render abandons the graphics slot it shares with the screenshots
-    // (GpuGate), which would fail the next capture. A replaced or late flash renders to the end and is dropped afterwards.
+    // (GpuGate), which would fail the next capture. A replaced flash finishes the strip in flight, renders no more and is
+    // dropped; a late one is dropped after rendering.
     private async Task RunAsync(long request, ScreenRect? region, ScreenRect[] monitors, long requestedAt)
     {
         try
         {
             var specs = OverlayLayout.Flash(region, monitors, _virtualScreen());
             if (specs.Count == 0) return;
-            var bitmaps = await Task.WhenAll(specs.Select(spec => RenderAsync(spec.Art))).ConfigureAwait(false);
+            // One strip at a time (they share the graphics slot anyway): a flash a newer one replaced renders nothing more,
+            // so a burst of screenshots does not queue every stale flash's strips on GpuGate.
+            var bitmaps = new OverlayBitmap[specs.Count];
+            for (var i = 0; i < specs.Count; i++)
+            {
+                if (_cache.TryGetValue(specs[i].Art, out var cached))
+                {
+                    bitmaps[i] = cached;
+                    continue;
+                }
+                if (!Current(request)) return;
+                bitmaps[i] = await RenderAsync(specs[i].Art).ConfigureAwait(false);
+            }
             // A newer flash replaces this one; a flash that waited for the graphics slot longer than it lasts is not shown.
             if (!Current(request) || _time.GetElapsedTime(requestedAt) >= OverlayLayout.FlashDuration) return;
             var dispatcher = await _host.GetAsync(CancellationToken.None).ConfigureAwait(false);
@@ -143,7 +163,6 @@ internal sealed class CaptureFlash : ICaptureFlash
 
     private async Task<OverlayBitmap> RenderAsync(LayerArt art)
     {
-        if (_cache.TryGetValue(art, out var cached)) return cached;
         var bitmap = await _art.RenderAsync(art, CancellationToken.None).ConfigureAwait(false);
         // Region flashes come in every size: the cache keeps the most recent strips only.
         if (_cache.Count >= CacheLimit) _cache.Clear();

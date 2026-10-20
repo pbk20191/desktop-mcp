@@ -68,8 +68,8 @@ public sealed record ToolServices
     /// <summary>
     /// The dispatcher thread the input monitor, indicator and flash share, started on first use; the server logs its
     /// unhandled exceptions and shuts it down after the control stops. <see cref="Create"/> uses
-    /// <see cref="DispatcherHost.Shared"/>; <see cref="CreateDefault"/> uses a host of its own (never started by its
-    /// disabled control) so a test server's shutdown leaves the shared one alone.
+    /// <see cref="DispatcherHost.Shared"/>; <see cref="CreateDefault"/> uses a host of its own for its control and its
+    /// machine's capture flash, so a test server never starts the shared one and its shutdown leaves it alone.
     /// </summary>
     public DispatcherHost Dispatcher { get; init; } = DispatcherHost.Shared;
 
@@ -78,7 +78,7 @@ public sealed record ToolServices
     /// checks build on. Nothing starts a monitor.
     /// </summary>
     public static ToolServices CreateDefault() =>
-        Create(new DisabledControl(DefaultControlSettings()), ProcessAllowlist.Everything, log: null) with { Dispatcher = new DispatcherHost() };
+        Create(new DisabledControl(DefaultControlSettings()), ProcessAllowlist.Everything, log: null, new DispatcherHost());
 
     /// <summary>
     /// The server's services for <paramref name="plan"/>: the desktop control its <c>[control]</c> settings describe
@@ -89,7 +89,7 @@ public sealed record ToolServices
     public static ToolServices Create(ServePlan plan, DesktopLog? log = null)
     {
         ArgumentNullException.ThrowIfNull(plan);
-        return Create(ControlCoordinator.Create(plan.Control, log), new ProcessAllowlist(plan.Control.ProcessAllowlist), log);
+        return Create(ControlCoordinator.Create(plan.Control, log), new ProcessAllowlist(plan.Control.ProcessAllowlist), log, DispatcherHost.Shared);
     }
 
     /// <summary>The <c>[control]</c> defaults with control turned off.</summary>
@@ -99,9 +99,9 @@ public sealed record ToolServices
         return new ControlSettings(false, defaults.Policy, defaults.IdleTimeoutSeconds, defaults.MouseTakeoverUnits, defaults.MouseTakeoverPixels);
     }
 
-    private static ToolServices Create(IDesktopControl control, ProcessAllowlist allowlist, DesktopLog? log)
+    private static ToolServices Create(IDesktopControl control, ProcessAllowlist allowlist, DesktopLog? log, DispatcherHost dispatcher)
     {
-        var machine = DesktopMachine.CreateDefault(log);
+        var machine = DesktopMachine.CreateDefault(dispatcher, log);
         var snapshots = new SnapshotService(machine);
         var clipboard = new SystemClipboard();
         var ledger = control.Ledger;
@@ -127,6 +127,7 @@ public sealed record ToolServices
             Control = control,
             Ledger = ledger,
             Time = TimeProvider.System,
+            Dispatcher = dispatcher,
         };
     }
 }

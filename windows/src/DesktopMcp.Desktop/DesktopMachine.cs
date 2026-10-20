@@ -1,3 +1,4 @@
+using DesktopMcp.Desktop.Dispatching;
 using DesktopMcp.Desktop.Displays;
 using DesktopMcp.Desktop.Overlay;
 using DesktopMcp.Desktop.Tree;
@@ -36,20 +37,33 @@ public sealed class DesktopMachine
     /// <summary>The flash shown after every screenshot (Decisions 27); the snapshot service shows it.</summary>
     public ICaptureFlash Flash { get; }
 
+    /// <summary>The dispatcher the real capture flash runs on (null when the machine was built with a supplied flash).</summary>
+    public DispatcherHost? Dispatcher { get; private init; }
+
     /// <summary>
     /// The real machine. Cheap: it starts no thread and touches no COM, UIA, desktop or Windows App SDK (the UIA worker
     /// starts its thread on the first job). <paramref name="log"/> receives the capture flash's failures.
     /// </summary>
-    public static DesktopMachine CreateDefault(DesktopLog? log = null) => Create(displays => CaptureFlash.CreateDefault(displays.GetVirtualScreen, log));
+    public static DesktopMachine CreateDefault(DesktopLog? log = null) => CreateDefault(DispatcherHost.Shared, log);
+
+    /// <summary>
+    /// The real machine whose capture flash runs on <paramref name="dispatcher"/> in place of <see cref="DispatcherHost.Shared"/>
+    /// (a server's private host, so a test server never starts the shared one).
+    /// </summary>
+    public static DesktopMachine CreateDefault(DispatcherHost dispatcher, DesktopLog? log)
+    {
+        ArgumentNullException.ThrowIfNull(dispatcher);
+        return Create(displays => CaptureFlash.CreateDefault(dispatcher, displays.GetVirtualScreen, log), dispatcher);
+    }
 
     /// <summary>The real machine with <paramref name="flash"/> in place of the real capture flash (tests).</summary>
     internal static DesktopMachine CreateDefault(ICaptureFlash flash)
     {
         ArgumentNullException.ThrowIfNull(flash);
-        return Create(_ => flash);
+        return Create(_ => flash, dispatcher: null);
     }
 
-    private static DesktopMachine Create(Func<IDisplayProvider, ICaptureFlash> flash)
+    private static DesktopMachine Create(Func<IDisplayProvider, ICaptureFlash> flash, DispatcherHost? dispatcher)
     {
         var displays = new Win32Displays();
         return new(
@@ -58,6 +72,9 @@ public sealed class DesktopMachine
             new Win32WindowSystem(),
             new VirtualDesktopService(),
             displays,
-            flash(displays));
+            flash(displays))
+        {
+            Dispatcher = dispatcher,
+        };
     }
 }

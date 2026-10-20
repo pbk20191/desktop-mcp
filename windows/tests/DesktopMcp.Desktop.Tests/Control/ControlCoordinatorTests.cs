@@ -518,6 +518,103 @@ public class ControlCoordinatorTests
     }
 
     [Fact]
+    public async Task AnUnsupportedRuntimeArchitectureIsNotRetried()
+    {
+        var rig = ControlRig.Create();
+        var calls = 0;
+        rig.EnsureRuntime = () =>
+        {
+            calls++;
+            throw new PlatformNotSupportedException("The Windows App SDK runtime has no Arm build.");
+        };
+        await rig.Control.StartAsync(default);
+        for (var i = 0; i < 3; i++) { rig.Advance(5); await rig.Control.RunOnceAsync(); }
+        Assert.Equal(1, calls);
+        Assert.Equal(0, rig.Monitor.Starts);
+        Assert.Equal(ControlState.Unavailable, rig.Control.Status().State);
+        Assert.Single(rig.Logs, l => l.Level >= DesktopLogLevel.Warning);
+    }
+
+    [Fact]
+    public async Task RepeatedRuntimeStartFailuresWarnOnceAndRetry()
+    {
+        var rig = ControlRig.Create();
+        var failures = 3;
+        rig.EnsureRuntime = () =>
+        {
+            if (failures-- > 0) throw new System.Runtime.InteropServices.COMException("The runtime failed to start.", unchecked((int)0x80004005));
+        };
+        await rig.Control.StartAsync(default);
+        for (var i = 0; i < 2; i++) { rig.Advance(5); await rig.Control.RunOnceAsync(); }
+        Assert.Equal(0, rig.Monitor.Starts);
+        Assert.Single(rig.Logs, l => l.Level == DesktopLogLevel.Warning && l.Message.Contains("Windows App SDK"));
+        Assert.Equal(2, rig.Logs.Count(l => l.Level == DesktopLogLevel.Debug && l.Message.Contains("Windows App SDK")));
+        rig.Advance(5); await rig.Control.RunOnceAsync();
+        Assert.Equal(ControlState.Ready, rig.Control.Status().State);
+    }
+
+    [Fact]
+    public async Task TheLedgerStaysBlockedAfterStartUntilACallEntersAi()
+    {
+        var rig = await ControlRig.StartedAsync();
+        Assert.Throws<InputUnavailableException>(() => rig.Control.Ledger.Press("key:ctrl", () => { }, () => { }));
+        using var lease = await rig.Control.BeginCallAsync(default);
+        rig.Control.Ledger.Press("key:ctrl", () => { }, () => rig.Ups.Add("ctrl"));
+        Assert.Single(rig.Control.Ledger.Pending);
+    }
+
+    [Fact]
+    public async Task AChordSeenBeforeItsHotkeyIsQueuedReportsUserAndResolvesNextBeat()
+    {
+        var rig = await ControlRig.StartedAsync();
+        using var lease = await rig.Control.BeginCallAsync(default);   // armed ai: the chord's other keys change nothing
+        var before = rig.Control.Status().Generation;
+        var inside = false;
+        rig.OnBlockLedger = () =>
+        {
+            // The hook has set the takeover flag and not yet queued its Hotkey: one beat runs here.
+            rig.OnBlockLedger = null;
+            inside = true;
+            Assert.True(rig.Control.RunOnceAsync().IsCompletedSuccessfully);
+            Assert.Equal(ControlState.User, rig.Control.Status().State);
+            var begin = rig.Control.BeginCallAsync(default);
+            Assert.Equal(ControlCodes.UserControl, Assert.IsType<ControlRejectedException>(begin.Exception?.InnerException).Code);
+            Assert.Equal(before, rig.Control.Status().Generation);    // reported as user, not yet a change
+            Assert.True(rig.Monitor.Filter.TakeoverPending);
+            Assert.False(rig.Monitor.Filter.Suppressing);
+        };
+        rig.Chord();
+        Assert.True(inside);
+        await rig.Control.RunOnceAsync();
+        Assert.Equal(ControlState.User, rig.Control.Status().State);
+        Assert.True(rig.Control.Status().Generation > before);
+        Assert.False(rig.Monitor.Filter.TakeoverPending);
+    }
+
+    [Fact]
+    public async Task ALostHotkeyRecoversThroughFailOpen()
+    {
+        var rig = await ControlRig.StartedAsync(queueCapacity: 1);
+        using var lease = await rig.Control.BeginCallAsync(default);
+        Assert.Equal(HookVerdict.Swallow, rig.Key(0xA2, true)); await rig.Control.RunOnceAsync();
+        Assert.Equal(HookVerdict.Swallow, rig.Key(0xA0, true)); await rig.Control.RunOnceAsync();
+        Assert.Equal(HookVerdict.Swallow, rig.Key(0xA4, true));   // not drained: the queue is full
+        Assert.Equal(HookVerdict.Swallow, rig.Key(0x08, true));   // the chord; its Hotkey cannot be queued
+        Assert.True(rig.Monitor.Filter.TakeoverPending);
+        Assert.True(rig.Monitor.Filter.FailOpenRequested);
+        Assert.False(rig.Monitor.Filter.Suppressing);
+        await rig.Control.RunOnceAsync();
+        Assert.Equal(ControlState.Unavailable, rig.Control.Status().State);
+        Assert.Equal(1, rig.Monitor.Rehooks);
+        Assert.True(rig.Monitor.Filter.TakeoverPending);           // no Hotkey was drained to clear it
+        rig.Monitor.LastRehook = rig.Stamp() + 1;
+        rig.Advance(0.3); await rig.Control.RunOnceAsync();
+        Assert.Equal(ControlState.User, rig.Control.Status().State);
+        Assert.False(rig.Monitor.Filter.TakeoverPending);
+        Assert.False(rig.Monitor.Filter.FailOpenRequested);
+    }
+
+    [Fact]
     public void TheLogThrottleLetsANewErrorOrAnIntervalThrough()
     {
         var throttle = new LogThrottle(50);

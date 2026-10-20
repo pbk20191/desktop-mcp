@@ -30,6 +30,14 @@ public class ControlStatusToolTests
             ToolCalls.OkText(await ToolCalls.CallAsync(tool, "{}")));
     }
 
+    [Fact]
+    public void TheDefaultServicesFlashOnTheirOwnDispatcher()
+    {
+        var services = DesktopMcp.Server.Tools.ToolServices.CreateDefault();
+        Assert.NotSame(DesktopMcp.Desktop.Dispatching.DispatcherHost.Shared, services.Dispatcher);
+        Assert.Same(services.Dispatcher, services.Machine.Dispatcher);
+    }
+
     private static DesktopMcp.Server.Tools.ToolServices ToolServicesWith(FakeControl control) =>
         DesktopMcp.Server.Tools.ToolServices.CreateDefault() with { Control = control };
 }
