@@ -7,6 +7,7 @@ using DesktopMcp.Desktop.Input;
 using DesktopMcp.Server.Hosting;
 using DesktopMcp.Server.Tools;
 using Microsoft.Extensions.DependencyInjection;
+using ModelContextProtocol;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 
@@ -18,7 +19,7 @@ public sealed class StdioServerTests
     private static readonly ServePlan Plan = new() { Transport = "stdio", Host = "localhost", Port = 8000, Control = new ControlSettings(true, "relaxed", 10.0, 500, 500) };
 
     /// <summary>Serves <paramref name="services"/> over in-memory pipes, runs <paramref name="client"/>, then stops the server.</summary>
-    private static async Task ServeAsync(ToolServices services, Func<McpClient, CancellationToken, Task> client)
+    private static async Task ServeAsync(ToolServices services, Func<McpClient, CancellationToken, Task> client, McpClientOptions? options = null)
     {
         var clientToServer = new Pipe();
         var serverToClient = new Pipe();
@@ -26,7 +27,7 @@ public sealed class StdioServerTests
         var serving = StdioServer.RunAsync(Plan, services,
             builder => builder.WithStreamServerTransport(clientToServer.Reader.AsStream(), serverToClient.Writer.AsStream()), stop.Token);
         await using (var connected = await McpClient.CreateAsync(
-            new StreamClientTransport(clientToServer.Writer.AsStream(), serverToClient.Reader.AsStream()), cancellationToken: stop.Token))
+            new StreamClientTransport(clientToServer.Writer.AsStream(), serverToClient.Reader.AsStream()), options, cancellationToken: stop.Token))
             await client(connected, stop.Token);
         await stop.CancelAsync();
         Assert.Equal(0, await serving);
@@ -72,6 +73,34 @@ public sealed class StdioServerTests
                 Text(click));
         });
         Assert.Equal(1, control.EndedCalls);
+    }
+
+    [Theory]
+    [InlineData("2025-06-18")]
+    [InlineData("2025-11-25")]
+    [InlineData(null)]
+    public async Task InitializeDeclaresTheLoggingCapability(string? protocolVersion)
+    {
+        await ServeAsync(ToolServices.CreateDefault(), async (client, ct) =>
+        {
+            // Read through JSON: the typed ServerCapabilities.Logging is obsolete in the SDK (MCP9005).
+            var capabilities = JsonSerializer.SerializeToElement(client.ServerCapabilities, McpJsonUtilities.DefaultOptions.GetTypeInfo(typeof(ServerCapabilities)));
+            Assert.Equal(JsonValueKind.Object, capabilities.GetProperty("logging").ValueKind);
+            Assert.Empty(capabilities.GetProperty("logging").EnumerateObject());
+            Assert.True(capabilities.TryGetProperty("tools", out _));
+
+            // Before 2026-07-28 a client that sees the capability may set the level, and the SDK answers with an empty
+            // result; from 2026-07-28 the method is gone (the level travels in each request's _meta) and the SDK refuses it.
+            var setLevel = client.SendRequestAsync(new JsonRpcRequest
+            {
+                Method = "logging/setLevel",
+                Params = System.Text.Json.Nodes.JsonNode.Parse("""{"level": "warning"}"""),
+            }, ct);
+            if (protocolVersion is null)
+                await Assert.ThrowsAsync<McpProtocolException>(() => setLevel);
+            else
+                Assert.Equal("{}", (await setLevel).Result?.ToJsonString());
+        }, new McpClientOptions { ProtocolVersion = protocolVersion });
     }
 
     [Fact]

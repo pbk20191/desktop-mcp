@@ -53,6 +53,8 @@ public static class StdioServer
         {
             options.ServerInfo = new() { Name = ServerText.Name, Version = ServerText.Version };
             options.ServerInstructions = ServerText.Instructions;
+            // The control notifications are MCP log messages (spec §7); declared as raw JSON (McpLogging).
+            options.Capabilities = McpLogging.DeclareLogging(options.Capabilities);
         });
         addTransport(server);
         server.WithTools(tools);
