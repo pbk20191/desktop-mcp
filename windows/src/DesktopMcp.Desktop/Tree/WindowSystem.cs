@@ -38,9 +38,6 @@ internal interface IWindowSystem
     /// <summary>The window's GUI thread (GetWindowThreadProcessId), or 0 when it cannot be read.</summary>
     uint GetThreadId(long window);
 
-    /// <summary>The owned root window (GetAncestor GA_ROOTOWNER: the end of the parent and owner chain), or the window itself.</summary>
-    long GetRootOwner(long window);
-
     /// <summary>The window rectangle (GetWindowRect), or an empty rectangle when it cannot be read.</summary>
     ScreenRect GetBounds(long window);
 
@@ -59,15 +56,16 @@ internal static class LabelWindows
 {
     /// <summary>
     /// Whether the top-level window <paramref name="root"/> under a label's point counts as the label's
-    /// <paramref name="window"/>: the window itself, or a top-level window it owns (GA_ROOTOWNER) that runs on its GUI
-    /// thread, such as a menu or a drop-down (the same thread answers the window's WM_NULL check). A thread that cannot
-    /// be read does not count.
+    /// <paramref name="window"/>: the window itself, or any top-level window that runs on its GUI thread, owned or not,
+    /// such as an owned menu, an unowned #32768 menu or a classic combo box's drop-down list (ComboLBox), whose items UIA
+    /// shows under the window (the same thread answers the window's WM_NULL check, and it is the same application's UI).
+    /// A root on another thread, or a thread that cannot be read, does not count.
     /// </summary>
     public static bool IsLabelWindow(IWindowSystem windows, long root, long window)
     {
         ArgumentNullException.ThrowIfNull(windows);
         if (root == window) return true;
-        if (root == 0 || window == 0 || windows.GetRootOwner(root) != window) return false;
+        if (root == 0 || window == 0) return false;
         var thread = windows.GetThreadId(root);
         return thread != 0 && thread == windows.GetThreadId(window);
     }
@@ -164,12 +162,6 @@ internal sealed unsafe class Win32WindowSystem : IWindowSystem
     {
         var root = PInvoke.GetAncestor(Hwnd(window), GET_ANCESTOR_FLAGS.GA_ROOT);
         return root.IsNull ? window : (nint)root;
-    }
-
-    public long GetRootOwner(long window)
-    {
-        var owner = PInvoke.GetAncestor(Hwnd(window), GET_ANCESTOR_FLAGS.GA_ROOTOWNER);
-        return owner.IsNull ? window : (nint)owner;
     }
 
     // upstream tree/service.py:50-68 resolves HWND -> PID -> name with psutil; QueryFullProcessImageName works for

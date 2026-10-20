@@ -23,14 +23,14 @@ internal interface IElementSource
     long RootAt(ScreenPoint point);
 
     /// <summary>
-    /// Whether <paramref name="root"/> is a top-level window owned by <paramref name="window"/> (GA_ROOTOWNER) and run by
-    /// its GUI thread, such as a menu or a combo box's drop-down (Decisions 42); Win32 calls, not UIA.
+    /// Whether <paramref name="root"/> is another top-level window run by <paramref name="window"/>'s GUI thread, owned or
+    /// not, such as a menu or a combo box's drop-down (Decisions 42); Win32 calls, not UIA.
     /// </summary>
-    bool IsSameThreadOwnedRoot(long root, long window);
+    bool IsSameThreadRoot(long root, long window);
 
     /// <summary>
     /// The element under the point, or null when there is none or the point's top-level window is neither
-    /// <paramref name="window"/> (whose WM_NULL check the caller has made) nor a popup it owns on its GUI thread.
+    /// <paramref name="window"/> (whose WM_NULL check the caller has made) nor a top-level window on its GUI thread.
     /// </summary>
     UiaElementData? ElementAt(ScreenPoint point, long window);
 
@@ -122,10 +122,11 @@ internal sealed class LabelLocator(IElementSource source, IReadOnlyList<ScreenRe
     private UiaElementData? FindUnderPoint(ElementIdentity identity, ScreenPoint point, CancellationToken ct)
     {
         // The point may now lie over another application's window: no UIA call goes into it (no ElementFromPoint, no
-        // parent climb); the bounded walk of the label's own window follows. A popup the window owns on its own GUI thread
-        // (whose WM_NULL check the caller's check of the window stands for) uses this step too (Decisions 42).
+        // parent climb); the bounded walk of the label's own window follows. A top-level window on the window's own GUI
+        // thread, owned or not (whose WM_NULL check the caller's check of the window stands for), uses this step too
+        // (Decisions 42).
         var root = source.RootAt(point);
-        if (root != identity.Window && !source.IsSameThreadOwnedRoot(root, identity.Window)) return null;
+        if (root != identity.Window && !source.IsSameThreadRoot(root, identity.Window)) return null;
         ct.ThrowIfCancellationRequested();
         var element = source.ElementAt(point, identity.Window);
         for (var level = 0; element is not null; level++)
@@ -237,7 +238,7 @@ internal sealed unsafe class UiaElementSource(UiaSession session, IWindowSystem 
 
     public long RootAt(ScreenPoint point) => windows.WindowFromPoint(point);
 
-    public bool IsSameThreadOwnedRoot(long root, long window) => root != window && LabelWindows.IsLabelWindow(windows, root, window);
+    public bool IsSameThreadRoot(long root, long window) => root != window && LabelWindows.IsLabelWindow(windows, root, window);
 
     public UiaElementData? ElementAt(ScreenPoint point, long window)
     {

@@ -140,7 +140,7 @@ public class ActionTargetsTests
             (await Assert.ThrowsAsync<InputBlockedException>(() =>
                 new TargetsRig(interactive: 1, elevatedLabelWindow: true).Targets.LabelAsync(0, default))).Message);
 
-    // Decisions 42: the located point's top-level window must be the label's window or its owned popup on its thread.
+    // Decisions 42: the located point's top-level window must be the label's window or a top-level window on its GUI thread.
     [Fact]
     public async Task ALabelCoveredByAnotherWindowSendsNothing() =>
         Assert.Equal("Label 0 (button \"OK\") is covered by another window; no input was sent.",
@@ -161,41 +161,33 @@ public class ActionTargetsTests
             (await Assert.ThrowsAsync<DesktopException>(() =>
                 new TargetsRig(interactive: 1, coveredBy: 0).Targets.LabelAsync(0, default))).Message);
 
+    // An owned menu, an unowned #32768 menu or a classic combo box's drop-down list (ComboLBox, whose GA_ROOTOWNER is
+    // itself): a top-level window on the label window's GUI thread is the same application's UI, not a covering window.
     [Fact]
-    public async Task AnOwnedPopupOnTheLabelWindowsThreadIsNotCovering()
+    public async Task AWindowOnTheLabelWindowsThreadIsNotCovering()
     {
         var rig = new TargetsRig(interactive: 1, coveredBy: 77);
-        rig.Windows.RootOwners[77] = TargetsRig.NotepadWindow;
         rig.Windows.Threads[77] = 11;
         rig.Windows.Threads[TargetsRig.NotepadWindow] = 11;
         Assert.Equal(new ActionTarget(rig.Interactive[0].Center, TargetsRig.NotepadWindow, "Notepad"), await rig.Targets.LabelAsync(0, default));
     }
 
+    // Ownership does not count: a popup the label's window owns but another thread runs is covering, like any foreign window.
     [Fact]
-    public async Task AnOwnedPopupOnAnotherThreadIsCovering()
+    public async Task AWindowOnAnotherThreadIsCovering()
     {
         var rig = new TargetsRig(interactive: 1, coveredBy: 77);
-        rig.Windows.RootOwners[77] = TargetsRig.NotepadWindow;
         rig.Windows.Threads[77] = 12;
         rig.Windows.Threads[TargetsRig.NotepadWindow] = 11;
-        await Assert.ThrowsAsync<DesktopException>(() => rig.Targets.LabelAsync(0, default));
-    }
-
-    [Fact]
-    public async Task AWindowOwnedByAnotherWindowIsCovering()
-    {
-        var rig = new TargetsRig(interactive: 1, coveredBy: 77);
-        rig.Windows.RootOwners[77] = 78;
-        rig.Windows.Threads[77] = 11;
-        rig.Windows.Threads[TargetsRig.NotepadWindow] = 11;
-        await Assert.ThrowsAsync<DesktopException>(() => rig.Targets.LabelAsync(0, default));
+        Assert.Equal("Label 0 (button \"OK\") is covered by another window; no input was sent.",
+            (await Assert.ThrowsAsync<DesktopException>(() => rig.Targets.LabelAsync(0, default))).Message);
     }
 
     [Fact]
     public async Task AnUnreadableThreadIsCovering()
     {
         var rig = new TargetsRig(interactive: 1, coveredBy: 77);
-        rig.Windows.RootOwners[77] = TargetsRig.NotepadWindow;
+        rig.Windows.Threads[TargetsRig.NotepadWindow] = 11;
         await Assert.ThrowsAsync<DesktopException>(() => rig.Targets.LabelAsync(0, default));
     }
 

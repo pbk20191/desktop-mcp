@@ -592,8 +592,8 @@ Clipboard probe as in P1; toast probe: shown. Desktop tests need a PerMonitorV2 
 (`TestDpi`) and use their own test window. Tests that touch user state: the clipboard tests save
 and restore the clipboard text, and the toast test leaves a notification.
 
-P3 results (2026-10-20, Windows build 10.0.26220.9739): default suite 1645 (Core 962, Server 199,
-Desktop non-desktop 484); Desktop suite by hand: not run yet (pending with the user; the commands
+P3 results (2026-10-20, Windows build 10.0.26220.9739): default suite 1687 (Core 962, Server 214,
+Desktop non-desktop 511); Desktop suite by hand: not run yet (pending with the user; the commands
 are in the follow-ups' P3 section); build-release: win-x64 18,688,512 bytes, win-arm64 19,916,288
 bytes, each dist folder holding only the exe and its pdb, no publish warnings; stdio smoke OK under
 NativeAOT with 13 act-tool checks and no input sent (1 display, active desktop "Desktop 1", 85 tree
@@ -621,7 +621,8 @@ into the tests' own windows.
   trailing newline; a label action reports the point it actually used; a label that cannot be
   acted on gives a specific error (stale, disabled, off screen, covered by another window, or its window
   not responding) instead of acting at the stored point (a label whose point another window covers,
-  other than a popup its own window owns on the same thread, sends nothing: P3 plan, Decisions 42); Type and each MultiEdit item read the focused element's
+  other than a top-level window on its own window's GUI thread (an owned or unowned menu, or a
+  combo box's drop-down list), sends nothing: P3 plan, Decisions 42); Type and each MultiEdit item read the focused element's
   value back and add one `Warning: ... does not contain the typed text; it reads '...'.` line on
   a mismatch.
 - **Bug fixes**: scrollable elements report their box centre (upstream picks a random point);

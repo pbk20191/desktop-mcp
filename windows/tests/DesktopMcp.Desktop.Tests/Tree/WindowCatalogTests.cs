@@ -35,13 +35,11 @@ internal sealed class FakeWindowSystem : IWindowSystem
     public long GetRoot(long window) => Roots.GetValueOrDefault(window, window);
     public string? GetProcessName(int processId) => ProcessNames.GetValueOrDefault(processId);
     public Dictionary<long, uint> Threads { get; } = [];
-    public Dictionary<long, long> RootOwners { get; } = [];
 
     /// <summary>The top-level window under a point; <see cref="PointWindow"/> when null or when it returns -1.</summary>
     public Func<ScreenPoint, long>? WindowAt { get; set; }
 
     public uint GetThreadId(long window) => Threads.GetValueOrDefault(window);
-    public long GetRootOwner(long window) => RootOwners.GetValueOrDefault(window, window);
     public ScreenRect GetBounds(long window) => default;
     public long WindowFromPoint(ScreenPoint point) => WindowAt?.Invoke(point) is { } at and not -1 ? at : PointWindow;
     public string GetTitle(long window) => Titles.GetValueOrDefault(window, "");

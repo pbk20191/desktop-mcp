@@ -89,11 +89,11 @@ public class LabelLocatorTests
     }
 
     [Fact]
-    public void AnOwnedPopupOnTheSameThreadUnderThePointUsesThePointStep()
+    public void AnUnownedRootOnTheSameThreadUnderThePointUsesThePointStep()
     {
         var source = FakeElementSource.Window(Button("1.2", new ScreenRect(10, 10, 50, 30)), pointMap: true);
         source.PointRoot = 555;
-        source.SameThreadOwnedRoots.Add(555);
+        source.SameThreadRoots.Add(555);
         Assert.Equal(new ScreenPoint(30, 20), new LabelLocator(source, [Monitor], Monitor).Locate(Id(), new(30, 20), default).Point);
         Assert.Contains("ElementAt", source.Calls);
         Assert.Equal([100L], source.ElementAtWindows);
@@ -317,9 +317,9 @@ internal sealed class FakeElementSource : IElementSource
     }
 
     /// <summary>Top-level windows owned by the label's window (100) and on its GUI thread.</summary>
-    public HashSet<long> SameThreadOwnedRoots { get; } = [];
+    public HashSet<long> SameThreadRoots { get; } = [];
 
-    public bool IsSameThreadOwnedRoot(long root, long window) => window == 100 && SameThreadOwnedRoots.Contains(root);
+    public bool IsSameThreadRoot(long root, long window) => window == 100 && SameThreadRoots.Contains(root);
 
     public UiaElementData? ElementAt(ScreenPoint point, long window)
     {

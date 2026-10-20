@@ -155,8 +155,9 @@ public sealed class ActionTargets : IActionTargets
         if (result.Failure is { } failure) throw new DesktopException(LabelErrors.For(failure, label, element));
 
         // Decisions 22: the point actually used, with a point's bounds check. Decisions 42: the top-level window there must be
-        // the label's window (or a popup it owns on its GUI thread), else another window covers the element and would take
-        // the click; only then the integrity check. The target is the label's window.
+        // the label's window or a top-level window on its GUI thread (owned or not, such as a menu or a drop-down list), else
+        // another window covers the element and would take the click; only then the integrity check. The target is the
+        // label's window.
         if (MouseCoordinates.OutsideMessage(result.Point, _virtualScreen()) is { } outside) throw new ArgumentException(outside);
         var root = _windows.WindowFromPoint(result.Point);
         if (!LabelWindows.IsLabelWindow(_windows, root, identity.Window))
