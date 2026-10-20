@@ -74,4 +74,16 @@ public class OverlayArtTests
         Assert.Equal(0, Alpha(bitmap, 332, 92));
         Assert.Contains(Enumerable.Range(0, 664 * 184), p => bitmap.Pixels[p * 4 + 3] > 100);
     }
+
+    [Fact]
+    public async Task AnInwardMonitorFlashHasItsBandAtTheOuterRowsOfTheTopStrip()
+    {
+        var screen = new ScreenRect(0, 0, 1920, 1080);
+        var top = OverlayLayout.Flash(null, [screen], screen)[0].Art;
+        var bitmap = await OverlayArt.Shared.RenderAsync(top, CancellationToken.None);
+        var x = bitmap.Width / 2;
+        for (var y = 0; y < 8; y++) Assert.Equal(255, Alpha(bitmap, x, y));   // the sharp 8 px band, rows 0-7
+        Assert.True(Alpha(bitmap, x, 8) < 255);
+        Assert.True(Alpha(bitmap, x, 40) < Alpha(bitmap, x, 10));   // the blur fades inwards
+    }
 }

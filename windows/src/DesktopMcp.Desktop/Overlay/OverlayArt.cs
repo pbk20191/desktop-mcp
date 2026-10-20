@@ -38,6 +38,7 @@ internal sealed class OverlayArt : IOverlayArt
 
     private readonly Action _ensureRuntime;
     private readonly GpuGate _gate;
+    private readonly Func<LayerArt, Task<OverlayBitmap>> _renderWin2D;
     private readonly ConcurrentDictionary<int, NoticeMetrics?> _notices = new();
 
     public static OverlayArt Shared { get; } = new();
@@ -50,6 +51,13 @@ internal sealed class OverlayArt : IOverlayArt
     {
         _ensureRuntime = ensureRuntime;
         _gate = gate;
+        _renderWin2D = art => DeviceLostRetry.RunAsync(device => Task.FromResult(RenderOnDevice(device, art)));
+    }
+
+    /// <summary>Tests replace the Win2D drawing (what runs under the gate, on the thread pool) with a fake.</summary>
+    internal OverlayArt(Action ensureRuntime, GpuGate gate, Func<LayerArt, Task<OverlayBitmap>> renderWin2D) : this(ensureRuntime, gate)
+    {
+        _renderWin2D = renderWin2D;
     }
 
     /// <summary>How long a caller without its own deadline waits for the graphics slot.</summary>
@@ -62,14 +70,23 @@ internal sealed class OverlayArt : IOverlayArt
 
     /// <summary>
     /// control_overlay_art.py:96-137: measured with Win2D text layouts (cached per width). Not under the gate: it only
-    /// measures text on the shared device, and its caller may not wait.
+    /// measures text on the shared device, and its caller may not wait. It lays out text synchronously on the caller's
+    /// thread (and the first call initialises the runtime): never call it on the dispatcher thread; call it on the
+    /// thread pool, or warm it there first.
     /// </summary>
     public PixelSize? NoticeSize(int screenWidth)
     {
         if (!_notices.TryGetValue(screenWidth, out var metrics))
         {
-            _ensureRuntime();
-            metrics = _notices.GetOrAdd(screenWidth, static width => Measure(CanvasDevice.GetSharedDevice(), width));
+            try
+            {
+                _ensureRuntime();
+                metrics = _notices.GetOrAdd(screenWidth, static width => Measure(CanvasDevice.GetSharedDevice(), width));
+            }
+            catch (Exception e) when (ComErrors.ShouldTranslate(e))
+            {
+                throw ComErrors.Translate(Operation, e);
+            }
         }
         return metrics is null ? null : new PixelSize(metrics.Width, metrics.Height);
     }
@@ -96,7 +113,7 @@ internal sealed class OverlayArt : IOverlayArt
         Task<OverlayBitmap>? work = null;
         try
         {
-            work = Task.Run(() => DeviceLostRetry.RunAsync(device => Task.FromResult(RenderOnDevice(device, art))));
+            work = Task.Run(() => _renderWin2D(art));
             return await work.WaitAsync(RenderTimeout, Time, ct).ConfigureAwait(false);
         }
         catch (TimeoutException e) when (work is not null && work.Exception?.InnerException != e)
@@ -311,6 +328,10 @@ internal sealed class OverlayArt : IOverlayArt
         return new OverlayBitmap(m.Width, m.Height, target.GetPixelBytes());
     }
 
+    // Deviations from upstream's PIL drawing: the glow's shape mask is a plain rounded rectangle (no 8x Lanczos
+    // downsample and no 3 px blur on the mask itself; the ring is still blurred and feathered as upstream does), and the
+    // notice badge extends 2 px above and below the text line (upstream: 4 above, 3 below the ink box) because the
+    // lines are laid out with DirectWrite line heights, not ink bounds.
     // control_overlay_art.py:180-194: the halo outside the panel's solid core, feathered, peaking at alpha 211.
     private static OverlayBitmap RenderNoticeGlow(CanvasDevice device, LayerArt art)
     {
