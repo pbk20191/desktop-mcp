@@ -13,10 +13,10 @@ public static class HttpGuards
     public static IReadOnlyList<string> PublicPaths { get; } =
     [
         "/health",
-        "/oauth/token",
         "/.well-known/oauth-authorization-server",
-        "/.well-known/oauth-protected-resource",
-        "/.well-known/openid-configuration",
+        "/oauth/register",
+        "/oauth/authorize",
+        "/oauth/token",
     ];
 
     public static bool IsPublicPath(string path) => PublicPaths.Contains(path, StringComparer.Ordinal);
