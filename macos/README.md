@@ -156,7 +156,7 @@ include = ["OCR"]
 
 ## Telemetry
 
-Telemetry is **off by default**. With `ANONYMIZED_TELEMETRY=true`, anonymous usage events go to the original project's (CursorTouch) PostHog, as in the original: tool name, duration, success or failure, client name and version, and an anonymous user id (`$TMPDIR/.desktop-mcp-user-id`). Tool arguments and results are never sent; for failures only a fixed error label (such as "Could not resolve hostname") or the error's type is sent, never a message that could quote a URL or hostname.
+desktop-mcp sends no telemetry.
 
 ## Differences from the original
 
@@ -170,8 +170,7 @@ Telemetry is **off by default**. With `ANONYMIZED_TELEMETRY=true`, anonymous usa
 - **`Scrape` parses HTML with the system parser** (libxml2 through Foundation's `XMLDocument`), so broken markup is repaired the way libxml2 does it rather than the way Python's `html.parser` does, and HTML 4 entities are decoded while HTML5-only names (such as `&check;`) are left as written. The contents of `<script>` and `<style>` are dropped; the original's markdownify `strip` option kept their text.
 - **Snapshot ordering:** the focused app's elements get the lowest ids (the original's order was nondeterministic). Metadata keeps non-ASCII characters as-is instead of `\uXXXX` escapes.
 - **`Shortcut` rejects unknown key names with an error.** The original logged a warning and pressed only part of the combination.
-- **Telemetry is opt-in.** The original sends it unless `ANONYMIZED_TELEMETRY=false`; this port sends it only with `ANONYMIZED_TELEMETRY=true`, since the events would land in the original project's PostHog rather than this fork's.
-- **Telemetry logs go to stderr only** (per-call lines with `--debug`). The original also `print`ed to stdout, which can corrupt the stdio protocol stream. Error text sent to telemetry is a fixed label, not the full message.
+- **No telemetry.** The original sends anonymous usage events to its PostHog project; this port contains no telemetry code.
 - **Browser requests must come from a loopback origin.** The original answered every `Origin` with `*`, which lets any website drive an unauthenticated `localhost` server through the visitor's browser. This port returns 403 to requests whose `Origin` is not `localhost`, `127.0.0.1` or `[::1]`, as the MCP specification requires; non-browser clients send no `Origin` and are unaffected.
 - **`Scrape` re-checks every redirect** against the same private-address rules, and stops downloading after 8 MB. `Shell` output is capped at 10 MB.
 - **`auth` defaults to `streamable-http`.** The original defaulted to `sse`, which the MCP specification deprecated in protocol version 2025-03-26; this port does not offer SSE at all.
@@ -189,7 +188,7 @@ To try the socket without installing anything, run `desktop-mcp serve --transpor
 
 The package builds in Swift 6 language mode with strict concurrency checking: every value that crosses a task boundary is `Sendable`, shared state lives in actors or a `Locked` wrapper, and blocking Accessibility calls are offloaded to a GCD queue. The two retroactive `@unchecked Sendable` conformances (`AXUIElement`, `TISInputSource`) cover immutable CoreFoundation references.
 
-`serve` is one root task: a task group whose children are telemetry delivery (each send a child task of its own), the server (stdio or HTTP) and a watcher for SIGINT/SIGTERM. A signal cancels the server child, which closes the listener and shuts its event loop group down (HTTP) or stops reading stdin (stdio); queued telemetry then gets up to three seconds to land, and the process exits by returning from `run()`. There is no `exit()` call in the code.
+`serve` is one root task: a task group whose children are the socket server, the server (stdio or HTTP) and a watcher for SIGINT/SIGTERM. A signal cancels the server child, which closes the listener and shuts its event loop group down (HTTP) or stops reading stdin (stdio), and the process exits by returning from `run()`. There is no `exit()` call in the code.
 
 The MCP protocol itself (JSON-RPC framing, initialize, `tools/list`, `tools/call`, cancellation, the stdio and stateless HTTP transports) comes from the official MCP Swift SDK. The tools are registered as SDK handlers (`ToolRegistry.swift`, `StdioServer.swift`, `HTTPApp.swift`); `MCP.Value` carries the parts whose shape the protocol leaves open (tool arguments, input schemas) and keeps integers exact. Our own JSON goes through Foundation's `JSONEncoder`/`JSONDecoder` with the shared configuration in `JSONCoding` (sorted keys, slashes and non-ASCII unescaped, ISO 8601 dates).
 
@@ -200,7 +199,6 @@ Source layout:
   - `ToolRegistry.swift`, `StdioServer.swift`: tool registration on the SDK `Server`, and the stdio transport
   - `HTTPApp.swift`, `OAuth.swift`, `Security.swift`: HTTP middleware (CORS, allowlist, auth), routes and OAuth, independent of the socket layer
   - `Config.swift`, `ServePlan.swift`: `config.toml` (a small TOML-subset parser) and option merging
-  - `Analytics.swift`: PostHog telemetry
   - `Tools.swift`: tool definitions and schemas; `Desktop.swift`: tool behaviour
   - `Tree.swift`, `TreeConfig.swift`: accessibility tree traversal (ported from the original's `tree/service.py`)
   - `Apps.swift`: running apps, windows, dialogs; `Input.swift`: mouse and keyboard events

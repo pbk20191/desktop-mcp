@@ -62,7 +62,7 @@ enum ClipboardTool {
 
         let files = try (paths ?? []).map { path -> URL in
             let expanded = (path as NSString).expandingTildeInPath
-            guard FileManager.default.fileExists(atPath: expanded) else { throw ToolError("No such file: \(expanded)", telemetry: "No such file") }
+            guard FileManager.default.fileExists(atPath: expanded) else { throw ToolError("No such file: \(expanded)", label: "No such file") }
             return URL(fileURLWithPath: expanded)
         }
         try await offload {

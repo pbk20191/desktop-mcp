@@ -4,13 +4,13 @@ import MCP
 /// Raised by a tool handler to report a failure back to the client as an error result.
 public struct ToolError: Error, CustomStringConvertible, Sendable {
     public let message: String
-    /// What telemetry may see. Defaults to the message; pass a fixed label when the message
-    /// quotes an argument (a URL, a hostname), which must stay on this machine.
-    public let telemetry: String
+    /// A fixed label for the outcome, passed to observers. Defaults to the message; pass a fixed
+    /// label when the message quotes an argument (a URL, a hostname), which must stay out of it.
+    public let label: String
 
-    public init(_ message: String, telemetry: String? = nil) {
+    public init(_ message: String, label: String? = nil) {
         self.message = message
-        self.telemetry = telemetry ?? message
+        self.label = label ?? message
     }
 
     public var description: String { message }
@@ -171,7 +171,7 @@ public struct ToolArguments: Sendable {
     }
 }
 
-/// Receives the outcome of every tool call (the PostHog analytics in the original).
+/// Receives the outcome of every tool call; used by tests.
 public protocol ToolCallObserver: Sendable {
     func toolSucceeded(_ tool: String, durationMs: Int, client: Client.Info?) async
     func toolFailed(_ tool: String, error: String, durationMs: Int, client: Client.Info?) async

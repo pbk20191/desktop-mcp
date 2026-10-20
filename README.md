@@ -49,12 +49,11 @@ Tools split into two groups, which matters for headless use:
 ## Principles shared by all ports
 
 - No runtime dependencies. Build-time packages compiled into the binary are fine.
-- One root task per process; servers, telemetry and signal handling are its children, and the
+- One root task per process; servers and signal handling are its children, and the
   process exits by returning, never by calling `exit()`.
 - System frameworks over hand-rolled parsers where the platform has them, and the official MCP Swift SDK
   for the MCP protocol itself.
-- Telemetry is off by default, unlike upstream: it would go to the upstream project's PostHog, not
-  ours. `ANONYMIZED_TELEMETRY=true` turns it on.
+- Telemetry was removed: the upstream sends usage events to its own PostHog project, and this port sends nothing.
 
 ## License
 

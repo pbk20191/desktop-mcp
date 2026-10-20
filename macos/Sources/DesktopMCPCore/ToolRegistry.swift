@@ -107,8 +107,8 @@ public actor ToolRegistry {
         } catch {
             let cancelled = error is CancellationError
             let message = cancelled ? "Cancelled." : "\(error)"
-            // Telemetry gets the ToolError's label or the error's type, never arbitrary text.
-            let reported = cancelled ? message : ((error as? ToolError)?.telemetry ?? String(describing: type(of: error)))
+            // Observers get the ToolError's label or the error's type, never arbitrary text.
+            let reported = cancelled ? message : ((error as? ToolError)?.label ?? String(describing: type(of: error)))
             await observer?.toolFailed(tool.name, error: reported, durationMs: elapsed(), client: client)
             let text = cancelled ? message : "Error executing tool \(tool.name): \(message)"
             return .init(content: [.text(text)], isError: true)

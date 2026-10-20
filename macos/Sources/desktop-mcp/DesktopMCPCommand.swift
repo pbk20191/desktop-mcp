@@ -150,26 +150,22 @@ struct Serve: AsyncParsableCommand {
         // Without Accessibility only Shell/Scrape/Wait/Notification work; keep serving so the
         // client gets useful errors instead of a dead server, and let the system prompt once.
         _ = Permissions.checkAccessibility(prompt: true)
-        // A write to a closed stdio pipe or socket must surface as EPIPE, not kill the process
-        // before telemetry is flushed.
+        // A write to a closed stdio pipe or socket must surface as EPIPE, not kill the process.
         signal(SIGPIPE, SIG_IGN)
         // Bound every AX call so one hung application cannot stall a request indefinitely.
         AX.setMessagingTimeout(AX.systemWide, 2.0)
 
-        let analytics = PostHogAnalytics.isEnabled() ? PostHogAnalytics(verbose: debug) : nil
         let debug = self.debug
         let stdio = plan.transport == "stdio"
         let registry = await DesktopMCP.makeRegistry(excluding: plan.excludedTools, including: plan.includedTools)
-        await registry.setObserver(analytics)
         let socket = await listenOnSocket(registry, plan: plan, debug: debug)
         // Set once `serve` stops the socket itself, so its accept loop ending then is not news.
         let stopping = Locked(false)
 
-        // This task is the root; everything else is a child of it: telemetry delivery, the socket
+        // This task is the root; everything else is a child of it: the socket
         // server, the server (stdio or HTTP) and the signal watcher that stops it. The process
         // exits by returning.
         let code = await withTaskGroup(of: Int32?.self) { group in
-            if let analytics { group.addTask { await analytics.run(); return nil } }
             if let socket, let path = plan.socketPath {
                 // Beside the race, not in it: the socket ending never ends `serve`.
                 group.addTask {
@@ -208,9 +204,7 @@ struct Serve: AsyncParsableCommand {
             }
             stopping.current = true
             await socket?.shutdown()
-            // The server has stopped and its event loops are shut down: let queued telemetry
-            // land (bounded), then let go of whatever is still stuck.
-            await analytics?.close()
+            // The server has stopped and its event loops are shut down: let go of whatever is still stuck.
             group.cancelAll()
             return code
         }
