@@ -149,3 +149,23 @@ UpdateProcThreadAttribute
 DeleteProcThreadAttributeList
 PROCESS_CREATION_FLAGS
 PROC_THREAD_ATTRIBUTE_HANDLE_LIST
+// Overlay layers (P4 Decisions 2, Task 1 verdict UpdateLayeredWindow): a layered, click-through, capture-excluded popup
+// (SetWindowPos and IsWindowVisible are listed above) whose premultiplied pixels go in through a DIB section
+CreateWindowEx
+DestroyWindow
+RegisterClassEx
+UnregisterClass
+DefWindowProc
+UpdateLayeredWindow
+CreateDIBSection
+CreateCompatibleDC
+DeleteDC
+SelectObject
+DeleteObject
+GetDC
+ReleaseDC
+SetWindowDisplayAffinity
+ShowWindow
+BLENDFUNCTION
+WINDOW_EX_STYLE
+WINDOW_DISPLAY_AFFINITY

@@ -133,7 +133,7 @@ Minor review findings deferred from the P3 tasks, one line per task (from the SD
 - Catch and log exceptions thrown from dispatcher timer ticks. Today they may fail-fast the process.
 - Document that `TimerHandle.Dispose` off the dispatcher thread may let one more tick run.
 - Add a `Func<Task>` overload and the `DispatcherQueueSynchronizationContext` that spec §5 describes.
-- Overlays: evaluate `AppWindow` with WinUI 3 or Composition plus Win2D before `UpdateLayeredWindow`. Check whether WinUI 3 XAML needs a `.pri` file under NativeAOT, which would break the single-exe rule.
+- Overlays: decided 2026-10-20 (P4 Task 1): `UpdateLayeredWindow` with Win2D-rendered premultiplied pixels. WinUI 3's publish brought Foundation's bootstrap DLLs (no `.pri`), and Composition plus Win2D loaded d2d1 before the first Win2D call; measurements in spec §12.
 - Process allowlist (new config key): just before `SendInput`, check the process that owns the target window against an optional allowlist. desk-mcp's title-based allowlist is bypassed whenever no title is given, so match on the process.
 
 ## P5 (HTTP)
