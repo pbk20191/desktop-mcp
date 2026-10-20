@@ -27,6 +27,8 @@ internal sealed class GpuGate
         lock (_sync)
         {
             if (_abandoned is { IsCompleted: false }) throw new DesktopException($"{operation} failed: {AbandonedText}");
+            // The abandoned work ended but its continuation has not swapped the generation yet: do it here.
+            if (_abandoned is not null && _generation.IsCancellationRequested) _generation = new CancellationTokenSource();
             generation = _generation;
         }
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, generation.Token);
@@ -59,7 +61,10 @@ internal sealed class GpuGate
         {
             _ = task.Exception;
             var gate = (GpuGate)state!;
-            lock (gate._sync) gate._generation = new CancellationTokenSource();
+            lock (gate._sync)
+            {
+                if (gate._generation.IsCancellationRequested) gate._generation = new CancellationTokenSource();
+            }
             gate._slot.Release();
         }, this, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
     }

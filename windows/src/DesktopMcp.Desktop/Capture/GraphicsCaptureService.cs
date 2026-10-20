@@ -65,6 +65,9 @@ public sealed class GraphicsCaptureService : IScreenCapture
     /// </summary>
     internal TimeSpan MonitorTimeout { get; init; } = TimeSpan.FromSeconds(6);
 
+    /// <summary>Times <see cref="MonitorTimeout"/> (<see cref="TimeProvider.System"/>; a test passes its own).</summary>
+    internal TimeProvider Time { get; init; } = TimeProvider.System;
+
     public static bool IsSupported => GraphicsCaptureSession.IsSupported();
 
     /// <summary>Diagnostics: whether the last capture could turn the capture border off (null before the first).</summary>
@@ -112,9 +115,10 @@ public sealed class GraphicsCaptureService : IScreenCapture
     {
         // One slot for the shared device: a monitor that timed out keeps it until its work ends.
         // The wait counts against MonitorTimeout.
-        var started = System.Diagnostics.Stopwatch.GetTimestamp();
+        var started = Time.GetTimestamp();
         using var lease = await _gate.EnterAsync(Operation, MonitorTimeout, cancellationToken).ConfigureAwait(false);
-        var remaining = MonitorTimeout - System.Diagnostics.Stopwatch.GetElapsedTime(started);
+        cancellationToken.ThrowIfCancellationRequested();
+        var remaining = MonitorTimeout - Time.GetElapsedTime(started);
         if (remaining <= TimeSpan.Zero) throw MonitorTimedOut(monitor);
         var abandon = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var work = Task.Run(() => _captureMonitor(monitor, area, abandon.Token), CancellationToken.None);
@@ -123,7 +127,7 @@ public sealed class GraphicsCaptureService : IScreenCapture
         Task? cancelling = null;
         try
         {
-            return await work.WaitAsync(remaining, cancellationToken).ConfigureAwait(false);
+            return await work.WaitAsync(remaining, Time, cancellationToken).ConfigureAwait(false);
         }
         catch (TimeoutException)
         {

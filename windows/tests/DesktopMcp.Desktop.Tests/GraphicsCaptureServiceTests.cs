@@ -203,16 +203,36 @@ public class GraphicsCaptureServiceTests
     public async Task TheMonitorBudgetIncludesTheWaitAtTheGate()
     {
         var gate = new GpuGate();
+        var time = new BudgetTime(TimeSpan.FromMilliseconds(400));
         var service = new GraphicsCaptureService(() => { }, gate, Allowed, (_, _, _) => new TaskCompletionSource<(ScreenRect, CapturedImage)?>().Task)
-        { MonitorTimeout = TimeSpan.FromMilliseconds(600) };
+        { MonitorTimeout = TimeSpan.FromMilliseconds(600), Time = time };
         var area = new ScreenRect(0, 0, 1, 1);
         var held = await gate.EnterAsync("Other", TimeSpan.FromSeconds(5), default);
-        var clock = System.Diagnostics.Stopwatch.StartNew();
         var call = Assert.ThrowsAsync<DesktopException>(() => service.CaptureAsync(area, [area], default));
-        await Task.Delay(400);
         held.Dispose();
         await call;
-        Assert.True(clock.Elapsed < TimeSpan.FromMilliseconds(900), $"the capture took {clock.Elapsed}");
+        Assert.Equal([TimeSpan.FromMilliseconds(200)], time.DueTimes);
+    }
+
+    [Fact]
+    public async Task ACallerThatCancelsAtTheGateNeverStartsTheCapture()
+    {
+        var gate = new GpuGate();
+        var started = false;
+        var service = new GraphicsCaptureService(() => { }, gate, Allowed, (_, _, _) =>
+        {
+            started = true;
+            return Task.FromResult<(ScreenRect, CapturedImage)?>(null);
+        });
+        var area = new ScreenRect(0, 0, 1, 1);
+        var held = await gate.EnterAsync("Other", TimeSpan.FromSeconds(5), default);
+        using var cancel = new CancellationTokenSource();
+        var waiting = service.CaptureAsync(area, [area], cancel.Token);
+        await cancel.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiting);
+        held.Dispose();
+        Assert.False(started);
+        (await gate.EnterAsync("Next", TimeSpan.FromSeconds(1), default)).Dispose();
     }
 
     [Fact]

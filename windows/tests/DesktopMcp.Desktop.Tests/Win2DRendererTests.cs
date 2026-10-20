@@ -118,15 +118,14 @@ public class Win2DRendererBoundsTests
     public async Task TheRenderBudgetIncludesTheWaitAtTheGate()
     {
         var gate = new GpuGate();
+        var time = new BudgetTime(TimeSpan.FromMilliseconds(400));
         var renderer = new Win2DRenderer(() => { }, gate, (_, _) => new TaskCompletionSource<byte[]>().Task)
-        { Timeout = TimeSpan.FromMilliseconds(600) };
+        { Timeout = TimeSpan.FromMilliseconds(600), Time = time };
         var held = await gate.EnterAsync("Other", TimeSpan.FromSeconds(5), default);
-        var clock = System.Diagnostics.Stopwatch.StartNew();
         var call = Assert.ThrowsAsync<DesktopException>(() => renderer.RenderPngAsync(Pixel, RenderOptions.Plain(1)));
-        await Task.Delay(400);
         held.Dispose();
         await call;
-        Assert.True(clock.Elapsed < TimeSpan.FromMilliseconds(900), $"the render took {clock.Elapsed}");
+        Assert.Equal([TimeSpan.FromMilliseconds(200)], time.DueTimes);
     }
 
     [Fact]
