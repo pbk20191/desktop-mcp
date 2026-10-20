@@ -1,4 +1,6 @@
+using System.Globalization;
 using DesktopMcp.Core.Snapshots;
+using DesktopMcp.Desktop.Errors;
 using DesktopMcp.Desktop.Input;
 using DesktopMcp.Desktop.WindowControl;
 
@@ -36,6 +38,10 @@ public sealed class TypeSequence
     {
         ArgumentNullException.ThrowIfNull(target);
         ArgumentNullException.ThrowIfNull(text);
+        // No top-level window under the point: nothing can take the keys, so nothing is clicked or typed.
+        if (target.Window == 0)
+            throw new DesktopException(string.Create(CultureInfo.InvariantCulture,
+                $"No window is at ({target.Point.X},{target.Point.Y}); nothing was typed."));
         await _input.TypeAsync(target.Point, text, caret, clear, pressEnter,
             token => _foreground.EnsureKeyboardTargetAsync(target.Window, target.WindowName, token), ct).ConfigureAwait(false);
         // A submit clears the field or navigates, and an empty text has nothing to find (Decisions 4).

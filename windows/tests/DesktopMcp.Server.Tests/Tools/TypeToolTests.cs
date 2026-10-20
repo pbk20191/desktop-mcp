@@ -56,6 +56,24 @@ public class TypeToolTests
     }
 
     [Fact]
+    public async Task APointWithNoWindowFailsBeforeTheClick()
+    {
+        var desktop = new FakeDesktop { PointWindow = 0 };
+        Assert.Equal("Error calling tool 'Type': No window is at (5,6); nothing was typed.",
+            ToolCalls.Text(await ToolCalls.CallAsync(ToolCalls.Create("Type", desktop.Services()), """{"text": "x", "loc": [5, 6]}""")));
+        Assert.Empty(desktop.Input.Calls);
+        Assert.Empty(desktop.ForegroundChecks);
+    }
+
+    [Fact]
+    public async Task ALoneCarriageReturnIsNotExpectedInTheValue()
+    {
+        var desktop = new FakeDesktop { ReadBack = "ab" };
+        Assert.Equal("Typed a\rb at (5,6).",
+            ToolCalls.OkText(await ToolCalls.CallAsync(ToolCalls.Create("Type", desktop.Services()), """{"text": "a\rb", "loc": [5, 6]}""")));
+    }
+
+    [Fact]
     public async Task ALabelReportsTheLocatedPoint()
     {
         var desktop = new FakeDesktop { Labels = { [2] = new ScreenPoint(70, 80) } };

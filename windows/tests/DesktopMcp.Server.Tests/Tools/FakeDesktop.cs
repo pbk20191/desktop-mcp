@@ -37,6 +37,30 @@ internal sealed class FakeDesktop
     /// <summary>When set, <see cref="IActionTargets.Point"/> throws an <see cref="ArgumentException"/> with this text.</summary>
     public string? PointError { get; set; }
 
+    /// <summary>When set, <see cref="PointError"/> applies only to this point.</summary>
+    public ScreenPoint? PointErrorAt { get; set; }
+
+    /// <summary>The window a checked point lands on (0: no window); it is named <c>Window</c>.</summary>
+    public long PointWindow { get; set; } = 2;
+
+    /// <summary>Labels in range whose locate fails as stale (<c>button "OK"</c> in <c>Notepad</c>).</summary>
+    public HashSet<long> StaleLabels { get; } = [];
+
+    /// <summary>When set, the read-back returns the text of the latest Type call instead of <see cref="ReadBack"/>.</summary>
+    public bool ReadBackEchoesTypedText { get; set; }
+
+    /// <summary>Each Type call's caret and Enter as <c>Caret PressEnter</c>.</summary>
+    public IReadOnlyList<string> TypeOptions
+    {
+        get
+        {
+            lock (_typeOptions) return [.. _typeOptions];
+        }
+    }
+
+    private readonly List<string> _typeOptions = [];
+    private string? _lastTyped;
+
     /// <summary>What the read-back returns (null: skipped or unreadable).</summary>
     public string? ReadBack { get; set; }
 
@@ -123,6 +147,7 @@ internal sealed class FakeDesktop
         public async Task TypeAsync(ScreenPoint at, string text, CaretPosition caret, bool clear, bool pressEnter,
             Func<CancellationToken, Task>? afterClick, CancellationToken ct)
         {
+            lock (desktop._typeOptions) desktop._typeOptions.Add($"{caret} {pressEnter}");
             try
             {
                 if (afterClick is not null) await afterClick(ct);
@@ -132,6 +157,7 @@ internal sealed class FakeDesktop
                 await RecordAsync($"Type {P(at)} click-only", ct);
                 throw;
             }
+            Volatile.Write(ref desktop._lastTyped, text);
             await RecordAsync($"Type {P(at)} {(clear ? "clear " : "")}{text}", ct);
         }
 
@@ -178,15 +204,16 @@ internal sealed class FakeDesktop
         public Task<ActionTarget> LabelAsync(long label, CancellationToken ct)
         {
             Record($"Label {label}");
-            return desktop.Labels.TryGetValue(label, out var point)
-                ? Task.FromResult(new ActionTarget(point, 1, "Window"))
-                : throw new ArgumentException(LabelErrors.NotFound(label));
+            if (!desktop.Labels.TryGetValue(label, out var point)) throw new ArgumentException(LabelErrors.NotFound(label));
+            if (desktop.StaleLabels.Contains(label)) throw new DesktopException(LabelErrors.Stale(label, "button", "OK", "Notepad"));
+            return Task.FromResult(new ActionTarget(point, 1, "Window"));
         }
 
         public ActionTarget Point(ScreenPoint point)
         {
             Record($"Point ({point.X},{point.Y})");
-            return desktop.PointError is { } error ? throw new ArgumentException(error) : new ActionTarget(point, 0, "");
+            if (desktop.PointError is { } error && (desktop.PointErrorAt is null || desktop.PointErrorAt == point)) throw new ArgumentException(error);
+            return new ActionTarget(point, desktop.PointWindow, desktop.PointWindow == 0 ? "" : "Window");
         }
 
         private void Record(string call)
@@ -227,7 +254,7 @@ internal sealed class FakeDesktop
         public Task<string?> ReadFocusedValueAsync(CancellationToken ct)
         {
             Interlocked.Increment(ref desktop._readBackCalls);
-            return Task.FromResult(desktop.ReadBack);
+            return Task.FromResult(desktop.ReadBackEchoesTypedText ? Volatile.Read(ref desktop._lastTyped) : desktop.ReadBack);
         }
     }
 }

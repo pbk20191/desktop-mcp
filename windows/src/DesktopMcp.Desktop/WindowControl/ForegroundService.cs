@@ -84,16 +84,16 @@ public sealed class ForegroundService : IForeground
 
     public async Task EnsureKeyboardTargetAsync(long window, string windowName, CancellationToken ct)
     {
+        ArgumentNullException.ThrowIfNull(windowName);
+        // The title, else the handle (an untitled window), in every text.
+        var name = windowName.Length > 0 ? windowName : window.ToString(System.Globalization.CultureInfo.InvariantCulture);
         if (!_windows.IsWindow(window))
-        {
-            var name = windowName.Length > 0 ? windowName : window.ToString(System.Globalization.CultureInfo.InvariantCulture);
             throw new DesktopException($"Could not bring {name} to the foreground: the window no longer exists; nothing was typed.");
-        }
-        if (!await RespondsAsync(window, ct)) throw new DesktopException($"{windowName} is not responding; nothing was typed.");
+        if (!await RespondsAsync(window, ct)) throw new DesktopException($"{name} is not responding; nothing was typed.");
         var thread = _windows.GetThreadId(window);
         bool HasKeyboard() => thread != 0 && _windows.GetThreadId(_windows.GetForegroundWindow()) == thread;
         if (!await BringToForegroundAsync(window, _calls.IsIconic(window), HasKeyboard, ct))
-            throw new DesktopException($"Could not bring {windowName} to the foreground; nothing was typed.");
+            throw new DesktopException($"Could not bring {name} to the foreground; nothing was typed.");
     }
 
     private async Task<bool> RespondsAsync(long window, CancellationToken ct)

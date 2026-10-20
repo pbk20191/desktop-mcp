@@ -31,13 +31,14 @@ public static class TypeReadBack
     public static readonly TimeSpan ReadInterval = TimeSpan.FromMilliseconds(150);
 
     /// <summary>
-    /// Null when <paramref name="value"/> is null (skipped or unreadable) or contains <paramref name="typed"/> (CRLF and CR
-    /// read as LF on both sides); otherwise the warning line. <paramref name="at"/> names the item's point (MultiEdit).
+    /// Null when <paramref name="value"/> is null (skipped or unreadable) or contains <paramref name="typed"/> (CRLF reads as
+    /// LF on both sides, a lone CR as LF in the value and not at all in the typed text); otherwise the warning line.
+    /// <paramref name="at"/> names the item's point (MultiEdit).
     /// </summary>
     public static string? Warning(string typed, string? value, ScreenPoint? at = null)
     {
         ArgumentNullException.ThrowIfNull(typed);
-        if (value is null || Newlines(value).Contains(Newlines(typed), StringComparison.Ordinal)) return null;
+        if (value is null || Newlines(value).Contains(TypedNewlines(typed), StringComparison.Ordinal)) return null;
         var shown = PyText.CodePointLength(value) > ShownCodePoints ? PyText.Prefix(value, ShownCodePoints) + "..." : value;
         var subject = at is { } point
             ? string.Create(CultureInfo.InvariantCulture, $"the focused element's value at ({point.X},{point.Y})")
@@ -68,6 +69,10 @@ public static class TypeReadBack
     }
 
     private static string Newlines(string value) => value.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
+
+    // The per-key path skips a lone CR, so it is not in the value; CRLF still reads as LF.
+    private static string TypedNewlines(string typed) =>
+        typed.Replace("\r\n", "\n", StringComparison.Ordinal).Replace("\r", "", StringComparison.Ordinal);
 }
 
 /// <summary>

@@ -31,6 +31,8 @@ public static class ToolRegistry
         "Scroll" => new ScrollTool(protocolTool, services),
         "Type" => new TypeTool(protocolTool, services),
         "Shortcut" => new ShortcutTool(protocolTool, services),
+        "MultiSelect" => new MultiSelectTool(protocolTool, services),
+        "MultiEdit" => new MultiEditTool(protocolTool, services),
         _ => new PendingTool(protocolTool),
     };
 }

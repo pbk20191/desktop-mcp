@@ -271,6 +271,18 @@ public class ForegroundServiceTests
     }
 
     [Fact]
+    public async Task AnUntitledWindowIsNamedByItsHandleInEveryText()
+    {
+        var gone = await Assert.ThrowsAsync<DesktopException>(() => new ForegroundRig { Gone = true }.Service.EnsureKeyboardTargetAsync(42, "", default));
+        Assert.Equal("Could not bring 42 to the foreground: the window no longer exists; nothing was typed.", gone.Message);
+        var hung = await Assert.ThrowsAsync<DesktopException>(
+            () => new ForegroundRig { Response = WindowResponse.NotResponding }.Service.EnsureKeyboardTargetAsync(42, "", default));
+        Assert.Equal("42 is not responding; nothing was typed.", hung.Message);
+        var failed = await Assert.ThrowsAsync<DesktopException>(() => new ForegroundRig().Service.EnsureKeyboardTargetAsync(42, "", default));
+        Assert.Equal("Could not bring 42 to the foreground; nothing was typed.", failed.Message);
+    }
+
+    [Fact]
     public async Task ResizeChecksTheWindowAndPlacesItAsynchronously()
     {
         var rig = new ForegroundRig();
