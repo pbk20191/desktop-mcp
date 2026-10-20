@@ -5,7 +5,7 @@ A Swift port of [CursorTouch/MacOS-MCP](https://github.com/CursorTouch/MacOS-MCP
 - Uses only the frameworks that ship with macOS (Accessibility, CoreGraphics, ScreenCaptureKit, AppKit, HIToolbox, Network).
 - The external dependencies (`swift-argument-parser`, the official MCP Swift SDK `mcp-swift-sdk` and `swift-log`, which it needs, SwiftNIO + NIOTransportServices + NIOSSL + NIOHTTP2) are used at build time and compiled into the binary.
 - Built on Swift Concurrency (async/await). Each request runs as its own task, so a long `Wait` or `Shell` call doesn't delay other requests. In-flight work is cancelled by `notifications/cancelled` or by the HTTP client disconnecting (inside a session only the call whose request connection closed), which also kills shell child processes.
-- Transports: **stdio** and **Streamable HTTP** (stateless with JSON responses by default, with opt-in sessions, see Endpoints). The protocol layer is the MCP Swift SDK (`StdioTransport`, `StatelessHTTPServerTransport` and `StatefulHTTPServerTransport`). The legacy HTTP+SSE transport is gone. HTTP runs on Network.framework through NIOTransportServices, with optional TLS from PEM files. TLS connections negotiate **HTTP/2** or HTTP/1.1 through ALPN; plain connections speak HTTP/1.1.
+- Transports: **stdio**, a **Unix domain socket** carrying the stdio binding (what the Launch Agent offers `connect`) and **Streamable HTTP** (stateless with JSON responses by default, with opt-in sessions, see Endpoints). The protocol layer is the MCP Swift SDK (`StdioTransport`, `StatelessHTTPServerTransport` and `StatefulHTTPServerTransport`). The legacy HTTP+SSE transport is gone. HTTP runs on Network.framework through NIOTransportServices, with optional TLS from PEM files. TLS connections negotiate **HTTP/2** or HTTP/1.1 through ALPN; plain connections speak HTTP/1.1.
 
 ## Installation
 
@@ -61,7 +61,7 @@ desktop-mcp auth [options]         # generate an auth key (+ TLS cert) into ~/.d
 desktop-mcp permissions            # check / request permissions
 desktop-mcp install [options]      # run the HTTP server as a launchd Launch Agent from login
 desktop-mcp uninstall              # stop it and remove the agent
-desktop-mcp connect [--url] [--auth-key]   # stdio bridge to the HTTP server, for Claude Desktop
+desktop-mcp connect [--url] [--socket] [--auth-key]   # stdio bridge to the agent's socket or HTTP server, for Claude Desktop
 ```
 
 `serve` options. As in the original, a value given on the command line (or through its environment variable) wins, then `config.toml`, then the default.
@@ -70,6 +70,7 @@ desktop-mcp connect [--url] [--auth-key]   # stdio bridge to the HTTP server, fo
 |--------|----------------------|-------------|
 | `--transport stdio\|streamable-http` | | Default `stdio` |
 | `--host`, `--port` | | Default `localhost:8000` |
+| `--socket <path>` | | Also serve the stdio binding on this Unix domain socket; what `install` sets up at `~/.desktop-mcp/mcp.sock` |
 | `--auth-key` | `DESKTOP_MCP_AUTH_KEY` | Require `Authorization: Bearer <key>` on every HTTP request |
 | `--oauth-client-id`, `--oauth-client-secret` | `DESKTOP_MCP_OAUTH_CLIENT_ID` / `_SECRET` | Built-in OAuth 2.0 server (PKCE S256, loopback redirect URIs only, dynamic registration disabled) |
 | `--ip-allowlist` | `DESKTOP_MCP_IP_ALLOWLIST` | Comma-separated client IPs or CIDR ranges (IPv4/IPv6) |
@@ -99,6 +100,8 @@ desktop-mcp uninstall
 ```
 
 As in the original, `install` writes `~/Library/LaunchAgents/com.desktop-mcp.server.plist` (`RunAtLoad`, `KeepAlive`) pointing at this binary with `serve --transport … --host … --port …`, loads it with `launchctl bootstrap`, and prints the client config to connect with. Logs go to `~/.desktop-mcp/server.log` and `server.error.log`. Other `serve` settings (auth key from `auth`, TLS, allowlist, excluded tools) still come from `config.toml`; stdio cannot be installed as a service. Because launchd is the parent, the agent asks for Accessibility on its first start under its own name (see [Permissions](#permissions)). Install from the binary's permanent location, for example `~/.local/bin/desktop-mcp install`, since the plist records that path.
+
+`install` also has the agent serve the stdio binding on a Unix domain socket, `~/.desktop-mcp/mcp.sock`: the plist's `Sockets` key makes launchd create it (mode `0600`, so only the same user can connect) and the server takes it over with `launch_activate_socket`. Every connection is its own server, with the stdio rule that stdin EOF ends it, so a client that disconnects takes nothing else down. `desktop-mcp connect` prefers the socket and pipes stdin and stdout to it unchanged; if the socket refuses the connection (no agent, or one installed before the socket existed) it logs that to stderr and uses HTTP instead, and `--socket <path>` forces the socket with no fallback. An existing install needs `desktop-mcp install --force` once to gain the socket. When the agent restarts, `connect` exits with status 1 and Claude Desktop starts it again. Anything that can speak to a Unix socket works without the bridge, for example `socat STDIO UNIX-CONNECT:$HOME/.desktop-mcp/mcp.sock`.
 
 Claude Code connects directly (`claude mcp add --transport http desktop-mcp http://127.0.0.1:8000/mcp/ --header "Authorization: Bearer <key>"`). Claude Desktop's `claude_desktop_config.json` accepts stdio servers only and skips an HTTP entry as invalid, so give it `desktop-mcp connect` as a stdio server: the bridge reads the agent's address from its plist and the auth key from `config.toml`, posts each stdin line to `/mcp` and writes the replies back one per line, and asks for no permissions of its own. The bridge streams each SSE event to stdout as it arrives and remembers the `initialize` line. When the server answers 404 (session evicted or the server restarted), it replays that `initialize` once, opens the new session's `GET` stream right away (before the request is resent, so a long call does not hold it up) and retries the request. If the replay is refused (503 when every session slot is busy, say), the next request tries again before it is sent, and requests go without a session until one is regained. A request whose response stream ends without its reply (the server restarted, or the session ended mid-call) gets a JSON-RPC error (`-32000`) instead of no answer; it is not retried. It also opens the session's `GET /mcp` stream and forwards server notifications to stdout, re-opening the stream after 1 s if it drops (not after a 404 or 405). At stdin EOF it closes its `GET` and waits for in-flight requests; it exits when a write to stdout fails. A client-initiated stream that never ends (`subscriptions/listen`) keeps the bridge alive after EOF. `--url` and `--auth-key` point it at another server. `install` prints the snippet:
 
@@ -145,6 +148,7 @@ As in the original, anonymous usage events go to the original project's (CursorT
 ## Differences from the original
 
 - **`install` finds the binary by its own path**, not by searching `$PATH` for `macos-mcp` or `uvx`, and prints the client config and the matching `claude mcp add` line afterwards.
+- **`connect` talks to the agent over a Unix socket when it has one**, which the original did not offer: the socket carries the stdio binding with no HTTP, auth key or session in between, and `connect` falls back to HTTP if the socket refuses the connection.
 - **`connect` is a built-in stdio-to-HTTP bridge**, replacing the `mcp-remote` (Node) bridge the original's README suggests for Claude Desktop. It streams replies, forwards server notifications and recovers from a lost session.
 - **Optional MCP sessions on `POST /mcp`** (the original's HTTP transport had none), with `GET`/`DELETE`, idle eviction and size limits as described under Endpoints. `MCP-Protocol-Version` is no longer validated.
 - **`Shell` with `mode: osascript` can run JXA.** Start the source with `#!/usr/bin/osascript -l JavaScript` or `// language: JavaScript` and it runs as JavaScript (`osascript -l JavaScript`); anything else is AppleScript, as in the original. Each call is its own `osascript` process, so scripts from several clients run concurrently, dialogs (`display alert`, ...) work, and a timeout kills the script.
@@ -166,6 +170,8 @@ As in the original, anonymous usage events go to the original project's (CursorT
 swift build
 swift test
 ```
+
+To try the socket without installing anything, run `desktop-mcp serve --transport streamable-http --port 0 --socket /tmp/x.sock` in one terminal and `desktop-mcp connect --socket /tmp/x.sock` (or `socat STDIO UNIX-CONNECT:/tmp/x.sock`) in another.
 
 The package builds in Swift 6 language mode with strict concurrency checking: every value that crosses a task boundary is `Sendable`, shared state lives in actors or a `Locked` wrapper, and blocking Accessibility calls are offloaded to a GCD queue. The two retroactive `@unchecked Sendable` conformances (`AXUIElement`, `TISInputSource`) cover immutable CoreFoundation references.
 
