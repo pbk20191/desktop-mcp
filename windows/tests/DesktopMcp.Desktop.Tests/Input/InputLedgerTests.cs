@@ -84,4 +84,20 @@ public class InputLedgerTests
         Assert.Equal("down", error.Message);
         Assert.Equal(["k"], ledger.Pending);
     }
+
+    [Fact]
+    public async Task BlockNewDoesNotWaitForAPressInProgress()
+    {
+        var ledger = new InputLedger();
+        using var entered = new ManualResetEventSlim();
+        using var gate = new ManualResetEventSlim();
+        var press = Task.Run(() => ledger.Press("key:ctrl", () => { entered.Set(); gate.Wait(); }, () => { }));
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(5)));
+        var block = Task.Run(ledger.BlockNew);
+        var finished = await Task.WhenAny(block, Task.Delay(TimeSpan.FromMilliseconds(100)));
+        gate.Set();
+        await press;
+        Assert.Same(block, finished);
+        Assert.Throws<InputUnavailableException>(() => ledger.Press("key:shift", () => { }, () => { }));
+    }
 }

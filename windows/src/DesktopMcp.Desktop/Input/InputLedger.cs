@@ -12,7 +12,9 @@ public sealed class InputLedger(Func<string, bool>? physicalDownDelivered = null
 {
     private readonly Lock _lock = new();
     private readonly List<(string Name, Action Up)> _held = [];
-    private bool _blocked;
+    // Written without the lock by BlockNew (the hook thread calls it through the filter, and Press holds the lock across
+    // SendInput, which waits for the hooks); Press reads it under the lock, Enable writes it under the lock.
+    private volatile bool _blocked;
 
     public IReadOnlyList<string> Pending
     {
@@ -73,10 +75,11 @@ public sealed class InputLedger(Func<string, bool>? physicalDownDelivered = null
         }
     }
 
-    public void BlockNew()
-    {
-        lock (_lock) _blocked = true;
-    }
+    /// <summary>
+    /// Refuses new presses from now on; lock-free, so it never waits for a press in progress (the low-level hook calls
+    /// it, and a press holds the lock across <c>SendInput</c>, which waits for the hooks). Held input stays held.
+    /// </summary>
+    public void BlockNew() => _blocked = true;
 
     public void Enable()
     {

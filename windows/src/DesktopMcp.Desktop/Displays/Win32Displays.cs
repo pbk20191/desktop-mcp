@@ -73,6 +73,25 @@ public sealed unsafe class Win32Displays : IDisplayProvider
         return displays.OrderBy(display => display.Index).ToArray();
     }
 
+    /// <summary>
+    /// Only the monitor rectangles, from <c>EnumDisplayMonitors</c> with no per-device queries: cheap enough for the control
+    /// indicator, which reads the layout about 20 times a second while visible.
+    /// </summary>
+    internal static ScreenRect[] MonitorBounds()
+    {
+        var monitors = new List<(HMONITOR Monitor, RECT Rect)>();
+        var handle = GCHandle.Alloc(monitors);
+        try
+        {
+            PInvoke.EnumDisplayMonitors(default, (RECT*)null, &OnMonitor, (LPARAM)GCHandle.ToIntPtr(handle));
+        }
+        finally
+        {
+            handle.Free();
+        }
+        return [.. monitors.Select(m => m.Rect.ToScreenRect())];
+    }
+
     public ScreenRect GetVirtualScreen()
     {
         var left = PInvoke.GetSystemMetrics(SYSTEM_METRICS_INDEX.SM_XVIRTUALSCREEN);

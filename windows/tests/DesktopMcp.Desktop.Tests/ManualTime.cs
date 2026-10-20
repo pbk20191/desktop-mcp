@@ -3,7 +3,8 @@ namespace DesktopMcp.Desktop.Tests;
 /// <summary>
 /// A clock the test sets by hand. The only fake clock in this project (P2 preflight F18): share it. Moving
 /// <see cref="Now"/> forward fires the timers that came due (callbacks run on the setting thread), so a
-/// <c>Task.WaitAsync(TimeSpan, TimeProvider, ...)</c> deadline expires exactly when the test says.
+/// <c>Task.WaitAsync(TimeSpan, TimeProvider, ...)</c> deadline expires exactly when the test says, and
+/// <see cref="GetTimestamp"/> moves with it.
 /// </summary>
 internal sealed class ManualTime : TimeProvider
 {
@@ -27,6 +28,11 @@ internal sealed class ManualTime : TimeProvider
     }
 
     public override DateTimeOffset GetUtcNow() => Now;
+
+    /// <summary>Timestamps follow <see cref="Now"/> too (P4 preflight F2), in <see cref="TimeSpan"/> ticks.</summary>
+    public override long GetTimestamp() => Now.UtcTicks;
+
+    public override long TimestampFrequency => TimeSpan.TicksPerSecond;
 
     public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
     {
