@@ -199,7 +199,10 @@ try {
         # The act tools under NativeAOT, with calls that inject nothing and activate nothing (P3 plan, Decisions 12): each
         # fails its argument, bounds or label check before any input, or names nobody, so App reads the AppsFolder
         # enumeration and the window scan, WaitFor reads the foreground window and walks the windows Snapshot walks, and
-        # nothing is launched, switched to, resized or sent. No app or window name scores 70 against $nobody.
+        # nothing is launched, switched to, resized or sent. The App rows use $noMatch, an all-punctuation name: Fuzzy.Process
+        # makes it empty, so ExtractOne scores 0 against every app and window (a long nonsense name is not enough: a short
+        # title such as "qx" scores 90 against it). The read-only WaitFor rows use $nobody, which no window contains.
+        $noMatch = '#'
         $nobody = 'qxqxqxqxqxqxqxqx'
         $actCases = @(
             @{ Name = 'Click'; Arguments = @{}; Text = "Error calling tool 'Click': Either loc or label must be provided."; Match = 'Exact'; IsError = $true },
@@ -210,16 +213,16 @@ try {
             @{ Name = 'Move'; Arguments = @{ loc = @(0, 0); duration = 1 }; Text = "Error calling tool 'Move': from_loc and duration require drag=True"; Match = 'Exact'; IsError = $true },
             @{ Name = 'MultiSelect'; Arguments = @{}; Text = "Error calling tool 'MultiSelect': Either locs or labels must be provided."; Match = 'Exact'; IsError = $true },
             @{ Name = 'MultiEdit'; Arguments = @{ locs = @(, @(1, 2)) }; Text = "Error calling tool 'MultiEdit': Each loc item must be [x, y, text]. Invalid: [1,2]"; Match = 'Exact'; IsError = $true },
-            @{ Name = 'App'; Arguments = @{ mode = 'launch'; name = $nobody }; Text = 'Qxqxqxqxqxqxqxqx not found in start menu.'; Match = 'Exact'; IsError = $false; TimeoutSeconds = 30 },
-            @{ Name = 'App'; Arguments = @{ mode = 'switch'; name = $nobody }; Text = "Error calling tool 'App': Application Qxqxqxqxqxqxqxqx not found."; Match = 'Exact'; IsError = $true },
-            @{ Name = 'App'; Arguments = @{ mode = 'resize'; name = $nobody }; Text = 'Application Qxqxqxqxqxqxqxqx not found.'; Match = 'Exact'; IsError = $false },
+            @{ Name = 'App'; Arguments = @{ mode = 'launch'; name = $noMatch }; Text = '# not found in start menu.'; Match = 'Exact'; IsError = $false; TimeoutSeconds = 30 },
+            @{ Name = 'App'; Arguments = @{ mode = 'switch'; name = $noMatch }; Text = "Error calling tool 'App': Application # not found."; Match = 'Exact'; IsError = $true },
+            @{ Name = 'App'; Arguments = @{ mode = 'resize'; name = $noMatch }; Text = 'Application # not found.'; Match = 'Exact'; IsError = $false },
             @{ Name = 'WaitFor'; Arguments = @{ condition = 'active_window'; window_name = $nobody; timeout = 0.5; interval = 0.25 }; Text = "Error calling tool 'WaitFor': Timed out after 0.50s waiting for 'active_window': active window was "; Match = 'Prefix'; IsError = $true },
             @{ Name = 'WaitFor'; Arguments = @{ condition = 'element_exists'; text = $nobody; timeout = 0.6; interval = 0.3 }; Text = "Error calling tool 'WaitFor': Timed out after 0.60s waiting for 'element_exists'"; Match = 'Prefix'; IsError = $true; TimeoutSeconds = 60 }
         )
         $id = 50
         foreach ($case in $actCases) {
             $result = Invoke-Tool ($id++) $case.Name $case.Arguments $(if ($case.TimeoutSeconds) { $case.TimeoutSeconds } else { 15 })
-            $text = $result.content[0].text
+            $text = "$($result.content[0].text)"
             $matched = switch ($case.Match) {
                 'Exact' { $text -ceq $case.Text }
                 'Prefix' { $text.StartsWith($case.Text, [StringComparison]::Ordinal) }

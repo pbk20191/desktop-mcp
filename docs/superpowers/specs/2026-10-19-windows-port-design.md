@@ -489,7 +489,7 @@ uses System.Text.Json source generation.
     `SEE_MASK_NOCLOSEPROCESS` (a PID when a process handle comes back). The launch call is
     abandoned after 10 s. It then polls every 0.5 s: up to 10 s for a visible top-level window of
     the PID, then up to 10 s more for a visible window whose title contains the name. Apps the
-    server starts itself stay in its kill-on-close job and close with it (§12; P3 plan, Open
+    server starts itself stay in its kill-on-close job and close with it (unverified for ShellExecuteEx launches until the by-hand check; §12; P3 plan, Open
     question 1 and Decisions 31).
   - `launch_executable` (`CreateProcess`, inside the job) and `switch` (WM_NULL check, restore
     with `ShowWindowAsync`, `AllowSetForegroundWindow`, `SetForegroundWindow`, then the `AttachThreadInput` sequence on its
@@ -540,7 +540,7 @@ logs focus changes at debug level.
 | Core unit | config precedence and strict TOML types; ServePlan validation messages; SSRF rules; HTML to Markdown; OAuth/PKCE flows; PowerShell runner against real pwsh (encoding, timeout, tree kill); FileSystem formats; Shortcut parsing; table formatter; Snapshot text rendering from synthetic `UiElement` records and `SemanticNode` trees; fuzzy matching; control state machine with a fake `TimeProvider` (takeover, idle return, lease, policy classification) | always |
 | Server | ContractTests (`tools/list` equals `spec/windows/tools.json` as JSON); in-memory Kestrel tests of middleware order, 401/403 bodies, CORS, OPTIONS, trusted host, `/health`; stdio initialize, tools/list and call | always |
 | Desktop integration | Notepad: Snapshot finds the edit control, Type, Shortcut, App switch and resize; capture and annotation; hooks, overlay, takeover; input-lock safety (heartbeat stops, input returns within 1 s) | `Category=Desktop`, run by hand in an interactive session |
-| AOT smoke | `build-release.ps1` publishes win-x64 and win-arm64, launches the x64 exe and runs initialize, tools/list and the headless tools that leave the desktop alone over stdio, then DisplayInventory and Snapshot without vision (a named virtual desktop and at least one tree element; the graphics stack must still be unloaded), then Screenshot and Snapshot with vision (valid PNGs); `DESKTOP_MCP_EXCLUDE_PROCESSES` can keep processes out of the walk (§12). Before the graphics check it also calls the act tools (Click, Type, Shortcut, Move, MultiSelect, MultiEdit, App, WaitFor) with arguments that inject nothing and activate nothing: argument errors, an out-of-range label and point, a shortcut parse error, App lookups of a name no app or window has, and WaitFor timeouts (P3 plan, Decisions 12). It then runs the probe's `imaging` step (the AOT activation check) and `uia` step (the AOT UIA check); any IL2xxx/IL3xxx warning fails the build. The desktop calls need an unlocked interactive session; `smoke-stdio.ps1 -SkipCapture` leaves out the two capture calls | every release build |
+| AOT smoke | `build-release.ps1` publishes win-x64 and win-arm64, launches the x64 exe and runs initialize, tools/list and the headless tools that leave the desktop alone over stdio, then DisplayInventory and Snapshot without vision (a named virtual desktop and at least one tree element; the graphics stack must still be unloaded), then Screenshot and Snapshot with vision (valid PNGs); `DESKTOP_MCP_EXCLUDE_PROCESSES` can keep processes out of the walk (§12). Before the graphics check it also calls the act tools (Click, Type, Shortcut, Move, MultiSelect, MultiEdit, App, WaitFor) with arguments that inject nothing and activate nothing: argument errors, an out-of-range label and point, a shortcut parse error, App lookups of an all-punctuation name (`#`), which fuzzy processing empties so it matches no app or window, and WaitFor timeouts (P3 plan, Decisions 12). It then runs the probe's `imaging` step (the AOT activation check) and `uia` step (the AOT UIA check); any IL2xxx/IL3xxx warning fails the build. The desktop calls need an unlocked interactive session; `smoke-stdio.ps1 -SkipCapture` leaves out the two capture calls | every release build |
 
 xUnit runs under the JIT, so AOT-only failures are caught by the smoke step.
 
@@ -599,7 +599,8 @@ bytes, each dist folder holding only the exe and its pdb, no publish warnings; s
 NativeAOT with 13 act-tool checks and no input sent (1 display, active desktop "Desktop 1", 85 tree
 elements of which 58 labelled; graphics stack not loaded, 86 modules; a 1728x1080 Screenshot PNG
 and the 200x120 region PNG; the PowerShell grandchild died with the server, which exited 29 ms
-after stdin closed; the excluding config listed 20 tools); AOT activation and UIA checks OK;
+after stdin closed; the excluding config listed 20 tools; the smoke alone passed again against the same exe after the
+App rows moved to the all-punctuation name); AOT activation and UIA checks OK;
 by-hand act session: not run (pending with the user, with the App launch, `launch_executable`
 and job checks in the follow-ups' P3 section). Input tests inject only through GuardedInjector
 into the tests' own windows.
@@ -663,7 +664,7 @@ work first.
 | P0b Single exe | Windows 11 22H2 minimum; self-bootstrap of the system Windows App SDK 2.5 through the Dynamic Dependencies API; dispatcher and display ids on the Windows App SDK; Win2D linked statically from the pinned fork release; publish output trimmed to one exe | `dist/<rid>/desktop-mcp.exe` runs alone in an empty folder |
 | P1 Server core and headless tools | CLI, config, ServePlan, stdio; Wait, PowerShell, FileSystem, Clipboard, Process, Registry, Notification, Scrape without sampling | A useful server without desktop access (done; results in §9) |
 | P2 Desktop read | Dispatcher (fixed in P2, first started in P4: P2 plan, Decisions 21), UIA wrapper, Tree, Snapshot without DOM, capture, imaging, Screenshot, DisplayInventory, virtual desktops | The agent can see the screen (done except a rerun of the WinRT clipboard test and the three Desktop tests left out of the final run; results in §9) |
-| P3 Desktop act | Input, InputLedger, Click, Type, Scroll, Move, Shortcut, MultiSelect, MultiEdit, App, WaitFor | Upstream's core workflows (done; results in §9) |
+| P3 Desktop act | Input, InputLedger, Click, Type, Scroll, Move, Shortcut, MultiSelect, MultiEdit, App, WaitFor | Upstream's core workflows (done except the Desktop suite and the by-hand act session, pending with the user; results in §9) |
 | P4 Desktop control | InputMonitor, state machine, overlay, capture flash, gate, notifier, ControlStatus | Protection against fighting the user |
 | P5 HTTP | Kestrel, Streamable HTTP and SSE, middleware, TLS, OAuth, `/health`, Scrape sampling, telemetry | Remote use |
 | P6 Finish | Install, uninstall, auth, release script for x64 and arm64 (started in P0b, which already trims the output to one exe), Windows README, root README update | `windows-v0.1.0` |

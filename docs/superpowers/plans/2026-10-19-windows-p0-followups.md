@@ -83,7 +83,7 @@ Pending checks that need the user (P3 Task 16). None of these ran during P3, bec
   - Task 4, the 5 `InputDesktopTests` (the signature on injected mouse events, a button click, typing into the edit through the clipboard, every WinForms ToolStrip click taken, pixel-exact coordinates): `dotnet test tests/DesktopMcp.Desktop.Tests -p:RunSettingsFilePath= --filter "FullyQualifiedName~InputDesktopTests"`. The signature test reads a low-level hook, so the remote mouse must stay idle. If `TypeWritesIntoTheTestWindowsEdit` leaves "hello world" in front of the text, the plain EDIT ignored Ctrl+A: fix the test target, not `DesktopInput`.
   - Task 5: `dotnet test tests/DesktopMcp.Desktop.Tests -p:RunSettingsFilePath= --filter "FullyQualifiedName~SwitchesToTheTestWindowFromAnotherTestWindow"`.
   - Task 10: `dotnet test tests/DesktopMcp.Desktop.Tests -p:RunSettingsFilePath= --filter "FullyQualifiedName~TypeSequenceDesktopTests"`.
-  - Tests that read the user's real windows and were left out of P3's runs: `--filter "FullyQualifiedName~UiaSessionTests|FullyQualifiedName~SnapshotServiceDesktopTests"`.
+  - Tests that read the user's real windows and were left out of P3's runs: `dotnet test tests/DesktopMcp.Desktop.Tests -p:RunSettingsFilePath= --filter "FullyQualifiedName~UiaSessionTests|FullyQualifiedName~SnapshotServiceDesktopTests"`.
 - By-hand act session through the AOT exe over stdio (as P2 Task 19 Step 5; the user saves their work and watches). Expected results in brackets:
   1. `App {mode: 'launch', name: 'notepad'}` [`Notepad launched.`; the first real `IApplicationActivationManager.ActivateApplication`, and the first NativeAOT activation of `ApplicationActivationManager`].
   2. `Snapshot` [the Notepad edit has a label].
