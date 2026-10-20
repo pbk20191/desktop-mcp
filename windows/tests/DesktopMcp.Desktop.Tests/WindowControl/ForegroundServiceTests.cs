@@ -219,7 +219,14 @@ public class ForegroundServiceTests
         try
         {
             Assert.True(rig.Calls.Blocked.Wait(TimeSpan.FromSeconds(10)));
-            rig.Time.Now += TimeSpan.FromSeconds(2);
+            // The caller may not have registered its 2 s WaitAsync timer yet (ManualTime dates a timer from the Now it is
+            // created at), so keep moving the clock until the call returns; the gate stays closed throughout.
+            var limit = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+            while (!ensure.IsCompleted && DateTime.UtcNow < limit)
+            {
+                rig.Time.Now += TimeSpan.FromSeconds(2);
+                await Task.Delay(10);
+            }
             var error = await Assert.ThrowsAsync<DesktopException>(() => ensure.WaitAsync(TimeSpan.FromSeconds(10)));
             Assert.Equal("Could not bring Notepad to the foreground; nothing was typed.", error.Message);
             Assert.Equal(2, Attaches(rig));
