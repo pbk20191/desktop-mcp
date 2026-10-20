@@ -322,6 +322,7 @@ public enum DesktopMCP {
                     guard let (x, y) = try point(args, "loc", message: locMessage) else { throw ToolError("Missing required argument 'loc'") }
                     let button = try args.choice("button", in: ["left", "right", "middle"], default: "left")
                     let clicks = try args.int("clicks") ?? 1
+                    try Permissions.requireAccessibility()
                     try await desktop.click(x: x, y: y, button: Input.Button(rawValue: button)!, clicks: clicks)
                     let label = [0: "Hover", 1: "Single", 2: "Double"][clicks] ?? "None"
                     return [.text("\(label) \(button) clicked at (\(x),\(y)).")]
@@ -341,11 +342,11 @@ public enum DesktopMCP {
                 handler: { args in
                     guard let (x, y) = try point(args, "loc", message: locMessage) else { throw ToolError("Missing required argument 'loc'") }
                     let text = try args.requiredString("text")
-                    try await desktop.type(
-                        x: x, y: y, text: text,
-                        caret: try args.choice("caret_position", in: ["start", "idle", "end"], default: "idle"),
-                        clear: try args.bool("clear") ?? false,
-                        pressEnter: try args.bool("press_enter") ?? false)
+                    let caret = try args.choice("caret_position", in: ["start", "idle", "end"], default: "idle")
+                    let clear = try args.bool("clear") ?? false
+                    let pressEnter = try args.bool("press_enter") ?? false
+                    try Permissions.requireAccessibility()
+                    try await desktop.type(x: x, y: y, text: text, caret: caret, clear: clear, pressEnter: pressEnter)
                     return [.text("Typed \(text) at (\(x),\(y)).")]
                 }),
 
@@ -364,6 +365,7 @@ public enum DesktopMCP {
                     let type = try args.choice("type", in: ["horizontal", "vertical"], default: "vertical")
                     let direction = try args.choice("direction", in: ["up", "down", "left", "right"], default: "down")
                     let times = try args.int("wheel_times") ?? 1
+                    try Permissions.requireAccessibility()
                     if let message = try await desktop.scroll(loc: loc, type: type, direction: direction, wheelTimes: times) {
                         return [.text(message)]
                     }
@@ -383,7 +385,9 @@ public enum DesktopMCP {
                     guard let (x, y) = try point(args, "loc", message: "loc must be a list of exactly 2 integers [x, y]") else {
                         throw ToolError("Missing required argument 'loc'")
                     }
-                    if try args.bool("drag") ?? false {
+                    let drag = try args.bool("drag") ?? false
+                    try Permissions.requireAccessibility()
+                    if drag {
                         try await desktop.drag(toX: x, y: y)
                         return [.text("Dragged to (\(x),\(y)).")]
                     }
@@ -398,6 +402,7 @@ public enum DesktopMCP {
                 annotations: ToolAnnotations(title: "Shortcut", readOnly: false, destructive: true, idempotent: false, openWorld: false),
                 handler: { args in
                     let shortcut = try args.requiredString("shortcut")
+                    try Permissions.requireAccessibility()
                     try await desktop.shortcut(shortcut)
                     return [.text("Pressed \(shortcut).")]
                 }),
@@ -434,8 +439,10 @@ public enum DesktopMCP {
                 handler: { args in
                     let mode = try args.string("mode") ?? "create"
                     guard mode == "create" else { return [.text("Unknown mode: \(mode). Supported modes: create.")] }
-                    let text = await Spaces.createDesktop(openDelay: try args.double("open_delay") ?? 0.9,
-                                                          closeAfter: try args.bool("close_after") ?? true)
+                    let openDelay = try args.double("open_delay") ?? 0.9
+                    let closeAfter = try args.bool("close_after") ?? true
+                    try Permissions.requireAccessibility()
+                    let text = await Spaces.createDesktop(openDelay: openDelay, closeAfter: closeAfter)
                     return [.text(text)]
                 }),
 
@@ -464,6 +471,7 @@ public enum DesktopMCP {
             SpotlightTool.tool(),
             WindowTool.tool(),
             MenuTool.tool(),
+            Permissions.tool(),
             OCRTool.tool(),
         ]
     }

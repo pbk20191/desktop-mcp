@@ -721,6 +721,21 @@
         "type": "object"
       },
       "name": "Menu"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Permissions"
+      },
+      "description": "Reports which macOS permissions desktop-mcp holds: Accessibility, Screen Recording, and Automation of System Events (granted, not granted or not determined), and which tools need each. Never prompts. A tool that needs a missing permission fails with a message saying how to grant it.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "Permissions"
     }
   ]
 }

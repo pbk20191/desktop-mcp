@@ -51,9 +51,16 @@ public final class Desktop: Sendable {
         value == value.rounded() ? String(Int(value)) : String(format: "%g", value)
     }
 
+    /// The Accessibility copy as a leading line when the grant is missing: without it the
+    /// snapshot still lists apps, but no elements.
+    static func permissionNote(trusted: Bool) -> String {
+        trusted ? "" : Permissions.accessibilityMessage + "\n"
+    }
+
     public func snapshot(useVision: Bool) async -> [MCP.Tool.Content] {
+        let trusted = await offload { Permissions.current().accessibility }
         let state = await self.state(useVision: useVision)
-        var text = """
+        var text = Self.permissionNote(trusted: trusted) + """
         Focused Window:
         \(state.activeWindow?.description ?? "No focused window.")
 
@@ -103,12 +110,14 @@ public final class Desktop: Sendable {
             try await Task.sleep(for: .milliseconds(200))
             return "Switched to \(name)."
         case "resize":
+            try Permissions.requireAccessibility()
             guard let window = await offload({ App.frontmost()?.mainWindow }) else { return "No frontmost window to resize." }
             guard let size = windowSize else { return "window_size required for resize mode." }
             guard size.count == 2 else { throw ToolError("window_size must be a list of exactly 2 integers [width, height]") }
             _ = await offload { AX.setSize(window, width: Double(size[0]), height: Double(size[1])) }
             return "Window resized."
         case "move":
+            try Permissions.requireAccessibility()
             guard let window = await offload({ App.frontmost()?.mainWindow }) else { return "No frontmost window to move." }
             guard let loc = windowLoc else { return "window_loc required for move mode." }
             guard loc.count == 2 else { throw ToolError("window_loc must be a list of exactly 2 integers [x, y]") }

@@ -34,6 +34,8 @@ Permissions are granted to **the app that launches the binary** (Claude Desktop,
 - System Settings › Privacy & Security › **Accessibility**: required; `Window` and `Menu` work entirely through it
 - System Settings › Privacy & Security › **Screen Recording**: needed only for `Snapshot(use_vision=true)` and the opt-in `OCR`
 
+Without Accessibility, `Click`, `Type`, `Scroll`, `Move`, `Shortcut`, `Desktop`, `Window`, `Menu` and `App` `resize`/`move` fail with "Accessibility is not granted to desktop-mcp. Grant it in System Settings > Privacy & Security > Accessibility, then restart desktop-mcp." rather than answering empty (an event posted without it is dropped silently); `Snapshot` still lists apps and starts its text with that sentence. The `Permissions` tool reports Accessibility, Screen Recording and Automation of System Events (granted, not granted or not determined) and which tools need each, without prompting.
+
 Run `desktop-mcp permissions` to check the current state and trigger the system prompts. The grant is tied to the code signature: an ad-hoc signed binary is identified by its hash, so every rebuild needs a new grant. Sign with a stable identity to keep it (`CODESIGN_IDENTITY="My Codesign Cert" macos/scripts/build-release.sh`, using a code signing certificate made in Keychain Access, or a Developer ID).
 
 ## Tools
@@ -58,6 +60,7 @@ Run `desktop-mcp permissions` to check the current state and trigger the system 
 | `Spotlight` | Searches the Spotlight index by words or a raw query, newest first, optionally by kind and folder |
 | `Window` | Lists app windows with ids and frames; focuses, moves, resizes, minimizes, restores or closes one by id |
 | `Menu` | Lists an app's menu bar as a tree with shortcuts; selects a menu item by its path (`["File", "Export…"]`) |
+| `Permissions` | Reports which permissions desktop-mcp holds (Accessibility, Screen Recording, Automation of System Events) and which tools need them; never prompts |
 | `OCR` | Opt-in (`--include-tools OCR`): reads the text in a screen region (default the focused window) with on-device recognition, one line per text line with its centre in `Click` coordinates |
 
 `Open` hands its target to macOS as given, with any URL scheme, so opening a `.command` file, an app or a `shortcuts://` URL runs code: excluding `Shell` or `RunShortcut` is not a sandbox.

@@ -254,6 +254,9 @@ enum MenuTool {
                 let mode = try args.choice("mode", in: modes, default: "list")
                 let app = try args.string("app")
                 let path = try args.stringList("path") ?? []
+                let depth = mode == "list" ? try args.int("depth") ?? 2 : 0
+                if mode == "select" && path.isEmpty { throw ToolError("path required for select mode.") }
+                try Permissions.requireAccessibility()
                 // The active app owns the menu bar even when it has no window (e.g. Finder with
                 // none open); the frontmost window can belong to another app.
                 let owner: pid_t? = app != nil ? nil : await MainActor.run {
@@ -262,7 +265,6 @@ enum MenuTool {
                 }
 
                 if mode == "list" {
-                    let depth = try args.int("depth") ?? 2
                     let text = try await offload { () throws -> String in
                         let bar = try roots(app, menuBarOwner: owner, populate: false)
                         guard let parent = try resolve(path, in: bar).last else { return list(bar, depth: depth) }
@@ -271,7 +273,6 @@ enum MenuTool {
                     return [.text(text)]
                 }
 
-                guard !path.isEmpty else { throw ToolError("path required for select mode.") }
                 let text = try await offload { () throws -> String in
                     try select(path, in: try roots(app, menuBarOwner: owner, populate: true))
                 }

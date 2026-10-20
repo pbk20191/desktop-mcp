@@ -312,6 +312,7 @@ enum WindowTool {
                 let mode = try args.choice("mode", in: modes, default: "list")
                 if mode == "list" {
                     let app = try args.string("app")
+                    try Permissions.requireAccessibility()
                     let windows = await source.windows(app: app)
                     if windows.isEmpty, let app, !(await source.appExists(app)) {
                         throw ToolError("Application '\(app)' not found.", telemetry: "Application not found")
@@ -331,6 +332,7 @@ enum WindowTool {
                         throw ToolError("size must be 2 positive integers [width, height].")
                     }
                 }
+                try Permissions.requireAccessibility()
                 let window = try await resolve(id, source: source, cache: cache)
 
                 switch mode {
