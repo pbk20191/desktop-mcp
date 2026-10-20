@@ -76,6 +76,18 @@ public class LabelLocatorTests
     }
 
     [Fact]
+    public void APointOverAnotherWindowMakesNoUiaCallThereAndWalks()
+    {
+        var source = FakeElementSource.Window(Button("1.2", new ScreenRect(10, 10, 50, 30)), pointMap: true);
+        source.PointRoot = 555;
+        Assert.Equal(new ScreenPoint(30, 20), new LabelLocator(source, [Monitor], Monitor).Locate(Id(), new(30, 20), default).Point);
+        Assert.DoesNotContain("ElementAt", source.Calls);
+        Assert.DoesNotContain("Parent", source.Calls);
+        Assert.Contains("ReadWindow", source.Calls);
+        Assert.Contains("Children", source.Calls);
+    }
+
+    [Fact]
     public void WindowGoneIsStale()
     {
         var source = FakeElementSource.Window(Button("1.2", new(10, 10, 50, 30)), pointMap: true, windowExists: false);
@@ -254,7 +266,16 @@ internal sealed class FakeElementSource : IElementSource
         return _windowExists;
     }
 
-    public UiaElementData? ElementAt(ScreenPoint point)
+    /// <summary>The top-level window under every point; the label's window (100) unless a test moves it.</summary>
+    public long PointRoot { get; set; } = 100;
+
+    public long RootAt(ScreenPoint point)
+    {
+        Calls.Add("RootAt");
+        return PointRoot;
+    }
+
+    public UiaElementData? ElementAt(ScreenPoint point, long window)
     {
         Calls.Add("ElementAt");
         return _atPoint;

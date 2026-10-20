@@ -437,7 +437,7 @@ public sealed class SnapshotServiceDesktopTests : IDisposable
     {
         var blocks = new HangBlockList(TimeProvider.System, HangBlockList.DefaultDuration);
         var system = new Win32WindowSystem();
-        var defaults = SnapshotDependencies.CreateDefault();
+        var defaults = SnapshotDependencies.CreateDefault(DesktopMachine.CreateDefault());
         // ownProcessId -1: the test window belongs to this process, which the server itself would skip. The environment is
         // empty so a user's DESKTOP_MCP_* settings (the screenshot scale above all) cannot change the result.
         var machine = defaults with

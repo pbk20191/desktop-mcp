@@ -18,6 +18,10 @@ internal sealed class FakeWindowSystem : IWindowSystem
     public Dictionary<long, long> Roots { get; } = [];
     public Queue<long> Foreground { get; } = new();
     public HashSet<long> Gone { get; } = [];
+    public Dictionary<long, string> Titles { get; } = [];
+
+    /// <summary>The top-level window under every point.</summary>
+    public long PointWindow { get; set; }
 
     public IReadOnlyList<long> EnumerateTopLevel() => TopLevel;
     public bool IsWindow(long window) => !Gone.Contains(window);
@@ -32,8 +36,8 @@ internal sealed class FakeWindowSystem : IWindowSystem
     public string? GetProcessName(int processId) => ProcessNames.GetValueOrDefault(processId);
     public uint GetThreadId(long window) => 0;
     public ScreenRect GetBounds(long window) => default;
-    public long WindowFromPoint(ScreenPoint point) => 0;
-    public string GetTitle(long window) => "";
+    public long WindowFromPoint(ScreenPoint point) => PointWindow;
+    public string GetTitle(long window) => Titles.GetValueOrDefault(window, "");
     public WindowResponse CheckResponding(long window) => WindowResponse.Responding;
 }
 

@@ -77,26 +77,23 @@ internal sealed record SnapshotDependencies
     public required TextWriter ProfileLog { get; init; }
 
     /// <summary>
-    /// The real machine. Creating it starts no thread and touches no COM, UIA, desktop or Windows App SDK: the UIA worker
-    /// starts its thread on the first job, and the capture and the renderer initialise the runtime on their first call.
+    /// The real parts over <paramref name="machine"/>. Creating them starts no thread and touches no COM, UIA, desktop or
+    /// Windows App SDK: the UIA worker starts its thread on the first job, and the capture and the renderer initialise the
+    /// runtime on their first call.
     /// </summary>
     /// <remarks>
-    /// Each stateful service is created once here and shared by every part that uses it: the virtual desktop service (its
-    /// one-call gate), the UIA worker (its thread and stuck-worker count) and the hang block list. The owner (one
-    /// <see cref="SnapshotService"/> held for the server's lifetime) must therefore not call this per snapshot.
+    /// The stateful services (the virtual desktop service's one-call gate, the UIA worker's thread and stuck-worker count,
+    /// the hang block list and the window catalog) come from <paramref name="machine"/>, which the act tools share.
     /// </remarks>
-    public static SnapshotDependencies CreateDefault()
+    public static SnapshotDependencies CreateDefault(DesktopMachine machine)
     {
-        var uia = new UiaWorker<UiaSession>(UiaSession.Create);
-        var blocks = new HangBlockList(TimeProvider.System, HangBlockList.DefaultDuration);
-        var windows = new Win32WindowSystem();
-        var desktops = new VirtualDesktopService();
+        ArgumentNullException.ThrowIfNull(machine);
         return new SnapshotDependencies
         {
-            Displays = new Win32Displays(),
-            Windows = new WindowCatalog(windows, new UiaWindowProbe(uia), desktops, blocks, System.Environment.ProcessId, Task.Delay),
-            Tree = new TreeService(windows, new UiaWindowWalker(uia), blocks, System.Environment.GetEnvironmentVariable, Task.Delay),
-            Desktops = desktops,
+            Displays = machine.Displays,
+            Windows = machine.Catalog,
+            Tree = machine.Tree,
+            Desktops = machine.Desktops,
             Capture = new GraphicsCaptureService(),
             Renderer = new Win2DRenderer(),
             Cursor = DesktopSession.CursorPosition,
@@ -130,8 +127,13 @@ public sealed class SnapshotService : IDesktopSnapshots
 
     private readonly SnapshotDependencies _machine;
 
-    /// <summary>The real machine (<see cref="SnapshotDependencies.CreateDefault"/>); cheap: no thread, COM or runtime.</summary>
-    public SnapshotService() : this(SnapshotDependencies.CreateDefault())
+    /// <summary>A new real machine (<see cref="DesktopMachine.CreateDefault"/>); cheap: no thread, COM or runtime.</summary>
+    public SnapshotService() : this(DesktopMachine.CreateDefault())
+    {
+    }
+
+    /// <summary>The real parts over <paramref name="machine"/>, shared with the act tools; cheap: no thread, COM or runtime.</summary>
+    public SnapshotService(DesktopMachine machine) : this(SnapshotDependencies.CreateDefault(machine))
     {
     }
 

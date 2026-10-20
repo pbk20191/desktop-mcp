@@ -20,8 +20,14 @@ internal interface IElementSource
     /// <summary>IsWindow; a Win32 call, not UIA.</summary>
     bool WindowExists(long window);
 
-    /// <summary>The element under the point, or null when there is none or its window does not answer.</summary>
-    UiaElementData? ElementAt(ScreenPoint point);
+    /// <summary>The top-level window (GA_ROOT) under the point, or 0; a Win32 call, not UIA.</summary>
+    long RootAt(ScreenPoint point);
+
+    /// <summary>
+    /// The element under the point, or null when there is none, the point's top-level window is not
+    /// <paramref name="window"/>, or that window does not answer.
+    /// </summary>
+    UiaElementData? ElementAt(ScreenPoint point, long window);
 
     /// <summary>The control-view parent, or null at the root.</summary>
     UiaElementData? Parent(UiaElementData element);
@@ -41,7 +47,8 @@ internal interface IElementSource
     bool CanScrollIntoView(UiaElementData element);
 }
 
-internal enum LocateFailure
+/// <summary>Why a label's element cannot be acted on (public for the test theories, preflight F5).</summary>
+public enum LocateFailure
 {
     Stale,
     Disabled,
@@ -49,10 +56,21 @@ internal enum LocateFailure
     NotResponding,
 }
 
-/// <summary>The found element and the point to act on, or why there is none.</summary>
-internal readonly record struct LocateResult(UiaElementData? Element, ScreenPoint Point, LocateFailure? Failure)
+/// <summary>The found element and the point to act on, or why there is none (public for the tests, preflight F5).</summary>
+public readonly record struct LocateResult
 {
-    public static LocateResult Failed(LocateFailure failure) => new(null, default, failure);
+    internal LocateResult(UiaElementData? element, ScreenPoint point, LocateFailure? failure)
+    {
+        Element = element;
+        Point = point;
+        Failure = failure;
+    }
+
+    internal UiaElementData? Element { get; }
+    public ScreenPoint Point { get; }
+    public LocateFailure? Failure { get; }
+
+    internal static LocateResult Failed(LocateFailure failure) => new(null, default, failure);
 }
 
 /// <summary>
@@ -86,7 +104,11 @@ internal sealed class LabelLocator(IElementSource source, IReadOnlyList<ScreenRe
 
     private UiaElementData? FindUnderPoint(ElementIdentity identity, ScreenPoint point, CancellationToken ct)
     {
-        var element = source.ElementAt(point);
+        // The point may now lie over another application's window: no UIA call goes into it (no ElementFromPoint, no
+        // parent climb); the bounded walk of the label's own window follows.
+        if (source.RootAt(point) != identity.Window) return null;
+        ct.ThrowIfCancellationRequested();
+        var element = source.ElementAt(point, identity.Window);
         for (var level = 0; element is not null; level++)
         {
             if (element.RuntimeId == identity.RuntimeId) return element;
@@ -192,14 +214,19 @@ internal sealed unsafe class UiaElementSource(UiaSession session) : IElementSour
 
     public bool WindowExists(long window) => PInvoke.IsWindow((HWND)(nint)window);
 
-    public UiaElementData? ElementAt(ScreenPoint point)
+    public long RootAt(ScreenPoint point)
     {
-        // The point may now lie over another application's window: it must answer WM_NULL before UIA calls into it
-        // (Decisions 38). One that does not is skipped; the walk of the label's own window follows.
         var window = PInvoke.WindowFromPoint(new System.Drawing.Point(point.X, point.Y));
-        if (window.IsNull) return null;
+        if (window.IsNull) return 0;
         var root = PInvoke.GetAncestor(window, GET_ANCESTOR_FLAGS.GA_ROOT);
-        if (Win32WindowSystem.CheckResponding(root.IsNull ? (nint)window : (nint)root) != WindowResponse.Responding) return null;
+        return root.IsNull ? (nint)window : (nint)root;
+    }
+
+    public UiaElementData? ElementAt(ScreenPoint point, long window)
+    {
+        // Checked again here (the caller checked it too): no UIA call goes into another application's window, and the
+        // label's window must answer WM_NULL before UIA calls into it (Decisions 38). Otherwise the walk follows.
+        if (RootAt(point) != window || Win32WindowSystem.CheckResponding(window) != WindowResponse.Responding) return null;
         var element = session.Automation.ElementFromPointBuildCache(new System.Drawing.Point(point.X, point.Y), session.ActionRequest);
         return element is null ? null : UiaTreeSource.ReadAction(element);
     }
