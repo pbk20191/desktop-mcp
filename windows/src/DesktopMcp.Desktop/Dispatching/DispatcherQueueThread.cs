@@ -42,7 +42,9 @@ public sealed class DispatcherQueueThread : IDesktopDispatcher
             throw ComErrors.Translate("Starting the dispatcher thread", e);
         }
         var queue = controller.DispatcherQueue;
-        var context = new DispatcherQueueSynchronizationContext(work => queue.TryEnqueue(() => work()), () => queue.HasThreadAccess);
+        DispatcherQueueThread? owner = null;
+        var context = new DispatcherQueueSynchronizationContext(work => queue.TryEnqueue(() => work()), () => queue.HasThreadAccess,
+            e => owner?.RaiseUnhandled(e));
         // The first work item installs the context, so every later work item and timer tick on the thread runs with it.
         var threadId = WaitForThreadId(
             work => queue.TryEnqueue(() =>
@@ -52,7 +54,8 @@ public sealed class DispatcherQueueThread : IDesktopDispatcher
             }),
             () => controller.ShutdownQueueAsync().AsTask(),
             StartTimeout);
-        return new DispatcherQueueThread(controller, threadId);
+        owner = new DispatcherQueueThread(controller, threadId);
+        return owner;
     }
 
     /// <summary>
@@ -106,12 +109,14 @@ public sealed class DispatcherQueueThread : IDesktopDispatcher
 
     public event Action<Exception>? UnhandledException;
 
+    private void RaiseUnhandled(Exception error) => UnhandledException?.Invoke(error);
+
     public Task<IDisposable> StartTimerAsync(TimeSpan interval, Action tick) => InvokeAsync<IDisposable>(() =>
     {
         var timer = _queue.CreateTimer();
         timer.Interval = interval;
         timer.IsRepeating = true;
-        timer.Tick += (_, _) => TimerTicks.Guard(tick, e => UnhandledException?.Invoke(e));
+        timer.Tick += (_, _) => TimerTicks.Guard(tick, RaiseUnhandled);
         timer.Start();
         return new TimerHandle(this, timer);
     });

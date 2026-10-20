@@ -78,6 +78,22 @@ public class DispatcherQueueThreadTests
     }
 
     [Fact]
+    public async Task APostAfterShutdownIsDroppedAndReported()
+    {
+        var dispatcher = DispatcherQueueThread.Start();
+        var context = await dispatcher.InvokeAsync(() => SynchronizationContext.Current);
+        Assert.IsType<DispatcherQueueSynchronizationContext>(context);
+        var reported = new List<Exception>();
+        dispatcher.UnhandledException += e => { lock (reported) reported.Add(e); };
+        await dispatcher.DisposeAsync();
+        var ran = false;
+        context.Post(_ => ran = true, null);
+        await Task.Delay(50);
+        Assert.False(ran);
+        lock (reported) Assert.IsType<ObjectDisposedException>(Assert.Single(reported));
+    }
+
+    [Fact]
     public async Task DisposeResumesOffTheDispatcherThread()
     {
         // Task.Run: no synchronization context (xUnit's would move the continuation off the dispatcher thread whatever

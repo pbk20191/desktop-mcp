@@ -51,6 +51,8 @@ public static class StdioServer
         using var host = builder.Build();
         var logger = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("desktop-mcp");
         foreach (var warning in plan.Warnings) logger.LogWarning("{Warning}", warning);
+        // Exceptions from dispatcher timer ticks and posted callbacks never escape into its queue; they are logged here.
+        services.Dispatcher.Report = e => logger.LogWarning(e, "Dispatcher work failed: {Message}", e.Message);
         // Decisions 19: whatever key or button the input still holds is released when the host stops, and again after
         // it returns in case the transport ended without ApplicationStopping (a second release finds nothing held). New
         // presses are blocked first, so a call still running cannot hold a key again after the release.

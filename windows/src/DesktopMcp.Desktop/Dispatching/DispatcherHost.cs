@@ -6,15 +6,34 @@ namespace DesktopMcp.Desktop.Dispatching;
 /// </summary>
 public sealed class DispatcherHost
 {
-    /// <summary>The process's shared host, starting a <see cref="DispatcherQueueThread"/>.</summary>
-    public static DispatcherHost Shared { get; } = new(DispatcherQueueThread.Start);
+    /// <summary>
+    /// The process's shared host, starting a <see cref="DispatcherQueueThread"/>. One-shot: after
+    /// <see cref="ShutdownAsync"/> it never starts again, so tests that shut a host down use their own instance.
+    /// </summary>
+    public static DispatcherHost Shared { get; } = new();
 
     private readonly Func<IDesktopDispatcher> _start;
     private readonly Lock _gate = new();
     private Task<IDesktopDispatcher>? _starting;
     private Task? _stopping;
+    private Action<Exception>? _report;
 
-    internal DispatcherHost(Func<IDesktopDispatcher> start) => _start = start;
+    /// <summary>A host that starts a <see cref="DispatcherQueueThread"/>.</summary>
+    public DispatcherHost() : this(DispatcherQueueThread.Start) { }
+
+    /// <summary>A host whose dispatcher <paramref name="start"/> creates (called on a thread-pool thread).</summary>
+    public DispatcherHost(Func<IDesktopDispatcher> start) => _start = start;
+
+    /// <summary>
+    /// The sink for the started dispatcher's <see cref="IDesktopDispatcher.UnhandledException"/> (timer ticks, posted
+    /// callbacks, dropped posts); the server's composition root logs them. May be set before or after the start; an
+    /// exception it throws is swallowed.
+    /// </summary>
+    public Action<Exception>? Report
+    {
+        get => Volatile.Read(ref _report);
+        set => Volatile.Write(ref _report, value);
+    }
 
     /// <summary>Whether a dispatcher has started and the host has not been shut down.</summary>
     public bool IsStarted
@@ -29,6 +48,8 @@ public sealed class DispatcherHost
     /// </summary>
     public Task<IDesktopDispatcher> GetAsync(CancellationToken ct)
     {
+        // An already-cancelled caller starts nothing (neither the thread nor the Windows App SDK runtime).
+        if (ct.IsCancellationRequested) return Task.FromCanceled<IDesktopDispatcher>(ct);
         Task<IDesktopDispatcher> starting;
         lock (_gate)
         {
@@ -59,6 +80,7 @@ public sealed class DispatcherHost
     private async Task<IDesktopDispatcher> StartAsync()
     {
         var dispatcher = _start();
+        dispatcher.UnhandledException += ReportUnhandled;
         lock (_gate)
         {
             if (_stopping is null) return dispatcher;
@@ -66,6 +88,11 @@ public sealed class DispatcherHost
         // Shut down while starting: the late dispatcher is not handed out.
         await dispatcher.DisposeAsync().ConfigureAwait(false);
         throw new ObjectDisposedException(nameof(DispatcherHost));
+    }
+
+    private void ReportUnhandled(Exception error)
+    {
+        if (Report is { } report) TimerTicks.Report(report, error);
     }
 
     private static async Task StopAsync(Task<IDesktopDispatcher> starting)

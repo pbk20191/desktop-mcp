@@ -13,7 +13,8 @@ public interface IDesktopDispatcher : IAsyncDisposable
     Task<T> InvokeAsync<T>(Func<T> func);
     /// <summary>
     /// Runs <paramref name="func"/> on the dispatcher thread with the dispatcher's <see cref="SynchronizationContext"/>, so
-    /// every <c>await</c> inside it resumes on the dispatcher. The returned task completes when <paramref name="func"/>'s does.
+    /// every <c>await</c> inside it resumes on the dispatcher. The returned task completes when <paramref name="func"/>'s does;
+    /// a continuation due after the dispatcher shut down is dropped (and reported), so that task then never completes.
     /// </summary>
     Task InvokeAsync(Func<Task> func);
     /// <summary>
@@ -21,6 +22,9 @@ public interface IDesktopDispatcher : IAsyncDisposable
     /// raised through <see cref="UnhandledException"/> and the timer keeps running.
     /// </summary>
     Task<IDisposable> StartTimerAsync(TimeSpan interval, Action tick);
-    /// <summary>Raised on the dispatcher thread for an exception thrown by a timer tick.</summary>
+    /// <summary>
+    /// Raised on the dispatcher thread for an exception thrown by a timer tick or a posted callback, and on the posting
+    /// thread for work the dispatcher's synchronization context dropped after shutdown.
+    /// </summary>
     event Action<Exception>? UnhandledException;
 }

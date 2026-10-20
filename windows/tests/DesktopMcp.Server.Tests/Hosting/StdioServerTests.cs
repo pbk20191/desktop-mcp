@@ -1,5 +1,6 @@
 using System.IO.Pipelines;
 using DesktopMcp.Core.Config;
+using DesktopMcp.Desktop.Dispatching;
 using DesktopMcp.Desktop.Input;
 using DesktopMcp.Server.Hosting;
 using DesktopMcp.Server.Tools;
@@ -39,6 +40,29 @@ public sealed class StdioServerTests
 
         await stop.CancelAsync();
         Assert.Equal(0, await serving);
+    }
+
+    [Fact]
+    public async Task TheServerLogsTheDispatchersUnhandledExceptions()
+    {
+        var host = new DispatcherHost(() => throw new InvalidOperationException("never started"));
+        var clientToServer = new Pipe();
+        var serverToClient = new Pipe();
+        var plan = new ServePlan { Transport = "stdio", Host = "localhost", Port = 8000, Control = new ControlSettings(true, "relaxed", 10.0, 500, 500) };
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var serving = StdioServer.RunAsync(plan, new FakeDesktop().Services() with { Dispatcher = host },
+            builder => builder.WithStreamServerTransport(clientToServer.Reader.AsStream(), serverToClient.Writer.AsStream()), stop.Token);
+
+        await using (var client = await McpClient.CreateAsync(
+            new StreamClientTransport(clientToServer.Writer.AsStream(), serverToClient.Reader.AsStream()), cancellationToken: stop.Token))
+        {
+            Assert.NotNull(host.Report);
+            host.Report(new InvalidOperationException("tick"));  // logged at warning level; must not throw
+        }
+
+        await stop.CancelAsync();
+        Assert.Equal(0, await serving);
+        Assert.False(host.IsStarted);
     }
 
     [Fact]

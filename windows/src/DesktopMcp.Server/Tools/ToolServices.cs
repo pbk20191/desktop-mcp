@@ -7,6 +7,7 @@ using DesktopMcp.Desktop;
 using DesktopMcp.Desktop.Actions;
 using DesktopMcp.Desktop.Apps;
 using DesktopMcp.Desktop.ClipboardAccess;
+using DesktopMcp.Desktop.Dispatching;
 using DesktopMcp.Desktop.Displays;
 using DesktopMcp.Desktop.Input;
 using DesktopMcp.Desktop.Snapshots;
@@ -54,6 +55,12 @@ public sealed record ToolServices
     public required InputLedger Ledger { get; init; }
     public required DesktopInputLock InputLock { get; init; }
     public required TimeProvider Time { get; init; }
+
+    /// <summary>
+    /// The shared dispatcher thread (input monitor, indicator, flash), started on first use; the server logs its unhandled
+    /// exceptions. Tests that start or shut it down pass their own host.
+    /// </summary>
+    public DispatcherHost Dispatcher { get; init; } = DispatcherHost.Shared;
 
     public static ToolServices CreateDefault()
     {

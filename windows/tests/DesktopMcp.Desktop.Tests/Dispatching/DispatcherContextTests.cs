@@ -30,9 +30,29 @@ public class DispatcherContextTests
     }
 
     [Fact]
-    public void ARejectedPostThrows() =>
-        Assert.Throws<ObjectDisposedException>(() =>
-            new DispatcherQueueSynchronizationContext(_ => false, () => false).Post(_ => { }, null));
+    public void ARejectedPostIsDroppedReportedAndDoesNotThrow()
+    {
+        var reported = new List<Exception>();
+        var ran = 0;
+        new DispatcherQueueSynchronizationContext(_ => false, () => false, reported.Add).Post(_ => ran++, null);
+        Assert.Equal(0, ran);
+        Assert.IsType<ObjectDisposedException>(Assert.Single(reported));
+        new DispatcherQueueSynchronizationContext(_ => false, () => false).Post(_ => { }, null);
+        new DispatcherQueueSynchronizationContext(_ => throw new COMException("closed"), () => false, reported.Add).Post(_ => { }, null);
+        Assert.Equal("closed", reported[1].Message);
+        new DispatcherQueueSynchronizationContext(_ => false, () => false, _ => throw new Exception("sink failed")).Post(_ => { }, null);
+    }
+
+    [Fact]
+    public void APostedCallbackThatThrowsIsReportedNotThrownIntoTheQueue()
+    {
+        var queued = new List<Action>();
+        var reported = new List<Exception>();
+        var context = new DispatcherQueueSynchronizationContext(work => { queued.Add(work); return true; }, () => false, reported.Add);
+        context.Post(_ => throw new InvalidOperationException("async void"), null);
+        queued.Single()();
+        Assert.Equal("async void", Assert.Single(reported).Message);
+    }
 
     [Fact]
     public void ATickExceptionIsReportedNotThrown()
@@ -76,6 +96,36 @@ public class DispatcherContextTests
     }
 
     [Fact]
+    public async Task AnAlreadyCancelledCallerStartsNothing()
+    {
+        var starts = 0;
+        var host = new DispatcherHost(() => { starts++; return new FakeDispatcher(); });
+        var cancelled = host.GetAsync(new CancellationToken(canceled: true));
+        Assert.True(cancelled.IsCanceled);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => cancelled);
+        Assert.Equal(0, starts);
+        Assert.False(host.IsStarted);
+    }
+
+    [Fact]
+    public async Task TheHostReportsTheDispatchersUnhandledExceptionsToItsSink()
+    {
+        var dispatcher = new FakeDispatcher();
+        var host = new DispatcherHost(() => dispatcher);
+        var reported = new List<Exception>();
+        await host.GetAsync(default);
+        host.Report = reported.Add;  // a sink set after the start still receives the reports
+        using var timer = await dispatcher.StartTimerAsync(TimeSpan.FromMilliseconds(30), () => throw new InvalidOperationException("tick"));
+        dispatcher.TickAll();
+        Assert.Equal("tick", Assert.Single(reported).Message);
+        host.Report = _ => throw new Exception("sink failed");
+        dispatcher.TickAll();
+        timer.Dispose();
+        dispatcher.TickAll();
+        Assert.Single(reported);
+    }
+
+    [Fact]
     public async Task ACancelledCallerDoesNotCancelTheSharedStart()
     {
         using var release = new ManualResetEventSlim();
@@ -112,67 +162,5 @@ public class DispatcherContextTests
             _ => throw new COMException("closed", unchecked((int)0x80000013)), () => { shutdown = true; return Task.CompletedTask; }, TimeSpan.FromSeconds(1)));
         Assert.True(shutdown);
         Assert.Equal("The new DispatcherQueue rejected work: closed", error.Message);
-    }
-}
-
-/// <summary>
-/// An <see cref="IDesktopDispatcher"/> that runs work inline on the caller's thread and records timers instead of
-/// starting them: a test drives a timer by invoking its recorded tick (<see cref="Timers"/>, <see cref="TickAll"/>).
-/// </summary>
-internal sealed class FakeDispatcher : IDesktopDispatcher
-{
-    private readonly List<FakeTimer> _timers = [];
-
-    public bool HasThreadAccess => true;
-    public int ManagedThreadId => Environment.CurrentManagedThreadId;
-    public int Disposals { get; private set; }
-    public IReadOnlyList<FakeTimer> Timers => _timers;
-
-    public event Action<Exception>? UnhandledException;
-
-    public Task InvokeAsync(Action action)
-    {
-        try { action(); return Task.CompletedTask; }
-        catch (Exception e) { return Task.FromException(e); }
-    }
-
-    public Task<T> InvokeAsync<T>(Func<T> func)
-    {
-        try { return Task.FromResult(func()); }
-        catch (Exception e) { return Task.FromException<T>(e); }
-    }
-
-    public Task InvokeAsync(Func<Task> func)
-    {
-        try { return func(); }
-        catch (Exception e) { return Task.FromException(e); }
-    }
-
-    public Task<IDisposable> StartTimerAsync(TimeSpan interval, Action tick)
-    {
-        var timer = new FakeTimer(interval, () => TimerTicks.Guard(tick, e => UnhandledException?.Invoke(e)));
-        _timers.Add(timer);
-        return Task.FromResult<IDisposable>(timer);
-    }
-
-    /// <summary>Runs one tick of every running timer.</summary>
-    public void TickAll()
-    {
-        foreach (var timer in _timers.ToArray())
-            if (!timer.Stopped) timer.Tick();
-    }
-
-    public ValueTask DisposeAsync()
-    {
-        Disposals++;
-        return ValueTask.CompletedTask;
-    }
-
-    internal sealed class FakeTimer(TimeSpan interval, Action tick) : IDisposable
-    {
-        public TimeSpan Interval { get; } = interval;
-        public bool Stopped { get; private set; }
-        public void Tick() => tick();
-        public void Dispose() => Stopped = true;
     }
 }
