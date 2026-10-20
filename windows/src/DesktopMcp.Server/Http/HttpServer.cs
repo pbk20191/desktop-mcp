@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography.X509Certificates;
 using DesktopMcp.Core.Config;
 using DesktopMcp.Core.Net;
 using DesktopMcp.Core.Security;
@@ -48,8 +49,8 @@ public static class HttpServer
     /// <summary>
     /// Serves <paramref name="plan"/> with the tools over <paramref name="services"/> until <paramref name="ct"/> is
     /// cancelled or the host stops. Once Kestrel is bound, the announcement line goes to <paramref name="announce"/>
-    /// (default stderr) and <paramref name="listening"/> gets the announced endpoint. A bad host or a failed bind prints
-    /// one <c>Error:</c> line there and returns 1.
+    /// (default stderr) and <paramref name="listening"/> gets the announced endpoint. A bad host, a TLS certificate or key
+    /// that does not load, or a failed bind prints one <c>Error:</c> line there and returns 1.
     /// </summary>
     internal static async Task<int> RunAsync(ServePlan plan, ToolServices services, CancellationToken ct,
         Action<Uri>? listening = null, TextWriter? announce = null, DesktopLogBridge? desktopLog = null)
@@ -58,15 +59,21 @@ public static class HttpServer
         ArgumentNullException.ThrowIfNull(services);
         announce ??= Console.Error;
         IReadOnlyList<ListenTarget> targets;
+        X509Certificate2? loaded;
         try
         {
             targets = ListenTarget.Resolve(plan.Host, LookUp);
+            // Decisions 11: loaded before the host is built; ServePlan has checked that both files are given.
+            loaded = plan.SslCertfile is { } certPath && plan.SslKeyfile is { } keyPath ? TlsCertificate.Load(certPath, keyPath) : null;
         }
         catch (ConfigException e)
         {
             announce.WriteLine($"Error: {e.Message}");
             return 1;
         }
+        // Declared before the host, so it is disposed (and its temporary key container removed) after the host stops.
+        using var certificate = loaded;
+        Action<ListenOptions> protocols = certificate is null ? Http1 : listen => Https(listen, certificate);
 
         var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions
         {
@@ -97,13 +104,13 @@ public static class HttpServer
                 {
                     // Kestrel cannot bind localhost on a dynamic port (preflight F2): port 0 binds 127.0.0.1 only.
                     case ListenTarget.Localhost when plan.Port == 0:
-                        kestrel.Listen(IPAddress.Loopback, 0, Http1);
+                        kestrel.Listen(IPAddress.Loopback, 0, protocols);
                         break;
                     case ListenTarget.Localhost:
-                        kestrel.ListenLocalhost(plan.Port, Http1);
+                        kestrel.ListenLocalhost(plan.Port, protocols);
                         break;
                     case ListenTarget.Address address:
-                        kestrel.Listen(address.Ip, plan.Port, Http1);
+                        kestrel.Listen(address.Ip, plan.Port, protocols);
                         break;
                 }
             }
@@ -190,9 +197,19 @@ public static class HttpServer
 
     private const string HostCategory = "Microsoft.Extensions.Hosting.Internal.Host";
 
+    /// <summary>Plain listeners speak HTTP/1.1 only, so cleartext HTTP/2 (h2c) is not offered (Decisions 11).</summary>
     private const HttpProtocols Plain = HttpProtocols.Http1;
 
+    /// <summary>TLS listeners offer HTTP/2 and HTTP/1.1 through ALPN (<c>h2</c>, <c>http/1.1</c>).</summary>
+    private const HttpProtocols Tls = HttpProtocols.Http1AndHttp2;
+
     private static void Http1(ListenOptions listen) => listen.Protocols = Plain;
+
+    private static void Https(ListenOptions listen, X509Certificate2 certificate)
+    {
+        listen.Protocols = Tls;
+        listen.UseHttps(certificate);
+    }
 
     /// <summary>Decisions 4: stateful sessions unless --stateless-http (legacy SSE needs sessions, so it stays stateful).</summary>
     private static void ConfigureTransport(ServePlan plan, HttpServerTransportOptions options) =>

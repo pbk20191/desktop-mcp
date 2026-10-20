@@ -61,6 +61,25 @@ public sealed class HttpRig : IAsyncDisposable
     public static HttpClient CreateClient(bool followRedirects = true) =>
         new(new SocketsHttpHandler { UseProxy = false, AllowAutoRedirect = followRedirects }) { Timeout = Timeout };
 
+    /// <summary>
+    /// A client for the HTTPS server that trusts only the certificate whose thumbprint is <paramref name="thumbprint"/>
+    /// (no other certificate, and nothing about the process-wide validation, changes). With <paramref name="version"/>,
+    /// every request uses exactly that HTTP version.
+    /// </summary>
+    public static HttpClient PinnedClient(string thumbprint, Version? version = null)
+    {
+        var handler = new SocketsHttpHandler { UseProxy = false };
+        handler.SslOptions.RemoteCertificateValidationCallback = (_, certificate, _, _) =>
+            certificate is not null && string.Equals(certificate.GetCertHashString(), thumbprint, StringComparison.OrdinalIgnoreCase);
+        var client = new HttpClient(handler) { Timeout = Timeout };
+        if (version is not null)
+        {
+            client.DefaultRequestVersion = version;
+            client.DefaultVersionPolicy = HttpVersionPolicy.RequestVersionExact;
+        }
+        return client;
+    }
+
     /// <summary>The redirect URI <see cref="OAuthTokenAsync"/> registers; nothing ever connects to it.</summary>
     public const string OAuthRedirectUri = "http://127.0.0.1:9/cb";
 
@@ -128,15 +147,19 @@ public sealed class HttpRig : IAsyncDisposable
         return new HttpRig(stop, serving, await listening.Task, announce.ToString().TrimEnd('\r', '\n'));
     }
 
-    /// <summary>An SDK client for <see cref="Endpoint"/> over <paramref name="mode"/>.</summary>
-    public async Task<McpClient> ConnectAsync(HttpTransportMode mode, IDictionary<string, string>? headers = null, McpClientOptions? options = null)
+    /// <summary>
+    /// An SDK client for <see cref="Endpoint"/> over <paramref name="mode"/>, through <paramref name="http"/> (default
+    /// <see cref="Http"/>). The transport owns <paramref name="http"/> when it is given.
+    /// </summary>
+    public async Task<McpClient> ConnectAsync(HttpTransportMode mode, IDictionary<string, string>? headers = null, McpClientOptions? options = null,
+        HttpClient? http = null)
     {
         var transport = new HttpClientTransport(new HttpClientTransportOptions
         {
             Endpoint = Endpoint,
             TransportMode = mode,
             AdditionalHeaders = headers,
-        }, Http, loggerFactory: null, ownsHttpClient: false);
+        }, http ?? Http, loggerFactory: null, ownsHttpClient: http is not null);
         using var timeout = new CancellationTokenSource(Timeout);
         return await McpClient.CreateAsync(transport, options, cancellationToken: timeout.Token);
     }
