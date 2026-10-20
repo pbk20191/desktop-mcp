@@ -83,3 +83,9 @@ QueryFullProcessImageName
 CloseHandle
 // Capture: the monitor behind a display rectangle
 MonitorFromRect
+// Snapshot: the cursor and the interactive-session check (spec §5)
+GetCursorPos
+ProcessIdToSessionId
+OpenInputDesktop
+GetUserObjectInformation
+CloseDesktop
