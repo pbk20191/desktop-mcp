@@ -53,6 +53,9 @@ private actor StdoutWatchingTransport: Transport {
     private var forwarding: Task<Void, Never>?
     /// The last write queued; each write waits for the one before it.
     private var lastWrite: Task<Void, Swift.Error>?
+    /// Every write not yet finished, so `disconnect()` can stop them.
+    private var writes: [Int: Task<Void, Swift.Error>] = [:]
+    private var nextWrite = 0
     private var unanswered: Set<ID> = []
     private var inputEnded = false
     private var outputClosed = false
@@ -77,9 +80,16 @@ private actor StdoutWatchingTransport: Transport {
         }
     }
 
+    /// Also stops every write still queued or in progress, and waits for them: `StdioTransport`
+    /// keeps retrying a blocked write after its own `disconnect()`, and once the caller closes
+    /// the fd (a socket connection) its number can be reused, so a late write would land in
+    /// some other file.
     func disconnect() async {
         forwarding?.cancel()
         continuation.finish()
+        let pending = Array(writes.values)
+        for write in pending { write.cancel() }
+        for write in pending { _ = await write.result }
         await inner.disconnect()
     }
 
@@ -87,9 +97,14 @@ private actor StdoutWatchingTransport: Transport {
         let previous = lastWrite
         let write = Task { [inner] in
             _ = await previous?.result
+            try Task.checkCancellation()
             try await inner.send(data)
         }
         lastWrite = write
+        let key = nextWrite
+        nextWrite += 1
+        writes[key] = write
+        defer { writes[key] = nil }
         do {
             try await write.value
         } catch {

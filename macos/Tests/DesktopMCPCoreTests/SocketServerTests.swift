@@ -165,15 +165,51 @@ final class SocketServerTests: XCTestCase {
         await run.value
     }
 
-    func testALargeReplyArrivesWhole() async throws {
-        let size = 2 * 1024 * 1024
+    /// A registry with one tool, "Big", that returns `size` bytes of text.
+    func bigRegistry(size: Int) async -> ToolRegistry {
         let registry = ToolRegistry(name: "t", version: "0", instructions: "")
         await registry.register(Tool(
-            name: "Big", description: "Returns 2 MiB of text.",
+            name: "Big", description: "Returns a lot of text.",
             inputSchema: .object(["type": .string("object")]),
             annotations: ToolAnnotations(title: "Big", readOnly: true, destructive: false,
                                          idempotent: true, openWorld: false),
             handler: { _ in [.text(String(repeating: "x", count: size))] }))
+        return registry
+    }
+
+    func testShutdownStopsAWriteBlockedOnAPeerThatDoesNotRead() async throws {
+        // A reply bigger than the send buffer, to a client that never reads: the SDK transport
+        // retries the write every 10 ms. Once shutdown returns and the fd is closed, its number
+        // is free for the next socket; the retrying write must not land there.
+        let path = socketPath()
+        let (server, run) = try await serving(await bigRegistry(size: 4 * 1024 * 1024), path: path)
+        let fd = try connectRaw(path)
+        send(fd, #"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"Big","arguments":{}}}"# + "\n")
+        try await Task.sleep(for: .milliseconds(500))  // the write is now blocked
+        let clock = ContinuousClock()
+        let started = clock.now
+        await server.shutdown()
+        XCTAssertLessThan(clock.now - started, .seconds(2))
+        let count = await server.connections
+        XCTAssertEqual(count, 0)
+        await run.value
+
+        // Both ends are writable, so whichever end takes the freed number would carry a stray
+        // write to the other.
+        var pair: [Int32] = [0, 0]
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair), 0)
+        defer { close(pair[0]); close(pair[1]) }
+        for end in pair { _ = fcntl(end, F_SETFL, fcntl(end, F_GETFL) | O_NONBLOCK) }
+        try await Task.sleep(for: .milliseconds(200))
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        XCTAssertLessThan(read(pair[0], &buffer, buffer.count), 1, "nothing may arrive on a socket reusing the number")
+        XCTAssertLessThan(read(pair[1], &buffer, buffer.count), 1, "nothing may arrive on a socket reusing the number")
+        close(fd)
+    }
+
+    func testALargeReplyArrivesWhole() async throws {
+        let size = 2 * 1024 * 1024
+        let registry = await bigRegistry(size: size)
         let path = socketPath()
         let (server, run) = try await serving(registry, path: path)
 
