@@ -1,7 +1,36 @@
+import CoreGraphics
 import Foundation
 import Logging
 import MCP
+import XCTest
 @testable import DesktopMCPCore
+
+/// Process-wide test seams, each restored when the current test ends. Safe because XCTest runs
+/// tests one at a time; callable from `setUp` or from the test itself.
+extension XCTestCase {
+    /// What the Accessibility guard and Snapshot see.
+    func withAccessibility(_ trusted: Bool) {
+        let original = Permissions.trusted.current
+        Permissions.trusted.current = { trusted }
+        addTeardownBlock { Permissions.trusted.current = original }
+    }
+
+    /// What the `Permissions` tool reports.
+    func withPermissions(_ state: PermissionState) {
+        let original = Permissions.probe.current
+        Permissions.probe.current = { state }
+        addTeardownBlock { Permissions.probe.current = original }
+    }
+
+    /// Captures synthesised input instead of posting it; returns the number of events captured.
+    func capturingInput() -> Locked<Int> {
+        let count = Locked(0)
+        let original = Input.poster.current
+        Input.poster.current = { _ in count.withLock { $0 += 1 } }
+        addTeardownBlock { Input.poster.current = original }
+        return count
+    }
+}
 
 enum JSON {
     static func parse(_ text: String) throws -> Value { try JSONDecoder().decode(Value.self, from: Data(text.utf8)) }

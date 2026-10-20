@@ -80,18 +80,10 @@ actor FakeWindowSource: WindowSource {
 }
 
 final class WindowToolTests: XCTestCase {
-    private var originalProbe: (@Sendable () -> PermissionState)!
-
     /// The handler checks Accessibility first; these tests drive a fake source, so grant it.
     override func setUp() {
         super.setUp()
-        originalProbe = Permissions.probe.current
-        Permissions.probe.current = { PermissionState(accessibility: true, screenRecording: true, automation: .granted) }
-    }
-
-    override func tearDown() {
-        Permissions.probe.current = originalProbe
-        super.tearDown()
+        withAccessibility(true)
     }
 
     private func window(pid: pid_t = 1, index: Int = 0, app: String = "Safari", title: String = "Docs",

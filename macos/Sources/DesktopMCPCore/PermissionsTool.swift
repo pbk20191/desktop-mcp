@@ -29,12 +29,16 @@ public enum Permissions {
     public static let accessibilityMessage =
         "Accessibility is not granted to desktop-mcp. Grant it in System Settings > Privacy & Security > Accessibility, then restart desktop-mcp."
 
-    /// Reads the current state. Tests replace it and put the original back.
+    /// Reads the full state, for the `Permissions` tool. Tests replace it and put the original back.
     public static let probe = Locked<@Sendable () -> PermissionState>(check)
+
+    /// Whether Accessibility is granted, for the guard and Snapshot: only this check, never the
+    /// Apple Events one, which is a round trip to tccd. Tests replace it and put the original back.
+    public static let trusted = Locked<@Sendable () -> Bool>({ AX.isTrusted(prompt: false) })
 
     /// The real checks; none of them prompts.
     @Sendable static func check() -> PermissionState {
-        PermissionState(accessibility: AXIsProcessTrusted(),
+        PermissionState(accessibility: AX.isTrusted(prompt: false),
                         screenRecording: CGPreflightScreenCaptureAccess(),
                         automation: automationOfSystemEvents())
     }
@@ -54,10 +58,14 @@ public enum Permissions {
         probe.current()
     }
 
+    public static func accessibilityTrusted() -> Bool {
+        trusted.current()
+    }
+
     /// Throws the Accessibility copy when the grant is missing. Called first by every tool that
     /// works through Accessibility or posts events, which would otherwise answer empty or do nothing.
     public static func requireAccessibility() throws {
-        guard current().accessibility else {
+        guard accessibilityTrusted() else {
             throw ToolError(accessibilityMessage, telemetry: "Accessibility not granted")
         }
     }

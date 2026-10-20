@@ -58,9 +58,8 @@ public final class Desktop: Sendable {
     }
 
     public func snapshot(useVision: Bool) async -> [MCP.Tool.Content] {
-        let trusted = await offload { Permissions.current().accessibility }
         let state = await self.state(useVision: useVision)
-        var text = Self.permissionNote(trusted: trusted) + """
+        var text = Self.permissionNote(trusted: Permissions.accessibilityTrusted()) + """
         Focused Window:
         \(state.activeWindow?.description ?? "No focused window.")
 

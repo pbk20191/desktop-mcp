@@ -4,8 +4,13 @@ import Foundation
 
 /// Synthesised mouse and keyboard input via Quartz events.
 public enum Input {
+    /// Where every synthesised event goes. Tests replace it to see what would have been posted
+    /// without touching real input, and put the original back.
+    static let poster = Locked<@Sendable (CGEvent) -> Void>({ $0.post(tap: .cghidEventTap) })
+
     static func post(_ event: CGEvent?) {
-        event?.post(tap: .cghidEventTap)
+        guard let event else { return }
+        poster.current(event)
     }
 
     static func pause(_ seconds: Double) async throws {
