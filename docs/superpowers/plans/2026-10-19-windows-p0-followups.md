@@ -79,6 +79,18 @@ Ideas from the desk-mcp analysis (`DigitalDog1/desk-mcp` at e6d42fc, Apache-2.0)
 - `Coercion.JsonList` returns non-arrays: the `loc`/`region` callers must check `ValueKind`, or `JsonList` must reject them.
 - WaitFor and the label-based tools: add the metadata P2 does not read (IsEnabled for element_enabled, selection state) to UiaElementData and UiElement (P2 plan, Decisions 6).
 
+Ideas from the terminator analysis (`mediar-ai/terminator` at 73a381c, MIT; its UIA crate `uiautomation` 0.22.2 is Apache-2.0; read only, never built or run). Re-implement them; do not copy code. Its speed comes from scoping every search to one app and stopping at the first match, and from a whole-subtree cache read that P2 Decisions 37 rejected (it hangs Chromium); its click is a SendInput click like ours. Not reusable directly: no C interface, a large Rust dependency tree, telemetry on by default, and none of our hang guards.
+
+- Before a label action (after the RuntimeId lookup above): require non-zero bounds on a monitor and IsEnabled; click at the cached ClickablePoint, falling back to the centre; return specific stale, disabled and off-screen errors. ClickablePoint differs from upstream's centre click: list it in spec §10.
+- A label whose element is gone: search again in the same window by ControlType + AutomationId + Name and use it only when exactly one matches (a note in the result is a contract change: user decision).
+- Off-screen target: `ScrollItemPattern.ScrollIntoView`, read the bounds again, fail rather than click outside.
+- After Type: read the value back (not for password fields) and warn on a mismatch (result text change: user decision).
+- WaitFor: per poll, check only what the condition needs (foreground window, focused element, or a first-match search scoped to one window), never a full Snapshot or a whole-subtree search; keep Decisions 36-38.
+- Before keyboard input: bring the window to the foreground reliably (restore, `SetForegroundWindow`, `AttachThreadInput` fallback) and confirm it; check the window is not hung first, because `AttachThreadInput` can block on a hung target.
+- After an action: report a foreground window or title change (result text change: user decision).
+- Highlight the target briefly before acting, with the P4 overlay, off by default.
+- Later options, all contract changes: selector targeting (`process:X >> role:Button name:OK`), tree diffs in action results, pattern-based MultiSelect.
+
 ## P4 (desktop control)
 
 - **One gate for the GPU work (P3/P4, from the P2 final review).** Abandoned renders can pile up behind a wedged device lock (P2 Task 14), and a capture wedged in `device.Lock` leaks a thread per call (P2 Task 15). Add one shared single-slot gate for `Win2DRenderer` and `GraphicsCaptureService` before P4's capture flash.
