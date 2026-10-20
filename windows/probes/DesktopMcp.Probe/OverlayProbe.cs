@@ -68,34 +68,37 @@ internal static partial class OverlayProbe
             var monitors = displays.GetDisplays().Select(d => d.Bounds).ToArray();
             var art = OverlayArt.Shared;
             // The notice is measured on the thread pool, never on the dispatcher (Task 8).
+            // Each spec with the overlay it belongs to, so the layers are created by the factory the product uses for it.
             var specs = await Task.Run(() =>
             {
-                var all = new List<LayerSpec>(OverlayLayout.Indicator(monitors, art.NoticeSize));
-                all.Add(OverlayLayout.CursorRing(DesktopSession.CursorPosition()));
-                all.AddRange(OverlayLayout.Flash(null, monitors, displays.GetVirtualScreen()));
+                var all = OverlayLayout.Indicator(monitors, art.NoticeSize).Select(spec => (Spec: spec, Flash: false)).ToList();
+                all.Add((OverlayLayout.CursorRing(DesktopSession.CursorPosition()), false));
+                all.AddRange(OverlayLayout.Flash(null, monitors, displays.GetVirtualScreen()).Select(spec => (Spec: spec, Flash: true)));
                 return all;
             });
-            var bitmaps = await Task.WhenAll(specs.Select(spec => art.RenderAsync(spec.Art, CancellationToken.None)));
+            var bitmaps = await Task.WhenAll(specs.Select(item => art.RenderAsync(item.Spec.Art, CancellationToken.None)));
             var bytes = bitmaps.Sum(b => (long)b.Pixels.Length);
 
             dispatcher = await host.GetAsync(CancellationToken.None);
-            var factory = new LayeredWindowFactory(null, LayeredWindow.IndicatorOverlay);
+            var indicatorFactory = new LayeredWindowFactory(null, LayeredWindow.IndicatorOverlay);
+            var flashFactory = new LayeredWindowFactory(null, LayeredWindow.FlashOverlay);
             var problems = await dispatcher.InvokeAsync(() =>
             {
                 var found = new List<string>();
                 for (var i = 0; i < specs.Count; i++)
                 {
-                    var layer = (LayeredWindow)factory.Create(specs[i].Bounds, specs[i].Name);
+                    var (spec, flash) = specs[i];
+                    var layer = (LayeredWindow)(flash ? flashFactory : indicatorFactory).Create(spec.Bounds, spec.Name);
                     layers.Add(layer);
                     layer.SetContent(bitmaps[i]);
                     layer.SetOpacity(128);
                     var hwnd = (nint)layer.Handle;
                     var exStyle = (WINDOW_EX_STYLE)(uint)GetWindowLongPtrW(hwnd, GwlExStyle);
                     if ((exStyle & LayeredWindow.ExStyle) != LayeredWindow.ExStyle)
-                        found.Add($"{specs[i].Name}: ex-style 0x{(uint)exStyle:X8} lacks 0x{(uint)LayeredWindow.ExStyle:X8}");
+                        found.Add($"{spec.Name}: ex-style 0x{(uint)exStyle:X8} lacks 0x{(uint)LayeredWindow.ExStyle:X8}");
                     if (!GetWindowDisplayAffinity(hwnd, out var affinity) || affinity != WdaExcludeFromCapture || !layer.ExcludedFromCapture)
-                        found.Add($"{specs[i].Name}: display affinity 0x{affinity:X} (excluded={layer.ExcludedFromCapture})");
-                    if (layer.IsVisible) found.Add($"{specs[i].Name}: visible");
+                        found.Add($"{spec.Name}: display affinity 0x{affinity:X} (excluded={layer.ExcludedFromCapture})");
+                    if (layer.IsVisible) found.Add($"{spec.Name}: visible");
                 }
                 return found;
             });

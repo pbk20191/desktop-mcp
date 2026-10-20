@@ -154,6 +154,9 @@ with this API. The system owns the
 thread and its message loop; we post work with `DispatcherQueue.TryEnqueue`, and a small
 `DispatcherQueueSynchronizationContext` makes `await` continuations started there resume there.
 On shutdown, `ShutdownQueueAsync()` drains the queue after hooks are removed and windows destroyed.
+Work posted to the synchronization context after shutdown, when `TryEnqueue` rejects it, is dropped and
+reported to the server log, never thrown: a throw there would kill the process (P4 Task 2 ruling, as the
+Windows App SDK's own context ignores `TryEnqueue`'s result).
 
 It hosts everything that needs a message loop:
 - the `WH_KEYBOARD_LL` and `WH_MOUSE_LL` hooks and a message-only window (`HWND_MESSAGE` parent) that
@@ -360,7 +363,9 @@ Rules:
 - **Back to `ready`** after `idle_timeout_seconds` (default 10) without physical input and with no
   keys or buttons held. A missed key-up is cleared after five all-up `GetAsyncKeyState` samples
   0.1 s apart.
-- **`unavailable`** when there is no active WTS session, the input desktop is not `Default`, a hook
+- **`unavailable`** when there is no active WTS session, the input desktop is not `Default` or its
+  name cannot be read (the control uses this strict check; `DesktopSession` keeps P2's behaviour for
+  the desktop tools; P4 Task 7 ruling), a hook
   or the overlay fails, or the event queue (4096) overflows; gated calls get `CONTROL_UNAVAILABLE`.
 - **Rejections** are `isError` results whose text is `{"code": C, "status": {...}}` with
   C in `USER_CONTROL`, `CONTROL_UNAVAILABLE`, `CONTROL_PREEMPTED`, `PHYSICAL_INPUT_HELD`.
@@ -633,7 +638,7 @@ by-hand act session: not run (pending with the user, with the App launch, `launc
 and job checks in the follow-ups' P3 section). Input tests inject only through GuardedInjector
 into the tests' own windows.
 
-P4 results (2026-10-21, Windows build 10.0.26220.9739): default suite 2034 (Core 1033, Server 272, Desktop non-desktop 729); Desktop suite 0 by hand, all pending (`InputMonitorDesktopTests` 8, `OverlayWindowDesktopTests` 5, `CaptureFlashDesktopTests` 2, `OverlayArtTests` (run off-screen by the Task 8 implementer, 6 of 6), the P3 tests still pending, and `SnapshotServiceDesktopTests`, which now flash); build-release: win-x64 19,095,552 bytes, win-arm64 20,341,248 bytes, each dist folder holding only the exe and its pdb, no publish warnings; stdio smoke OK under NativeAOT with the control session (ready) and no control taken (first session with control disabled and the flash off: ControlStatus disabled, 13 act-tool checks with no input sent, 1 display, active desktop "Desktop 1", 187 tree elements of which 159 labelled, graphics stack not loaded with 86 modules, a 1728x1080 Screenshot PNG and the 200x120 region PNG, the PowerShell grandchild died with the server, which exited 31 ms after stdin closed; second session: the excluding config listed 20 tools, ControlStatus `ready`, Wait ungated, the hooks and the dispatcher loaded no graphics DLL, exit within 5 s); AOT activation and UIA checks OK; AOT overlay check OK (hidden): `overlay: 11 layers, 4406824 bytes rendered, hidden -> OK` (one monitor: four edges, the notice glow and notice, the cursor ring and four flash strips); by-hand control session: pending with the user (follow-ups, P4). One default-suite test is flaky: `ControlNotifierTests.TheReturnIsAnnouncedAsAiControlAvailable` failed in 4 of 5 full-suite runs and in about 1 of 6 Server-only runs, every time with the two notifications reversed (`AI_CONTROL_AVAILABLE` before `USER_CONTROL`): `ControlNotifier` starts each session's send with its own `Task.Run`, so two quick changes can reach a session out of order (the Task 13 deferred minor "per-session sends can reorder two quick events", now a test failure; P4 leftovers, final review). The counts above are the passing runs.
+P4 results (2026-10-21, Windows build 10.0.26220.9739): default suite 2036 (Core 1033, Server 274, Desktop non-desktop 729); Desktop suite 0 by hand, all pending (`InputMonitorDesktopTests` 8, `OverlayWindowDesktopTests` 5, `CaptureFlashDesktopTests` 2, `OverlayArtTests` (run off-screen by the Task 8 implementer, 6 of 6), the P3 tests still pending, and `SnapshotServiceDesktopTests`, which now flash); build-release: win-x64 19,095,552 bytes, win-arm64 20,341,248 bytes, each dist folder holding only the exe and its pdb, no publish warnings; stdio smoke OK under NativeAOT with the control session (ready) and no control taken (first session with control disabled and the flash off: ControlStatus disabled, 13 act-tool checks with no input sent, 1 display, active desktop "Desktop 1", 187 tree elements of which 159 labelled, graphics stack not loaded with 86 modules, a 1728x1080 Screenshot PNG and the 200x120 region PNG, the PowerShell grandchild died with the server, which exited 31 ms after stdin closed; second session: the excluding config listed 20 tools, ControlStatus `ready`, Wait ungated, the hooks and the dispatcher loaded no graphics DLL, exit within 5 s); AOT activation and UIA checks OK; AOT overlay check OK (hidden): `overlay: 11 layers, 4406824 bytes rendered, hidden -> OK` (one monitor: four edges, the notice glow and notice, the cursor ring and four flash strips); by-hand control session: pending with the user (follow-ups, P4). After the notifier's per-session ordering fix (a116094), three consecutive default-suite runs were clean with these counts; before it, `ControlNotifierTests.TheReturnIsAnnouncedAsAiControlAvailable` failed in most full-suite runs (the two notifications reversed).
 
 ## 10. Differences from upstream (for the Windows README)
 
@@ -703,7 +708,8 @@ P4 results (2026-10-21, Windows build 10.0.26220.9739): default suite 2034 (Core
 - **P4 decisions**: P4's departures from upstream for desktop control (no `takeover_pending`
   state, no hide-for-capture, no `rotating` pause, the thread-pool heartbeat, the monitor start that
   never stops the server, the arming rule, the up-inherits-down rule, the process allowlist, the
-  flash geometry, the raw-JSON logging) are listed in the P4 plan's "Decisions on upstream ambiguities" (docs/superpowers/plans/2026-10-20-windows-p4-desktop-control.md).
+  flash geometry, the raw-JSON logging) are listed in the P4 plan's "Decisions on upstream ambiguities"
+  (`docs/superpowers/plans/2026-10-20-windows-p4-desktop-control.md`).
 
 ## 11. Phases
 
@@ -717,7 +723,7 @@ work first.
 | P1 Server core and headless tools | CLI, config, ServePlan, stdio; Wait, PowerShell, FileSystem, Clipboard, Process, Registry, Notification, Scrape without sampling | A useful server without desktop access (done; results in §9) |
 | P2 Desktop read | Dispatcher (fixed in P2, first started in P4: P2 plan, Decisions 21), UIA wrapper, Tree, Snapshot without DOM, capture, imaging, Screenshot, DisplayInventory, virtual desktops | The agent can see the screen (done except a rerun of the WinRT clipboard test and the three Desktop tests left out of the final run; results in §9) |
 | P3 Desktop act | Input, InputLedger, Click, Type, Scroll, Move, Shortcut, MultiSelect, MultiEdit, App, WaitFor | Upstream's core workflows (done except the Desktop suite and the by-hand act session, pending with the user; results in §9) |
-| P4 Desktop control | InputMonitor, state machine, overlay, capture flash, gate, notifier, ControlStatus | Protection against fighting the user (done; results in §9) |
+| P4 Desktop control | InputMonitor, state machine, overlay, capture flash, gate, notifier, ControlStatus | Protection against fighting the user (done except the Desktop suite and the by-hand control session, pending with the user; results in §9) |
 | P5 HTTP | Kestrel, Streamable HTTP and SSE, middleware, TLS, OAuth, `/health`, Scrape sampling, telemetry | Remote use |
 | P6 Finish | Install, uninstall, auth, release script for x64 and arm64 (started in P0b, which already trims the output to one exe), Windows README, root README update | `windows-v0.1.0` |
 

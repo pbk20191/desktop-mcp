@@ -13,7 +13,8 @@
 #    an interactive session; -SkipCapture leaves those two out (Windows Sandbox has no runtime). The desktop calls
 #    need an unlocked interactive desktop session: on a locked screen, a secure desktop or in session 0 they fail.
 #    Snapshot must show a named virtual desktop (not the "Default Desktop" fallback) and at least one tree element.
-#    Both sessions run with DESKTOP_MCP_EXCLUDE_PROCESSES set to -ExcludeProcesses (default empty). P2 excluded Code.exe
+#    Both sessions drop every inherited DESKTOP_MCP_* variable (they would override the config file) and run with
+#    DESKTOP_MCP_EXCLUDE_PROCESSES set to -ExcludeProcesses (default empty). P2 excluded Code.exe
 #    after the walk hung VS Code; Decisions 36-38 fixed that, and a run with VS Code open confirmed it (2026-10-20).
 # 2. `serve --config <file excluding Registry>`: tools/list equals the spec less Registry, which proves the NativeAOT
 #    exe parsed the TOML file. Desktop control stays on (the default) in this session, which reads status only: ControlStatus
@@ -85,6 +86,9 @@ function Invoke-Session([string]$ConfigPath, [scriptblock]$Body, [int]$ExitSecon
     $psi.StandardInputEncoding = $utf8
     $psi.StandardOutputEncoding = $utf8
     $psi.UseShellExecute = $false
+    # Inherited DESKTOP_MCP_* variables override the config file (DESKTOP_MCP_CONTROL=1 with a strict policy would gate
+    # Wait and take control on the live machine), so the sessions see only the variables this script sets.
+    foreach ($name in @($psi.Environment.Keys | Where-Object { $_ -like 'DESKTOP_MCP_*' })) { $psi.Environment.Remove($name) | Out-Null }
     $psi.Environment['ANONYMIZED_TELEMETRY'] = 'false'
     $psi.Environment['DESKTOP_MCP_EXCLUDE_PROCESSES'] = $ExcludeProcesses
     foreach ($name in $Environment.Keys) { $psi.Environment[$name] = $Environment[$name] }
@@ -180,15 +184,16 @@ try {
         if ($init.result.instructions -cne $expectedInstructions) { throw "unexpected instructions: $($init.result.instructions)" }
         Assert-ToolsMatchSpec $listLine
 
+        # Control is off in this session, checked before any other tool call: the calls below run unprotected and take no control.
+        $control = Get-ControlStatus 5
+        $expectedStatus = '{"state":"disabled","generation":0,"wait_seconds":0.0,"enabled":false,"policy":"relaxed","idle_timeout_seconds":10.0}'
+        if ($control.Text -cne $expectedStatus) { throw "unexpected ControlStatus with control disabled: $($control.Text)" }
+
         Send @{ jsonrpc = '2.0'; id = 3; method = 'tools/call'; params = @{ name = 'Wait'; arguments = @{ duration = 0 } } }
         $call = Receive 3
         if ($null -eq $call.result -or $call.result.isError) { throw "Wait failed: $($call | ConvertTo-Json -Depth 5)" }
         if ($call.result.content[0].text -cne 'Waited for 0 seconds.') { throw "unexpected Wait text: $($call.result.content[0].text)" }
 
-        # Control is off in this session: the act tools below run unprotected and take no control.
-        $control = Get-ControlStatus 5
-        $expectedStatus = '{"state":"disabled","generation":0,"wait_seconds":0.0,"enabled":false,"policy":"relaxed","idle_timeout_seconds":10.0}'
-        if ($control.Text -cne $expectedStatus) { throw "unexpected ControlStatus with control disabled: $($control.Text)" }
 
         # Headless tools under NativeAOT. Clipboard and Notification are left out: they change the user's desktop.
         $cases = @(
