@@ -8,12 +8,16 @@ public enum ConnectPlan: Equatable, Sendable {
 
     public static func installed(plist: Data, config: DesktopMCPConfig) throws -> ConnectPlan {
         let target = try StdioBridge.Target.installed(plist: plist, config: config)
-        guard let dictionary = try? PropertyListSerialization.propertyList(from: plist, format: nil) as? [String: Any],
-              let arguments = dictionary["ProgramArguments"] as? [String],
-              let path = socketPath(in: arguments) else {
-            return .http(target)
-        }
+        guard let path = socketPath(plist: plist) else { return .http(target) }
         return .socket(path: path, fallback: target)
+    }
+
+    /// The socket a Launch Agent plist's `ProgramArguments` name; nil when they name none, or
+    /// the plist cannot be read.
+    public static func socketPath(plist: Data) -> String? {
+        guard let dictionary = try? PropertyListSerialization.propertyList(from: plist, format: nil) as? [String: Any],
+              let arguments = dictionary["ProgramArguments"] as? [String] else { return nil }
+        return socketPath(in: arguments)
     }
 
     /// The value after `--socket`, if the agent was installed with one.

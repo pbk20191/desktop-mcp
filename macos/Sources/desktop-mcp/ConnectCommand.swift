@@ -35,24 +35,30 @@ struct Connect: AsyncParsableCommand {
         }
     }
 
+    /// Where the bridge goes: a socket (with HTTP to fall back to when it refuses, unless the
+    /// socket was asked for by name), or HTTP.
+    private enum Route {
+        case socket(String, fallback: StdioBridge.Target?)
+        case http(StdioBridge.Target)
+    }
+
     func run() async throws {
         let config = (try? DesktopMCPConfig.load(DesktopMCPConfig.discover(explicit: nil))) ?? DesktopMCPConfig()
         let fromEnvironment = ProcessInfo.processInfo.environment[ServePlan.environmentKeys.authKey]
         let key = [authKey, fromEnvironment, config.server.authKey].lazy.compactMap { $0 }.first { !$0.isEmpty }
-        var socketPath: String?
-        var target: StdioBridge.Target?
+        let route: Route
         if let url {
             guard let parsed = URL(string: url), parsed.scheme != nil, parsed.host != nil else {
                 throw ValidationError("--url must be an absolute http(s) URL.")
             }
-            target = StdioBridge.Target(url: parsed, authKey: key)
+            route = .http(StdioBridge.Target(url: parsed, authKey: key))
         } else if let socket {
             do {
                 try LaunchAgent.validateSocketPath(socket)
             } catch {
                 throw CLIError(error)
             }
-            socketPath = socket
+            route = .socket(socket, fallback: nil)
         } else {
             guard let plist = try? Data(contentsOf: LaunchAgent.plistURL) else {
                 throw CLIError("No Launch Agent is installed (\(LaunchAgent.plistURL.path)). Run `desktop-mcp install` first, or pass --url.")
@@ -61,11 +67,10 @@ struct Connect: AsyncParsableCommand {
                 switch try ConnectPlan.installed(plist: plist, config: config) {
                 case .socket(let path, var fallback):
                     fallback.authKey = key
-                    socketPath = path
-                    target = fallback
+                    route = .socket(path, fallback: fallback)
                 case .http(var http):
                     http.authKey = key
-                    target = http
+                    route = .http(http)
                 }
             } catch {
                 throw CLIError(error)
@@ -73,7 +78,11 @@ struct Connect: AsyncParsableCommand {
         }
         // A write to a closed stdout must surface as EPIPE, not kill the process.
         signal(SIGPIPE, SIG_IGN)
-        if let socketPath {
+        let target: StdioBridge.Target
+        switch route {
+        case .http(let http):
+            target = http
+        case .socket(let socketPath, let fallback):
             do {
                 let connection = try await SocketBridge(path: socketPath).connect()
                 switch await connection.run(input: .standardInput, output: { await StdoutWriter.shared.write($0) }) {
@@ -84,14 +93,14 @@ struct Connect: AsyncParsableCommand {
                     throw ExitCode(1)
                 }
             } catch let refused as SocketBridge.Refused {
-                guard let target else {
+                guard let fallback else {
                     log("desktop-mcp connect: \(refused.reason)")
                     throw ExitCode(1)
                 }
-                log("desktop-mcp connect: \(refused.reason); using HTTP at \(target.url.absoluteString)")
+                log("desktop-mcp connect: \(refused.reason); using HTTP at \(fallback.url.absoluteString)")
+                target = fallback
             }
         }
-        guard let target else { return }
         // False once stdout is gone: the bridge then cancels what it is still forwarding.
         await StdioBridge(target: target).run(input: .standardInput) { line in
             await StdoutWriter.shared.write(line + "\n")

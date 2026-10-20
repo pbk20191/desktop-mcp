@@ -139,6 +139,8 @@ struct Uninstall: ParsableCommand {
 
     func run() throws {
         let plistURL = LaunchAgent.plistURL
+        // The socket the agent was installed with, read before the plist goes.
+        let socketPath = (try? Data(contentsOf: plistURL)).flatMap(ConnectPlan.socketPath(plist:))
         let result = Launchctl.run("bootout", "gui/\(getuid())/\(LaunchAgent.label)")
         if result.status == 0 {
             print("Stopped the running server.")
@@ -151,11 +153,10 @@ struct Uninstall: ParsableCommand {
         } else {
             print("Plist already removed.")
         }
-        // launchd removes the socket file it made; one left behind is removed here, and only if
-        // it is a socket.
-        let socketPath = LaunchAgent.socketURL.path
+        // launchd removes the socket file it made; one left behind at the plist's path is
+        // removed here, and only if it is a socket.
         var info = stat()
-        if lstat(socketPath, &info) == 0, info.st_mode & S_IFMT == S_IFSOCK {
+        if let socketPath, lstat(socketPath, &info) == 0, info.st_mode & S_IFMT == S_IFSOCK {
             try FileManager.default.removeItem(atPath: socketPath)
             print("Removed \(socketPath)")
         }
