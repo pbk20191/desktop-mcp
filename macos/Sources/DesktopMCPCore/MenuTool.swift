@@ -136,11 +136,11 @@ enum MenuTool {
             if found.count == 1 { return found[0] }
             if found.count > 1 {
                 throw ToolError("Menu item '\(element)' is ambiguous: \(found.map(\.title).joined(separator: ", "))",
-                                label: "Menu item is ambiguous")
+                                telemetry: "Menu item is ambiguous")
             }
         }
         let available = items.isEmpty ? "; it has no items." : ". Available: " + items.map(\.title).joined(separator: ", ")
-        throw ToolError("No menu item '\(element)' under \(parent)\(available)", label: "No such menu item")
+        throw ToolError("No menu item '\(element)' under \(parent)\(available)", telemetry: "No such menu item")
     }
 
     /// The items `path` names, from the bar item down. The Apple menu (root 0) is also "Apple".
@@ -181,15 +181,15 @@ enum MenuTool {
 
     private static func press<N: MenuNode>(_ chain: [N]) throws -> String {
         for end in chain.indices where !chain[end].enabled {
-            throw ToolError("Menu item \(describe(Array(chain[...end]))) is disabled.", label: "Menu item is disabled")
+            throw ToolError("Menu item \(describe(Array(chain[...end]))) is disabled.", telemetry: "Menu item is disabled")
         }
         guard let item = chain.last else { throw ToolError("path required for select mode.") }
         if item.children().contains(where: { !$0.isSeparator }) {
             throw ToolError("Menu item \(describe(chain)) opens a submenu; add the item to select.",
-                            label: "Menu item opens a submenu")
+                            telemetry: "Menu item opens a submenu")
         }
         guard item.press() else {
-            throw ToolError("Could not press menu item \(describe(chain)).", label: "Could not press menu item")
+            throw ToolError("Could not press menu item \(describe(chain)).", telemetry: "Could not press menu item")
         }
         return "Selected \(describe(chain))."
     }
@@ -223,7 +223,7 @@ enum MenuTool {
         guard let running = App.runningApplications().first(where: {
             $0.activationPolicy == .regular && ($0.bundleIdentifier == app || $0.localizedName?.lowercased() == wanted)
         }) else {
-            throw ToolError("Application '\(app)' not found.", label: "Application not found")
+            throw ToolError("Application '\(app)' not found.", telemetry: "Application not found")
         }
         return App(running)
     }
@@ -233,7 +233,7 @@ enum MenuTool {
         let target = try targetApp(app, menuBarOwner: menuBarOwner)
         AX.setMessagingTimeout(target.element, 0.5)
         guard let menuBar = target.menuBar else {
-            throw ToolError("No menu bar for \(app ?? "the frontmost app").", label: "No menu bar")
+            throw ToolError("No menu bar for \(app ?? "the frontmost app").", telemetry: "No menu bar")
         }
         AX.setMessagingTimeout(menuBar, 0.5)
         return AXMenuNode.roots(menuBar, populate: populate)

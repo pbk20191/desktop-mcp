@@ -30,7 +30,7 @@ enum OCRTool {
         do {
             try VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
         } catch {
-            throw ToolError("Text recognition failed: \(error.localizedDescription)", label: "Text recognition failed")
+            throw ToolError("Text recognition failed: \(error.localizedDescription)", telemetry: "Text recognition failed")
         }
         return (request.results ?? []).compactMap { observation in
             guard let best = observation.topCandidates(1).first, best.confidence >= minConfidence else { return nil }

@@ -143,21 +143,21 @@ final class RunShortcutToolTests: XCTestCase {
         XCTAssertEqual(fake.calls, [[binary, "list"]])
     }
 
-    /// Observers see fixed labels, never shortcut names or `shortcuts` stderr.
-    func testErrorsCarryFixedLabels() async {
+    /// Telemetry sees fixed labels, never shortcut names or `shortcuts` stderr.
+    func testErrorsCarryFixedTelemetryLabels() async {
         let tool = RunShortcutTool.tool(runner: FakeShortcuts(names: "Resize Image\n").runner)
         do {
             _ = try await tool.handler(ToolArguments(["name": "resize"]))
             XCTFail("expected an error")
         } catch {
-            XCTAssertEqual((error as? ToolError)?.label, "No such shortcut")
+            XCTAssertEqual((error as? ToolError)?.telemetry, "No such shortcut")
         }
         let failing = RunShortcutTool.tool(runner: FakeShortcuts(listStatus: 1, listStderr: "secret").runner)
         do {
             _ = try await failing.handler(ToolArguments(["mode": "list"]))
             XCTFail("expected an error")
         } catch {
-            XCTAssertEqual((error as? ToolError)?.label, "shortcuts list failed")
+            XCTAssertEqual((error as? ToolError)?.telemetry, "shortcuts list failed")
         }
     }
 

@@ -135,7 +135,7 @@ public enum Input {
             } else if let code = KeyMap.codes[key] {
                 mainKey = code
             } else {
-                throw ToolError("Unknown key: \(raw)", label: "Unknown key")
+                throw ToolError("Unknown key: \(raw)", telemetry: "Unknown key")
             }
         }
         if let mainKey {

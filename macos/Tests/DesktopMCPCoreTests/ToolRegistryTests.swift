@@ -141,7 +141,7 @@ final class ToolRegistryTests: XCTestCase {
         XCTAssertEqual(events, ["fail Click claude-code", "ok Wait claude-code"])
     }
 
-    func testObserverNeverSeesArgumentText() async throws {
+    func testTelemetryNeverSeesArgumentText() async throws {
         let observer = RecordingObserver()
         let registry = await DesktopMCP.makeRegistry()
         await registry.setObserver(observer)

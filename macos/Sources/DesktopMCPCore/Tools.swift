@@ -4,13 +4,13 @@ import MCP
 /// Raised by a tool handler to report a failure back to the client as an error result.
 public struct ToolError: Error, CustomStringConvertible, Sendable {
     public let message: String
-    /// A fixed label for the outcome, passed to observers. Defaults to the message; pass a fixed
-    /// label when the message quotes an argument (a URL, a hostname), which must stay out of it.
-    public let label: String
+    /// What telemetry may see. Defaults to the message; pass a fixed label when the message
+    /// quotes an argument (a URL, a hostname), which must stay on this machine.
+    public let telemetry: String
 
-    public init(_ message: String, label: String? = nil) {
+    public init(_ message: String, telemetry: String? = nil) {
         self.message = message
-        self.label = label ?? message
+        self.telemetry = telemetry ?? message
     }
 
     public var description: String { message }

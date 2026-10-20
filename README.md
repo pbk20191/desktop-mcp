@@ -53,7 +53,7 @@ Tools split into two groups, which matters for headless use:
   process exits by returning, never by calling `exit()`.
 - System frameworks over hand-rolled parsers where the platform has them, and the official MCP Swift SDK
   for the MCP protocol itself.
-- Telemetry was removed: the upstream sends usage events to its own PostHog project, and this port sends nothing.
+- Telemetry is disabled: the upstream sends usage events to its own PostHog project, and this port sends nothing.
 
 ## License
 

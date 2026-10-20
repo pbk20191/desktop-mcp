@@ -26,7 +26,7 @@ enum RunShortcutTool {
         if run.timedOut { throw ToolError("shortcuts list timed out.") }
         guard run.status == 0 else {
             throw ToolError("shortcuts list failed: \(run.stderr.trimmingCharacters(in: .whitespacesAndNewlines))",
-                            label: "shortcuts list failed")
+                            telemetry: "shortcuts list failed")
         }
         return run.stdout.split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -38,7 +38,7 @@ enum RunShortcutTool {
         let fd = open(path, O_CREAT | O_EXCL | O_WRONLY, 0o600)
         guard fd >= 0 else {
             throw ToolError("Could not create a temporary file: \(String(cString: strerror(errno)))",
-                            label: "Could not create a temporary file")
+                            telemetry: "Could not create a temporary file")
         }
         defer { close(fd) }
         var remaining = Data(text.utf8)[...]
@@ -47,7 +47,7 @@ enum RunShortcutTool {
             if n < 0 && errno == EINTR { continue }
             guard n > 0 else {
                 throw ToolError("Could not write a temporary file: \(String(cString: strerror(errno)))",
-                                label: "Could not write a temporary file")
+                                telemetry: "Could not write a temporary file")
             }
             remaining = remaining.dropFirst(n)
         }
@@ -60,7 +60,7 @@ enum RunShortcutTool {
             var message = "No shortcut named '\(name)'."
             let close = closeMatches(name, in: names)
             if !close.isEmpty { message += " Close matches: " + close.joined(separator: ", ") }
-            throw ToolError(message, label: "No such shortcut")
+            throw ToolError(message, telemetry: "No such shortcut")
         }
 
         let directory = FileManager.default.temporaryDirectory

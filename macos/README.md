@@ -170,7 +170,7 @@ desktop-mcp sends no telemetry.
 - **`Scrape` parses HTML with the system parser** (libxml2 through Foundation's `XMLDocument`), so broken markup is repaired the way libxml2 does it rather than the way Python's `html.parser` does, and HTML 4 entities are decoded while HTML5-only names (such as `&check;`) are left as written. The contents of `<script>` and `<style>` are dropped; the original's markdownify `strip` option kept their text.
 - **Snapshot ordering:** the focused app's elements get the lowest ids (the original's order was nondeterministic). Metadata keeps non-ASCII characters as-is instead of `\uXXXX` escapes.
 - **`Shortcut` rejects unknown key names with an error.** The original logged a warning and pressed only part of the combination.
-- **No telemetry.** The original sends anonymous usage events to its PostHog project; this port contains no telemetry code.
+- **No telemetry.** The original sends anonymous usage events to its PostHog project; this port sends nothing (the sender code is kept but not wired in).
 - **Browser requests must come from a loopback origin.** The original answered every `Origin` with `*`, which lets any website drive an unauthenticated `localhost` server through the visitor's browser. This port returns 403 to requests whose `Origin` is not `localhost`, `127.0.0.1` or `[::1]`, as the MCP specification requires; non-browser clients send no `Origin` and are unaffected.
 - **`Scrape` re-checks every redirect** against the same private-address rules, and stops downloading after 8 MB. `Shell` output is capped at 10 MB.
 - **`auth` defaults to `streamable-http`.** The original defaulted to `sse`, which the MCP specification deprecated in protocol version 2025-03-26; this port does not offer SSE at all.
@@ -199,6 +199,7 @@ Source layout:
   - `ToolRegistry.swift`, `StdioServer.swift`: tool registration on the SDK `Server`, and the stdio transport
   - `HTTPApp.swift`, `OAuth.swift`, `Security.swift`: HTTP middleware (CORS, allowlist, auth), routes and OAuth, independent of the socket layer
   - `Config.swift`, `ServePlan.swift`: `config.toml` (a small TOML-subset parser) and option merging
+  - `Analytics.swift`: PostHog event sender, not wired into `serve`
   - `Tools.swift`: tool definitions and schemas; `Desktop.swift`: tool behaviour
   - `Tree.swift`, `TreeConfig.swift`: accessibility tree traversal (ported from the original's `tree/service.py`)
   - `Apps.swift`: running apps, windows, dialogs; `Input.swift`: mouse and keyboard events

@@ -62,7 +62,7 @@ enum SpotlightTool {
     }
 
     private static func invalid(_ shown: String) -> ToolError {
-        ToolError("Invalid Spotlight query: \(shown)", label: "Invalid Spotlight query")
+        ToolError("Invalid Spotlight query: \(shown)", telemetry: "Invalid Spotlight query")
     }
 
     /// Throws `Invalid Spotlight query: <shown>` when the system rejects `query`.

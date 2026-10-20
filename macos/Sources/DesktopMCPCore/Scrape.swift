@@ -79,14 +79,14 @@ public enum Scrape {
     /// loopback, link-local, multicast, reserved or unspecified addresses.
     public static func validate(_ url: String) async throws {
         guard let components = URLComponents(string: url) else {
-            throw ToolError("Invalid URL: \(url)", label: "Invalid URL")
+            throw ToolError("Invalid URL: \(url)", telemetry: "Invalid URL")
         }
         let scheme = components.scheme?.lowercased() ?? ""
         guard scheme == "http" || scheme == "https" else {
-            throw ToolError("URL scheme '\(scheme)' is not allowed; use http or https.", label: "URL scheme not allowed")
+            throw ToolError("URL scheme '\(scheme)' is not allowed; use http or https.", telemetry: "URL scheme not allowed")
         }
         guard let host = components.host, !host.isEmpty else {
-            throw ToolError("URL has no hostname: \(url)", label: "URL has no hostname")
+            throw ToolError("URL has no hostname: \(url)", telemetry: "URL has no hostname")
         }
         if components.user != nil || components.password != nil {
             throw ToolError("URLs with embedded credentials are not allowed.")
@@ -94,7 +94,7 @@ public enum Scrape {
         let addresses = try await resolve(host.trimmingCharacters(in: CharacterSet(charactersIn: "[]")))
         for address in addresses where isBlocked(address) {
             throw ToolError("Private, loopback, link-local, multicast, and reserved addresses are blocked: \(address)",
-                            label: "Blocked address")
+                            telemetry: "Blocked address")
         }
     }
 
@@ -106,7 +106,7 @@ public enum Scrape {
             let rc = getaddrinfo(host, nil, &hints, &result)
             guard rc == 0, let first = result else {
                 throw ToolError("Could not resolve hostname '\(host)': \(String(cString: gai_strerror(rc)))",
-                                label: "Could not resolve hostname")
+                                telemetry: "Could not resolve hostname")
             }
             defer { freeaddrinfo(first) }
             var addresses: [String] = []

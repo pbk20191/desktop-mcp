@@ -266,21 +266,21 @@ enum WindowTool {
     static func resolve(_ id: String, source: any WindowSource, cache: WindowCache) async throws -> WindowInfo {
         switch parseID(id) {
         case nil:
-            throw ToolError("Invalid window id: \(id)", label: "Invalid window id")
+            throw ToolError("Invalid window id: \(id)", telemetry: "Invalid window id")
         case .number(let pid, let number)?:
             guard let current = await source.windows(pid: pid).first(where: { $0.number == number }) else {
                 throw ToolError("Window \(id) no longer exists; call Window list again.",
-                                label: "Window no longer exists")
+                                telemetry: "Window no longer exists")
             }
             return current
         case .index(let pid, let index)?:
             guard let listed = await cache.listed(id) else {
-                throw ToolError("Window \(id) was not listed; call Window list first.", label: "Window was not listed")
+                throw ToolError("Window \(id) was not listed; call Window list first.", telemetry: "Window was not listed")
             }
             guard let current = await source.windows(pid: pid).first(where: { $0.number == nil && $0.index == index }),
                   current.looksLike(listed) else {
                 throw ToolError("Window \(id) changed since it was listed; call Window list again.",
-                                label: "Window changed since it was listed")
+                                telemetry: "Window changed since it was listed")
             }
             return current
         }
@@ -293,7 +293,7 @@ enum WindowTool {
     }
 
     private static func failed(_ mode: String, _ id: String) -> ToolError {
-        ToolError("Could not \(mode) window \(id).", label: "Could not \(mode) window")
+        ToolError("Could not \(mode) window \(id).", telemetry: "Could not \(mode) window")
     }
 
     static func tool(source: any WindowSource = AXWindowSource(), cache: WindowCache = WindowCache()) -> Tool {
@@ -314,7 +314,7 @@ enum WindowTool {
                     let app = try args.string("app")
                     let windows = await source.windows(app: app)
                     if windows.isEmpty, let app, !(await source.appExists(app)) {
-                        throw ToolError("Application '\(app)' not found.", label: "Application not found")
+                        throw ToolError("Application '\(app)' not found.", telemetry: "Application not found")
                     }
                     await cache.remember(windows)
                     return [.text(format(windows))]
