@@ -394,7 +394,7 @@ extension App {
     static func matches(name: String?, bundleID: String?, query: String) -> Bool {
         let trimmed = query.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return false }
-        if let bundleID, bundleID == query { return true }
+        if let bundleID, bundleID == trimmed { return true }
         guard let name else { return false }
         return name.lowercased() == trimmed.lowercased()
     }

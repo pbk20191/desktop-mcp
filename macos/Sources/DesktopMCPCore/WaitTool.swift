@@ -295,12 +295,16 @@ enum WaitTool {
                 case "app_running", "app_quit":
                     guard let app else { throw ToolError("app required for \(until).") }
                     let wantRunning = until == "app_running"
+                    let first = Locked(true)
                     check = { _ in
                         let isRunning = await running().contains {
                             App.matches(name: $0.name, bundleID: $0.bundleID, query: app)
                         }
+                        let isFirst = first.withLock { f in defer { f = false }; return f }
                         guard isRunning == wantRunning else { return nil }
-                        return wantRunning ? "App \(app) is running." : "App \(app) quit."
+                        if wantRunning { return "App \(app) is running." }
+                        // Not running at the first look (a typo, say) is not a quit.
+                        return isFirst ? "App \(app) is not running." : "App \(app) quit."
                     }
                 case "window", "window_gone":
                     guard app != nil || title != nil else { throw ToolError("app or title required for \(until).") }

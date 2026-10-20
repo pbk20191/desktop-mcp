@@ -34,7 +34,7 @@ Permissions are granted to **the app that launches the binary** (Claude Desktop,
 - System Settings › Privacy & Security › **Accessibility**: required; `Window` and `Menu` work entirely through it
 - System Settings › Privacy & Security › **Screen Recording**: needed only for `Snapshot(use_vision=true)` and the opt-in `OCR`
 
-Without Accessibility, `Click`, `Type`, `Scroll`, `Move`, `Shortcut`, `Desktop`, `Window`, `Menu` and `App` `resize`/`move` fail with "Accessibility is not granted to desktop-mcp. Grant it in System Settings > Privacy & Security > Accessibility, then restart desktop-mcp." rather than answering empty (an event posted without it is dropped silently); `Snapshot` still lists apps and starts its text with that sentence. The `Permissions` tool reports Accessibility, Screen Recording and Automation of System Events (granted, not granted or not determined) and which tools need each, without prompting.
+Without Accessibility, `Click`, `Type`, `Scroll`, `Move`, `Shortcut`, `Desktop`, `Window`, `Menu`, `Wait` with `until` `window`/`window_gone`/`element`, and `App` `resize`/`move` fail with "Accessibility is not granted to desktop-mcp. Grant it in System Settings > Privacy & Security > Accessibility, then restart desktop-mcp." rather than answering empty (an event posted without it is dropped silently); `Snapshot` still lists apps and starts its text with that sentence. The `Permissions` tool reports Accessibility, Screen Recording and Automation of System Events (granted, not granted or not determined) and which tools need each, without prompting.
 
 Run `desktop-mcp permissions` to check the current state and trigger the system prompts. The grant is tied to the code signature: an ad-hoc signed binary is identified by its hash, so every rebuild needs a new grant. Sign with a stable identity to keep it (`CODESIGN_IDENTITY="My Codesign Cert" macos/scripts/build-release.sh`, using a code signing certificate made in Keychain Access, or a Developer ID).
 
@@ -48,7 +48,7 @@ Run `desktop-mcp permissions` to check the current state and trigger the system 
 | `Scroll` | vertical/horizontal, `wheel_times` |
 | `Move` | Moves the cursor, or drags with `drag=true` |
 | `Shortcut` | e.g. `command+shift+t` |
-| `Wait` | Waits for N seconds, or with `until` for an app to run or quit, a window to appear or close (by `app` and/or `title`), or an element to appear (by `title` and/or `role`; returns its centre in `Click` points), up to `timeout` seconds (default 10). Window and element waits need Accessibility; a password field is never matched by its value |
+| `Wait` | Waits for N seconds, or with `until` for an app to run or quit, a window to appear or close (by `app` and/or `title`), or an element to appear (by `title` and/or `role`; returns its centre in `Click` points), up to `timeout` seconds (default 10). Window and element waits need Accessibility; a password field is never matched by its value; a busy app that does not answer is not taken for its window closing; `app_quit` on an app not running at the first look answers that it is not running |
 | `App` | launch / switch / resize / move / quit / force_quit (quit never targets desktop-mcp itself or loginwindow; no Accessibility needed) |
 | `Shell` | `bash -c`, or `osascript` for AppleScript / JXA (see below) |
 | `Scrape` | Fetches a URL and converts it to Markdown (private, loopback, and other internal addresses are blocked) |

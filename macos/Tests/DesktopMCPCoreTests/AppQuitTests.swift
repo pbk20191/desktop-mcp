@@ -48,6 +48,8 @@ final class AppQuitTests: XCTestCase {
     func testMatchesNeedsFullNameAndTrimsWhitespace() {
         XCTAssertFalse(App.matches(name: "Preview", bundleID: nil, query: "Pre"))
         XCTAssertTrue(App.matches(name: "Preview", bundleID: nil, query: " Preview "))
+        XCTAssertTrue(App.matches(name: nil, bundleID: "com.apple.Preview", query: " com.apple.Preview "))
+        XCTAssertFalse(App.matches(name: nil, bundleID: "com.apple.Preview", query: "com.apple.preview"))
         XCTAssertFalse(App.matches(name: nil, bundleID: nil, query: "Preview"))
     }
 

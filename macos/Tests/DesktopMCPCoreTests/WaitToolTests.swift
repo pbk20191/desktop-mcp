@@ -159,6 +159,10 @@ final class WaitToolTests: XCTestCase {
         let quit = try await run(running: quitting, ["until": "app_quit", "app": "com.apple.Preview"])
         XCTAssertEqual(quit, "App com.apple.Preview quit.")
         XCTAssertEqual(quitLooks.current, 3)
+
+        // Not running at the first look: said so, not reported as a quit.
+        let never = try await run(running: { [] }, ["until": "app_quit", "app": "Preveiw"])
+        XCTAssertEqual(never, "App Preveiw is not running.")
     }
 
     func testAppConditionsNeedNoAccessibility() async throws {
@@ -168,6 +172,11 @@ final class WaitToolTests: XCTestCase {
         XCTAssertEqual(text, "App preview is running.")
         let refused = await error(windows: FakeWindowSource([window()]), ["until": "window", "app": "Preview"])
         XCTAssertEqual(refused, Permissions.accessibilityMessage)
+        let gone = await error(windows: FakeWindowSource([]), ["until": "window_gone", "app": "Preview"])
+        XCTAssertEqual(gone, Permissions.accessibilityMessage)
+        let element = await error(elements: FakeElementFinder([FoundElement(role: "AXButton", title: "Save", center: .zero)]),
+                                  ["until": "element", "title": "Save"])
+        XCTAssertEqual(element, Permissions.accessibilityMessage)
     }
 
     func testWindowAppearsReturnsTheListLine() async throws {
