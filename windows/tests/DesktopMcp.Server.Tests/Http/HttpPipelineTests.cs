@@ -155,6 +155,35 @@ public class HttpPipelineTests(ITestOutputHelper output)
     }
 
     [Fact]
+    public async Task TheGuardsCoverLegacySse()
+    {
+        await using var rig = await HttpRig.StartAsync(new ServeArguments { Transport = "sse" });
+        var message = await rig.ReadSseEndpointEventAsync();   // a live session's /message?sessionId=...
+        foreach (var (method, path) in new[] { (HttpMethod.Get, "/sse"), (HttpMethod.Post, message) })
+        {
+            using var host = await rig.SendAsync(method, path, ("Host", "attacker.example"));
+            Assert.Equal(HttpStatusCode.BadRequest, host.StatusCode);
+            Assert.Equal("Invalid host header", await host.Content.ReadAsStringAsync());
+            using var origin = await rig.SendAsync(method, path, ("Origin", "https://attacker.example"));
+            Assert.Equal(HttpStatusCode.Forbidden, origin.StatusCode);
+            Assert.Equal("""{"error":"Forbidden: origin 'https://attacker.example' is not allowed"}""", await origin.Content.ReadAsStringAsync());
+        }
+    }
+
+    [Fact]
+    public async Task LegacySseNeedsTheAuthKey()
+    {
+        await using var rig = await HttpRig.StartAsync(new ServeArguments { Transport = "sse", AuthKey = "secret" });
+        foreach (var (method, path) in new[] { (HttpMethod.Get, "/sse"), (HttpMethod.Post, "/message?sessionId=x") })
+        {
+            using var response = await rig.SendAsync(method, path);
+            Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+            Assert.Equal("Bearer", response.Headers.WwwAuthenticate.Single().Scheme);
+            Assert.Equal("""{"error":"Missing or invalid Authorization header. Expected: Bearer <token>"}""", await response.Content.ReadAsStringAsync());
+        }
+    }
+
+    [Fact]
     public async Task AnIPv6LoopbackClientPassesTheChecks()
     {
         if (!HasIPv6Loopback())

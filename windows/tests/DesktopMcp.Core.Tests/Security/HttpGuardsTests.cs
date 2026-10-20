@@ -36,6 +36,23 @@ public class HttpGuardsTests
     public void ConfiguredOriginsMatchCanonically() =>
         Assert.True(HttpGuards.IsAllowedOrigin("https://client.example.com", ["HTTPS://Client.Example.com/"]));
 
+    [Theory]
+    [InlineData(null, false)]
+    [InlineData("", false)]
+    [InlineData("https://client.example.com", true)]
+    [InlineData("HTTPS://CLIENT.EXAMPLE.COM", true)]
+    [InlineData("https://client.example.com/", false)]
+    [InlineData("https://client.example.com:443", false)]
+    [InlineData("http://client.example.com", false)]
+    [InlineData("http://localhost:6274", false)]
+    [InlineData("null", false)]
+    public void ListedOriginTable(string? origin, bool expected) =>
+        Assert.Equal(expected, HttpGuards.IsListedOrigin(origin, ["https://Client.example.com/"]));
+
+    [Fact]
+    public void NothingIsListedWithoutCorsOrigins() =>
+        Assert.False(HttpGuards.IsListedOrigin("https://client.example.com", []));
+
     [Fact]
     public void AnAllowedIPv6ClientPasses() =>
         Assert.Null(HttpGuards.AllowlistRejection(IPAddress.Parse("2001:db8::7"), IpNetwork.ParseAllowlist(["2001:db8::/32"])));

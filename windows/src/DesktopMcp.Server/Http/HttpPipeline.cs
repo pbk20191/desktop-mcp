@@ -146,17 +146,11 @@ internal static class HttpPipeline
         return values.Count == 0 ? "" : values[0] ?? "";
     }
 
-    /// <summary>
-    /// The request's Origin when it is listed in <paramref name="corsOrigins"/>, compared as
-    /// <see cref="HttpGuards.IsAllowedOrigin"/> compares listed origins (case-insensitive, a configured trailing '/'
-    /// ignored); the request's own spelling is what the CORS headers echo.
-    /// </summary>
+    /// <summary>The request's Origin when it is listed in <paramref name="corsOrigins"/>; the CORS headers echo its own spelling.</summary>
     private static string? ListedOrigin(HttpContext context, IReadOnlyList<string> corsOrigins)
     {
-        if (corsOrigins.Count == 0 || Origin(context) is not { } origin) return null;
-        foreach (var listed in corsOrigins)
-            if (listed.TrimEnd('/').Equals(origin, StringComparison.OrdinalIgnoreCase)) return origin;
-        return null;
+        var origin = Origin(context);
+        return HttpGuards.IsListedOrigin(origin, corsOrigins) ? origin : null;
     }
 
     private static Task WriteUnauthorizedAsync(HttpContext context, string error)

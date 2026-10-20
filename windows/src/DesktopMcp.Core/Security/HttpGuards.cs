@@ -35,11 +35,17 @@ public static class HttpGuards
     public static bool IsAllowedOrigin(string? origin, IReadOnlyList<string> corsOrigins)
     {
         if (origin is null) return true;
-        if (corsOrigins.Any(listed => listed.TrimEnd('/').Equals(origin, StringComparison.OrdinalIgnoreCase))) return true;
+        if (IsListedOrigin(origin, corsOrigins)) return true;
         if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri)) return false;
         if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) return false;
         return IpAddressText.IsLoopbackHost(TrimBrackets(uri.Host));
     }
+
+    /// <summary>Whether <paramref name="origin"/> is one of the configured CORS origins: compared case-insensitively,
+    /// with a configured trailing '/' ignored (a browser's serialized origin has none).</summary>
+    public static bool IsListedOrigin(string? origin, IReadOnlyList<string> corsOrigins) =>
+        !string.IsNullOrEmpty(origin)
+        && corsOrigins.Any(listed => listed.TrimEnd('/').Equals(origin, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>Null when the client is allowed (or the list is empty), else the 403 error text.</summary>
     public static string? AllowlistRejection(IPAddress? client, IReadOnlyList<IpNetwork> allowlist)
