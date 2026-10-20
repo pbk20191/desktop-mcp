@@ -508,6 +508,55 @@
         "type": "object"
       },
       "name": "Clipboard"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true,
+        "readOnlyHint": false,
+        "title": "RunShortcut"
+      },
+      "description": "Lists or runs the user's Shortcuts (the Shortcuts app, not keyboard shortcuts). mode='list' returns the shortcut names, optionally only those in 'folder'. mode='run' runs the shortcut 'name' (exact name), passing 'input' text to it, and returns its output.",
+      "inputSchema": {
+        "properties": {
+          "folder": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "input": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mode": {
+            "default": "run",
+            "enum": [
+              "run",
+              "list"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "timeout": {
+            "default": 60,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "RunShortcut"
     }
   ]
 }

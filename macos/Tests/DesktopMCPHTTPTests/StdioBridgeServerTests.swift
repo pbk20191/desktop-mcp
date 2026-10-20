@@ -46,7 +46,7 @@ final class StdioBridgeServerTests: XCTestCase {
 
         let tools = await forward(#"{"jsonrpc":"2.0","id":"two","method":"tools/list"}"#, through: bridge)
         XCTAssertEqual(tools.count, 1)
-        XCTAssertEqual(try JSON.parse(tools[0])["result"]?["tools"]?.arrayValue?.count, 14)
+        XCTAssertEqual(try JSON.parse(tools[0])["result"]?["tools"]?.arrayValue?.count, 15)
     }
 
     func testHTTPFailuresBecomeJSONRPCErrorsForTheSameId() async throws {
