@@ -387,3 +387,15 @@ func concurrentMap<T: Sendable, U: Sendable>(_ items: [T], _ transform: @escapin
         return results.map { $0! }
     }
 }
+
+extension App {
+    /// The shared app filter: a bundle id exactly, or a localized name ignoring case and
+    /// surrounding spaces. A blank query or a missing name never matches.
+    static func matches(name: String?, bundleID: String?, query: String) -> Bool {
+        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return false }
+        if let bundleID, bundleID == query { return true }
+        guard let name else { return false }
+        return name.lowercased() == trimmed.lowercased()
+    }
+}

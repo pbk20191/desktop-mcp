@@ -39,20 +39,16 @@ enum AppQuit {
     }
 }
 
-extension App {
-    /// The shared app filter: bundle id exactly, or localized name ignoring case and surrounding spaces.
-    static func matches(name: String, bundleID: String?, query: String) -> Bool {
-        bundleID == query || name.lowercased() == query.trimmingCharacters(in: .whitespaces).lowercased()
-    }
-}
-
 extension Desktop {
     static func quitMessage(name: String, force: Bool) -> String {
         force ? "Force-quit \(name)." : "Quit requested for \(name)."
     }
 
     func quit(name: String?, force: Bool) async throws -> String {
-        guard let name, !name.isEmpty else { return "App name or bundle ID required for quit." }
+        let mode = force ? "force_quit" : "quit"
+        guard let name = name?.trimmingCharacters(in: .whitespaces), !name.isEmpty else {
+            throw ToolError("App name or bundle ID required for \(mode).", telemetry: "App \(mode): name missing")
+        }
         let targets = try AppQuit.targets(name, running: await AppQuit.runningApps(),
                                           ownPID: ProcessInfo.processInfo.processIdentifier)
         let pids = targets.map(\.pid)

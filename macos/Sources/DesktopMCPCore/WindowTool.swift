@@ -103,7 +103,7 @@ struct AXWindowSource: WindowSource {
     }
 
     private static func matches(_ running: NSRunningApplication, _ app: String) -> Bool {
-        App.matches(name: running.localizedName ?? "", bundleID: running.bundleIdentifier, query: app)
+        App.matches(name: running.localizedName, bundleID: running.bundleIdentifier, query: app)
     }
 
     private static func regularPIDs(matching app: String?) -> [pid_t] {

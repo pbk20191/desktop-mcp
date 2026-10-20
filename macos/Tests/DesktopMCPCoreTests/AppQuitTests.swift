@@ -35,4 +35,30 @@ final class AppQuitTests: XCTestCase {
         XCTAssertEqual(Desktop.quitMessage(name: "Preview", force: false), "Quit requested for Preview.")
         XCTAssertEqual(Desktop.quitMessage(name: "Preview", force: true), "Force-quit Preview.")
     }
+
+    func testBlankQueriesSelectNothing() {
+        let running = [info(1, ""), info(2, "Preview")]
+        for query in ["", " ", "  \t"] {
+            XCTAssertThrowsError(try AppQuit.targets(query, running: running, ownPID: 99))
+            XCTAssertFalse(App.matches(name: nil, bundleID: nil, query: query))
+            XCTAssertFalse(App.matches(name: "", bundleID: nil, query: query))
+        }
+    }
+
+    func testMatchesNeedsFullNameAndTrimsWhitespace() {
+        XCTAssertFalse(App.matches(name: "Preview", bundleID: nil, query: "Pre"))
+        XCTAssertTrue(App.matches(name: "Preview", bundleID: nil, query: " Preview "))
+        XCTAssertFalse(App.matches(name: nil, bundleID: nil, query: "Preview"))
+    }
+
+    func testQuitRequiresName() async {
+        for name in [nil, "", "  "] as [String?] {
+            do {
+                _ = try await Desktop().quit(name: name, force: true)
+                XCTFail("expected an error")
+            } catch {
+                XCTAssertEqual((error as? ToolError)?.message, "App name or bundle ID required for force_quit.")
+            }
+        }
+    }
 }
