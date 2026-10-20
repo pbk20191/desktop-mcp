@@ -97,7 +97,8 @@ by hand. The only hand-declared pieces left are the Win2D static shim export
 times (the metadata only has winternl.h's struct, which hides them), and imports in tests and probes.
 
 Boundary rule: BSTR, VARIANT, HRESULT, HWND and COM pointers never leave `DesktopMcp.Desktop`.
-Its public surface is plain C# records (`UiNode`, `WindowInfo`, `DisplayInfo`, `Rect`, `Point`) and
+Its public surface is plain C# types from `DesktopMcp.Core.Snapshots` (records such as `UiElement`,
+`WindowInfo`, `DisplayInfo`, `ScreenRect`, `ScreenPoint`, and the `SemanticNode` class) and
 interfaces (`IUiAutomation`, `IScreenCapture`, `IInputInjector`, `IDesktopDispatcher`, ...), so
 `Core` and `Server` can be tested without a desktop.
 
@@ -223,7 +224,9 @@ with one `TreeScope_Children` fetch). A cut child list adds its own note after t
 budget does not always end the walk first.
 
 The wrapper frees every BSTR (`SysFreeString`) and disposes every `ComVariant` before returning, and
-exposes immutable `UiNode` records.
+returns `UiaElementData` records, internal to `DesktopMcp.Desktop`. The walker turns them into Core's
+immutable `UiElement` records and its `SemanticNode` tree; `SemanticNode` is a class whose `Children`
+is a mutable list, reversed and pruned after the walk.
 
 ### Tree and Snapshot (`Desktop/Tree`)
 
@@ -510,7 +513,7 @@ logs focus changes at debug level.
 
 | Layer | Covers | Runs |
 |---|---|---|
-| Core unit | config precedence and strict TOML types; ServePlan validation messages; SSRF rules; HTML to Markdown; OAuth/PKCE flows; PowerShell runner against real pwsh (encoding, timeout, tree kill); FileSystem formats; Shortcut parsing; table formatter; Snapshot text rendering from synthetic `UiNode`s; fuzzy matching; control state machine with a fake `TimeProvider` (takeover, idle return, lease, policy classification) | always |
+| Core unit | config precedence and strict TOML types; ServePlan validation messages; SSRF rules; HTML to Markdown; OAuth/PKCE flows; PowerShell runner against real pwsh (encoding, timeout, tree kill); FileSystem formats; Shortcut parsing; table formatter; Snapshot text rendering from synthetic `UiElement` records and `SemanticNode` trees; fuzzy matching; control state machine with a fake `TimeProvider` (takeover, idle return, lease, policy classification) | always |
 | Server | ContractTests (`tools/list` equals `spec/windows/tools.json` as JSON); in-memory Kestrel tests of middleware order, 401/403 bodies, CORS, OPTIONS, trusted host, `/health`; stdio initialize, tools/list and call | always |
 | Desktop integration | Notepad: Snapshot finds the edit control, Type, Shortcut, App switch and resize; capture and annotation; hooks, overlay, takeover; input-lock safety (heartbeat stops, input returns within 1 s) | `Category=Desktop`, run by hand in an interactive session |
 | AOT smoke | `build-release.ps1` publishes win-x64 and win-arm64, launches the x64 exe and runs initialize, tools/list and the headless tools that leave the desktop alone over stdio, then DisplayInventory and Snapshot without vision (a named virtual desktop and at least one tree element; the graphics stack must still be unloaded), then Screenshot and Snapshot with vision (valid PNGs); `DESKTOP_MCP_EXCLUDE_PROCESSES` keeps Code.exe out of the walk (§12). It then runs the probe's `imaging` step (the AOT activation check) and `uia` step (the AOT UIA check); any IL2xxx/IL3xxx warning fails the build. The desktop calls need an unlocked interactive session; `smoke-stdio.ps1 -SkipCapture` leaves out the two capture calls | every release build |

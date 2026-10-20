@@ -16,7 +16,7 @@ internal sealed record WindowProbe(
 
 /// <summary>
 /// <see cref="ITreeSource"/> over a <see cref="UiaSession"/>. Runs only on the UIA worker thread that owns the session.
-/// <paramref name="window"/> is the walked top-level window whose UI thread <see cref="IsWindowResponding"/> checks; 0 (the
+/// <paramref name="window"/> is the walked top-level window whose UI thread <see cref="CheckWindow"/> checks; 0 (the
 /// window probe) skips the check.
 /// </summary>
 internal sealed unsafe class UiaTreeSource(UiaSession session, long window = 0) : ITreeSource

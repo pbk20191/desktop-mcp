@@ -47,7 +47,7 @@ public class SnapshotTextTests
         var text = TreeText.Render(SampleTree(truncated: true));
         Assert.EndsWith(
             "\n\n... [truncated: reached the 500-element capture limit — some elements were not visited. Narrow the view " +
-            "(filter by window, scroll to the area of interest, use_dom=True for a browser page) or raise " +
+            "(filter by window, scroll to the area of interest, use a browser automation MCP server for a web page) or raise " +
             "DESKTOP_MCP_MAX_TREE_ELEMENTS for a complete tree.]", text);
     }
 
@@ -65,7 +65,7 @@ public class SnapshotTextTests
         var text = TreeText.Render(SampleTree(truncated: true) with { ChildLimit = 300 });
         Assert.EndsWith(
             "\n\n... [truncated: reached the 500-element capture limit — some elements were not visited. Narrow the view " +
-            "(filter by window, scroll to the area of interest, use_dom=True for a browser page) or raise " +
+            "(filter by window, scroll to the area of interest, use a browser automation MCP server for a web page) or raise " +
             "DESKTOP_MCP_MAX_TREE_ELEMENTS for a complete tree.]" +
             "\n... [truncated: some elements have more than 300 children; only the first 300 of each were read.]", text);
     }

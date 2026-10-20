@@ -1,3 +1,4 @@
+using System.Globalization;
 using DesktopMcp.Core.Snapshots;
 using DesktopMcp.Core.Text;
 using DesktopMcp.Desktop.Errors;
@@ -22,7 +23,8 @@ internal sealed class WindowWalk(SemanticNode window)
 /// upstream tree/service.py:446-909 tree_traversal without recursion (Decisions 9): an explicit stack, the RuntimeId cycle
 /// guard over the current path only, a depth cap and the element budget. Children are visited right to left as upstream
 /// does for applications, so interactive elements are numbered in reverse document order; the semantic tree is put back
-/// in document order at the end. The browser DOM is P6 (Decisions 4): RootWebArea is walked like any other element.
+/// in document order at the end. There is no browser DOM mode (P2 Decisions 39): RootWebArea is walked like any other
+/// element.
 /// </summary>
 /// <remarks>
 /// A walk can outlive its caller: the UIA worker abandons a job past its deadline while the thread keeps running. The walk
@@ -307,7 +309,8 @@ internal sealed class TreeWalker(ITreeSource source, ElementBudget budget, Func<
             case WindowResponse.Hung:
                 throw new UiaTimeoutException("UI Automation window walk stopped: the window is not responding (hung).");
             case WindowResponse.NotResponding:
-                throw new UiaNotRespondingException("UI Automation window walk stopped: the window did not answer within 250 ms.");
+                throw new UiaNotRespondingException(string.Create(CultureInfo.InvariantCulture,
+                    $"UI Automation window walk stopped: the window did not answer within {Win32WindowSystem.ResponseTimeout.TotalMilliseconds:0} ms."));
         }
     }
 

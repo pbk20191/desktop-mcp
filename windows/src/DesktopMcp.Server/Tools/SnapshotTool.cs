@@ -32,7 +32,8 @@ public abstract class SnapshotToolBase(Tool protocolTool, IDesktopSnapshots snap
         }
         catch (Exception e) when (e is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
-            return ToolResults.Content($"Error capturing {Failure}: {e.Message}. Please try again.", null);
+            // Messages that already end with a period (the missing-runtime hint, deadline errors) must not end with "..".
+            return ToolResults.Content($"Error capturing {Failure}: {e.Message.TrimEnd('.')}. Please try again.", null);
         }
     }
 

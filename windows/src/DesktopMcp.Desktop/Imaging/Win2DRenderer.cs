@@ -58,6 +58,14 @@ public sealed class Win2DRenderer : IImageRenderer
     /// </summary>
     internal TimeSpan Timeout { get; init; } = TimeSpan.FromSeconds(10);
 
+    /// <summary>Times <see cref="Timeout"/> (<see cref="TimeProvider.System"/>; a test passes its own).</summary>
+    internal TimeProvider Time { get; init; } = TimeProvider.System;
+
+    /// <summary>The PNG bytes read from the stream, or an error when the read came back short.</summary>
+    internal static byte[] CheckRead(byte[] png, uint size) => png.Length == size
+        ? png
+        : throw new DesktopException($"{Operation} failed: the PNG stream returned {png.Length} of {size} bytes.");
+
     public async Task<byte[]> RenderPngAsync(CapturedImage image, RenderOptions options)
     {
         ArgumentNullException.ThrowIfNull(image);
@@ -72,11 +80,22 @@ public sealed class Win2DRenderer : IImageRenderer
             _ensureRuntime();
             // Task.Run: the synchronous Win2D calls (device, bitmap, drawing) are bounded too, not only the awaited ones.
             work = Task.Run(() => _render(image, options));
-            return await work.WaitAsync(Timeout).ConfigureAwait(false);
+            return await work.WaitAsync(Timeout, Time).ConfigureAwait(false);
         }
-        catch (TimeoutException) when (work is { IsCompleted: false })
+        catch (TimeoutException e) when (work is not null && work.Exception?.InnerException != e)
         {
-            throw new DesktopException($"{Operation} failed: Win2D did not finish within {Timeout.TotalSeconds:0.###} s.");
+            if (!work.IsCompleted)
+                throw new DesktopException($"{Operation} failed: Win2D did not finish within {Timeout.TotalSeconds:0.###} s.");
+        }
+        catch (Exception e) when (ComErrors.ShouldTranslate(e))
+        {
+            throw ComErrors.Translate(Operation, e);
+        }
+
+        // The deadline passed just as the work finished (as SnapshotService.BoundedAsync handles it): its own outcome.
+        try
+        {
+            return await work.ConfigureAwait(false);
         }
         catch (Exception e) when (ComErrors.ShouldTranslate(e))
         {
@@ -110,7 +129,7 @@ public sealed class Win2DRenderer : IImageRenderer
         stream.Seek(0);
         var size = (uint)stream.Size;
         var buffer = await stream.ReadAsync(new Windows.Storage.Streams.Buffer(size), size, InputStreamOptions.None);
-        return buffer.ToArray();
+        return CheckRead(buffer.ToArray(), size);
     }
 
     private static void DrawGrid(CanvasDrawingSession session, GridLines grid, int width, int height)

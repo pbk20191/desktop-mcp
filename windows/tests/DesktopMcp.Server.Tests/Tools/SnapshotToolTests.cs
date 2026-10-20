@@ -1,4 +1,5 @@
 using DesktopMcp.Core.Snapshots;
+using DesktopMcp.Desktop.Errors;
 using DesktopMcp.Desktop.Snapshots;
 using DesktopMcp.Server.Tools;
 using ModelContextProtocol.Protocol;
@@ -109,9 +110,24 @@ public class SnapshotToolTests
     [Fact]
     public async Task ScreenshotFailuresUseItsOwnPrefix()
     {
-        var snapshots = new FakeSnapshots(_ => throw new InvalidOperationException("The Windows App SDK runtime 2.5.1.0 or later is not installed"));
+        // The shape of AppRuntime.InstallHint(call, hresult): it ends with a period, which the wrapper must not double.
+        const string missing = "The Windows App SDK runtime (Microsoft.WindowsAppRuntime.2_5bwekyb3d8bbwe, x64) is not installed: " +
+            "MddBootstrapInitialize2 failed with HRESULT 0x80070490. Install the Windows App SDK 2.5 runtime (2.5.1.0) or later " +
+            "from https://learn.microsoft.com/windows/apps/windows-app-sdk/downloads.";
+        var snapshots = new FakeSnapshots(_ => throw new InvalidOperationException(missing));
         var result = await CallAsync("Screenshot", snapshots, "{}");
-        Assert.Equal("Error capturing screenshot: The Windows App SDK runtime 2.5.1.0 or later is not installed. Please try again.", ToolCalls.OkText(result));
+        Assert.Equal(
+            "Error capturing screenshot: The Windows App SDK runtime (Microsoft.WindowsAppRuntime.2_5bwekyb3d8bbwe, x64) is not installed: " +
+            "MddBootstrapInitialize2 failed with HRESULT 0x80070490. Install the Windows App SDK 2.5 runtime (2.5.1.0) or later " +
+            "from https://learn.microsoft.com/windows/apps/windows-app-sdk/downloads. Please try again.", ToolCalls.OkText(result));
+    }
+
+    [Fact]
+    public async Task AMessageEndingInAPeriodIsNotDoubled()
+    {
+        var snapshots = new FakeSnapshots(_ => throw new DesktopException("Screen capture failed: it did not finish within 2 s."));
+        var result = await CallAsync("Snapshot", snapshots, "{}");
+        Assert.Equal("Error capturing desktop state: Screen capture failed: it did not finish within 2 s. Please try again.", ToolCalls.OkText(result));
     }
 
     private sealed class PoolPostingContext : SynchronizationContext

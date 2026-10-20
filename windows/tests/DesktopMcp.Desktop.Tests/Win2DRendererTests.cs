@@ -96,6 +96,51 @@ public class Win2DRendererBoundsTests
         }
     }
 
+    /// <summary>
+    /// Fires each deadline timer as soon as it is created, after <paramref name="beforeFire"/>, then runs
+    /// <paramref name="afterFire"/>: the deadline passes first and the work completes just after it.
+    /// </summary>
+    private sealed class ExpireAtOnce(Action beforeFire, Action afterFire) : TimeProvider
+    {
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            beforeFire();
+            callback(state);
+            afterFire();
+            return System.CreateTimer(_ => { }, null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+        }
+    }
+
+    [Fact]
+    public async Task ARenderThatFinishesJustAfterTheDeadlineReturnsItsResult()
+    {
+        using var started = new ManualResetEventSlim();
+        var finished = new TaskCompletionSource<byte[]>();
+        var renderer = new Win2DRenderer(() => { }, (_, _) =>
+        {
+            started.Set();
+            return finished.Task;
+        })
+        {
+            Time = new ExpireAtOnce(
+                () => Assert.True(started.Wait(TimeSpan.FromSeconds(10))),
+                () =>
+                {
+                    finished.SetResult([7]);
+                    Thread.Sleep(200); // lets Task.Run's proxy see the finished render
+                }),
+        };
+        Assert.Equal([7], await renderer.RenderPngAsync(Pixel, RenderOptions.Plain(1)));
+    }
+
+    [Fact]
+    public void AShortPngReadIsAnError()
+    {
+        var error = Assert.Throws<DesktopException>(() => Win2DRenderer.CheckRead(new byte[3], 5));
+        Assert.Equal("Image rendering failed: the PNG stream returned 3 of 5 bytes.", error.Message);
+        Assert.Equal([1, 2], Win2DRenderer.CheckRead([1, 2], 2));
+    }
+
     [Fact]
     public async Task ALostDeviceIsReportedInFixedEnglish()
     {

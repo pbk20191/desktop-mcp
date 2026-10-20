@@ -17,7 +17,7 @@ public sealed class ScrapeTool(Tool protocolTool, ScrapeClient scrape) : SpecToo
         _ = arguments.LooseBool("use_sampling", true);  // P1 always returns the raw content (upstream's fallback)
         if (useDom)
         {
-            // The browser DOM arrives with Snapshot (P2) and its DOM mode (P6); until then there is never a DOM node.
+            // This port has no browser DOM mode (P2 Decisions 39), so there is never a DOM node: upstream's no-DOM text.
             return ToolResults.Text($"No DOM information found. Please open {url} in browser first.");
         }
         var content = await scrape.FetchMarkdownAsync(url, cancellationToken).ConfigureAwait(false);

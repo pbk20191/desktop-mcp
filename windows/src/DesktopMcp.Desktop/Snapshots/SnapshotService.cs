@@ -125,7 +125,7 @@ public sealed class SnapshotService : IDesktopSnapshots
     /// <summary>The "Screenshot Backend" value (Decisions 11): Windows.Graphics.Capture.</summary>
     public const string Backend = "wgc";
 
-    /// <summary>use_dom=True before the browser DOM exists (P6; Decisions 4).</summary>
+    /// <summary>use_dom=True: this port has no browser DOM mode (P2 Decisions 39).</summary>
     public const string UseDomUnavailable = "use_dom=True is not supported: this server reads browsers through UI Automation only. For web page content, use a browser automation MCP server such as Playwright MCP or Chrome DevTools MCP";
 
     private readonly SnapshotDependencies _machine;

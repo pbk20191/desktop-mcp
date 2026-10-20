@@ -102,8 +102,12 @@ internal sealed class UiaSession
     // into another application), so serialising it cannot block on a hung window.
     private static readonly Lock CreationLock = new();
 
-    /// <summary>Creates the client with the IUIAutomation2 timeouts set (spec §5, §12 "UIA calls into hung apps").</summary>
-    public static UiaSession Create()
+    /// <summary>
+    /// Creates the client with the IUIAutomation2 timeouts set (spec §5, §12 "UIA calls into hung apps"). The worker creates
+    /// the session before it calls the job, outside the job's <see cref="UiaJob.Run"/>, so creation translates its own
+    /// COM failures.
+    /// </summary>
+    public static UiaSession Create() => UiaJob.Run("UI Automation client creation", () =>
     {
         lock (CreationLock)
         {
@@ -112,7 +116,7 @@ internal sealed class UiaSession
             automation.put_TransactionTimeout(TransactionTimeoutMs);
             return new UiaSession(automation);
         }
-    }
+    });
 
     private static IUIAutomationCacheRequest CreateRequest(
         IUIAutomation6 automation, UIA_PROPERTY_ID[] properties, UIA_PATTERN_ID[] patterns, TreeScope scope)

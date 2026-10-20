@@ -54,10 +54,13 @@ public static class TreeText
         return Join(parts);
     }
 
-    /// <summary>upstream tree/views.py:89-95, with this port's variable name.</summary>
+    /// <summary>
+    /// upstream tree/views.py:89-95, with this port's variable name and, for a web page, a browser automation MCP server
+    /// instead of use_dom=True, which this port does not support (P2 Decisions 39).
+    /// </summary>
     public static string TruncationNote(int elementLimit) =>
         $"... [truncated: reached the {elementLimit}-element capture limit — some elements were not visited. Narrow the view " +
-        "(filter by window, scroll to the area of interest, use_dom=True for a browser page) or raise " +
+        "(filter by window, scroll to the area of interest, use a browser automation MCP server for a web page) or raise " +
         $"{SnapshotSettings.MaxTreeElementsVariable} for a complete tree.]";
 
     /// <summary>Port-only (Decisions 37): some child lists were cut at the per-parent cap.</summary>
