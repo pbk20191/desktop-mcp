@@ -23,9 +23,11 @@ internal static class OAuthEndpoints
 
     private const string Json = "application/json";
 
+    private static readonly string[] GetOrHead = [HttpMethods.Get, HttpMethods.Head];
+
     /// <summary>
-    /// Maps <c>GET /.well-known/oauth-authorization-server</c>, <c>POST /oauth/register</c>, <c>GET /oauth/authorize</c>
-    /// and <c>POST /oauth/token</c>; <paramref name="issuer"/> names the server for the request (Decisions 12).
+    /// Maps <c>GET|HEAD /.well-known/oauth-authorization-server</c>, <c>POST /oauth/register</c>,
+    /// <c>GET|HEAD /oauth/authorize</c> and <c>POST /oauth/token</c>; <paramref name="issuer"/> names the server for the request (Decisions 12).
     /// </summary>
     internal static void Map(IEndpointRouteBuilder app, OAuthServer oauth, Func<HttpContext, string> issuer)
     {
@@ -33,10 +35,15 @@ internal static class OAuthEndpoints
         ArgumentNullException.ThrowIfNull(oauth);
         ArgumentNullException.ThrowIfNull(issuer);
 
-        app.MapGet("/.well-known/oauth-authorization-server", context =>
-            WriteAsync(context, new OAuthResult(StatusCodes.Status200OK, oauth.Metadata(issuer(context)), null)));
+        // GET routes answer HEAD too, as Starlette's do.
+        app.MapMethods("/.well-known/oauth-authorization-server", GetOrHead, context =>
+        {
+            // On a wildcard bind the issuer comes from the request's Host header, so no cache may keep one answer.
+            context.Response.Headers.CacheControl = "no-store";
+            return WriteAsync(context, new OAuthResult(StatusCodes.Status200OK, oauth.Metadata(issuer(context)), null));
+        });
         app.MapPost("/oauth/register", context => WriteAsync(context, oauth.Register()));
-        app.MapGet("/oauth/authorize", context => WriteAsync(context, oauth.Authorize(Query(context.Request.Query))));
+        app.MapMethods("/oauth/authorize", GetOrHead, context => WriteAsync(context, oauth.Authorize(Query(context.Request.Query))));
         app.MapPost("/oauth/token", async context =>
         {
             var fields = await ReadFieldsAsync(context.Request).ConfigureAwait(false);

@@ -25,6 +25,57 @@ public class OAuthEndpointTests
     }
 
     [Fact]
+    public async Task MetadataIsNeverCached()
+    {
+        await using var rig = await HttpRig.StartAsync(WithOAuth());
+        using var response = await rig.Http.GetAsync(new Uri(rig.Base, "/.well-known/oauth-authorization-server"));
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.True(response.Headers.CacheControl!.NoStore);
+        Assert.Equal("application/json", response.Content.Headers.ContentType!.MediaType);
+        Assert.Equal("nosniff", response.Headers.GetValues("X-Content-Type-Options").Single());
+    }
+
+    [Fact]
+    public async Task TheGetRoutesAnswerHead()
+    {
+        await using var rig = await HttpRig.StartAsync(WithOAuth());
+        using var metadata = await rig.SendAsync(HttpMethod.Head, "/.well-known/oauth-authorization-server");
+        Assert.Equal(HttpStatusCode.OK, metadata.StatusCode);
+        Assert.Equal("application/json", metadata.Content.Headers.ContentType!.MediaType);
+        Assert.Empty(await metadata.Content.ReadAsByteArrayAsync());
+        using var noRedirects = HttpRig.CreateClient(followRedirects: false);
+        using var request = new HttpRequestMessage(HttpMethod.Head, new Uri(rig.Base,
+            "/oauth/authorize?response_type=code&client_id=client&redirect_uri=http://127.0.0.1:9/cb&code_challenge=" + Challenge));
+        using var authorize = await noRedirects.SendAsync(request);
+        Assert.Equal(HttpStatusCode.Found, authorize.StatusCode);
+        Assert.StartsWith("http://127.0.0.1:9/cb?code=", authorize.Headers.Location!.OriginalString, StringComparison.Ordinal);
+        using var error = await rig.SendAsync(HttpMethod.Head, "/oauth/authorize?response_type=token");
+        Assert.Equal(HttpStatusCode.BadRequest, error.StatusCode);
+    }
+
+    [Fact]
+    public async Task TheGuardsCoverTheOAuthRoutes()
+    {
+        await using (var rig = await HttpRig.StartAsync(WithOAuth()))
+        {
+            foreach (var (method, path) in new[] { (HttpMethod.Post, "/oauth/token"), (HttpMethod.Get, "/.well-known/oauth-authorization-server") })
+            {
+                using var host = await rig.SendAsync(method, path, ("Host", "attacker.example"));
+                Assert.Equal(HttpStatusCode.BadRequest, host.StatusCode);
+                Assert.Equal("Invalid host header", await host.Content.ReadAsStringAsync());
+                using var origin = await rig.SendAsync(method, path, ("Origin", "https://attacker.example"));
+                Assert.Equal(HttpStatusCode.Forbidden, origin.StatusCode);
+                Assert.Equal("""{"error":"Forbidden: origin 'https://attacker.example' is not allowed"}""", await origin.Content.ReadAsStringAsync());
+            }
+        }
+
+        await using var limited = await HttpRig.StartAsync(WithOAuth() with { IpAllowlist = "10.0.0.0/8" });
+        using var refused = await limited.SendAsync(HttpMethod.Post, "/oauth/token");
+        Assert.Equal(HttpStatusCode.Forbidden, refused.StatusCode);
+        Assert.Equal("""{"error":"Forbidden: 127.0.0.1 is not in the IP allowlist"}""", await refused.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
     public async Task TheCodeFlowYieldsATokenThatOpensTheEndpoint()
     {
         await using var rig = await HttpRig.StartAsync(WithOAuth());
