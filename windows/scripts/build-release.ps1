@@ -48,7 +48,13 @@ if ($Runtimes -contains 'win-x64' -and [Runtime.InteropServices.RuntimeInformati
     & (Join-Path $probeOut 'desktop-mcp-probe.exe') uia
     if ($LASTEXITCODE -ne 0) { throw "AOT UIA check failed: desktop-mcp-probe uia exited with $LASTEXITCODE" }
     Write-Host 'AOT UIA check OK: the NativeAOT probe read the desktop''s cached children through UI Automation'
+    # The overlay path under NativeAOT (P4 Task 14): the product's OverlayArt and LayeredWindowFactory render the indicator for
+    # the real monitors and one flash, create every layer, push its content and set an opacity, and read back the click-through
+    # ex-styles and WDA_EXCLUDEFROMCAPTURE. No layer is ever shown.
+    & (Join-Path $probeOut 'desktop-mcp-probe.exe') overlay
+    if ($LASTEXITCODE -ne 0) { throw "AOT overlay check failed: desktop-mcp-probe overlay exited with $LASTEXITCODE" }
+    Write-Host 'AOT overlay check OK: the NativeAOT probe rendered and uploaded the indicator and flash without showing them'
 }
 else {
-    Write-Host 'AOT activation and UIA checks skipped: they need win-x64 in -Runtimes and an x64 host'
+    Write-Host 'AOT activation, UIA and overlay checks skipped: they need win-x64 in -Runtimes and an x64 host'
 }

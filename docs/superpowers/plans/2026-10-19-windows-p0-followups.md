@@ -117,8 +117,8 @@ Minor review findings deferred from the P3 tasks, one line per task (from the SD
 
 ## P4 (desktop control)
 
-- Replace DesktopInputLock with the control gate's desktop lock; supply IActionCheckpoint and InputLedger's physical-input predicate from InputMonitor (P3 plan, Decisions 18-20).
-- Ctrl and Shift have two ledger names: `key:ctrl`/`key:shift` (MultiSelect's Ctrl, Scroll's Shift) and `key:vk:11`/`key:vk:10` (SendKeys holds through `PressKeysAsync`). The physical-key predicate must map both names of each key to the same physical key.
+All P4 items are done (see docs/superpowers/plans/2026-10-20-windows-p4-desktop-control.md), except:
+
 - **Kill-on-close job inheritance (low priority; user decision, 2026-10-20).** In Windows Sandbox (build 26100), `AssignProcessToJobObject` on the server succeeds, but processes it starts afterwards do not join the job. This holds for `Process.Start` with or without a console and with or without redirection. So PowerShell children and their descendants outlive the server, and the smoke script's ping check fails there. On the dev host (build 26220) and on any host where the job is inherited, the check passes.
   - Still unknown:
     - whether this happens on ordinary 24H2 (26100) machines or only in the Sandbox;
@@ -130,11 +130,47 @@ Minor review findings deferred from the P3 tasks, one line per task (from the SD
     - Make the smoke script detect a host where job inheritance does not work and report the ping check as a warning there.
   - The diagnostic scripts were throwaway (session scratchpad `jobprobe\probe*.ps1`).
 
-- Catch and log exceptions thrown from dispatcher timer ticks. Today they may fail-fast the process.
-- Document that `TimerHandle.Dispose` off the dispatcher thread may let one more tick run.
-- Add a `Func<Task>` overload and the `DispatcherQueueSynchronizationContext` that spec §5 describes.
-- Overlays: decided 2026-10-20 (P4 Task 1): `UpdateLayeredWindow` with Win2D-rendered premultiplied pixels. WinUI 3's publish brought Foundation's bootstrap DLLs (no `.pri`), and Composition plus Win2D loaded d2d1 before the first Win2D call; measurements in spec §12.
-- Process allowlist (new config key): just before `SendInput`, check the process that owns the target window against an optional allowlist. desk-mcp's title-based allowlist is bypassed whenever no title is given, so match on the process.
+Pending checks that need the user (P4 Task 14). None of these ran during P4: they show the indicator, swallow input or take the foreground (preflight F11 deferred every such test to this list). Run them in an interactive session with hands off the mouse and keyboard, from `windows/` (the AOT exe is `dist/win-x64/desktop-mcp.exe` after `pwsh scripts/build-release.ps1`):
+
+- The Desktop suite: `dotnet test tests/DesktopMcp.Desktop.Tests -p:RunSettingsFilePath=`. Hands off the mouse and keyboard. It includes:
+  - `InputMonitorDesktopTests` (Task 7, 8 tests: `HooksAndRawInputStartAndStopOnTheDispatcher`, `RawInputReachesTheMonitorWindow`, `ForeignInputIsSwallowedOnlyWhileSuppressing`, `SuppressionLapsesWithinOneSecondWhenTheHeartbeatStops`, `AStalledDispatcherCannotLockInput`, `ForeignInjectedAndPhysicalChordTakesOver`, `HooksAreReinstalledEveryFiveSeconds`, `InteractiveDesktopIsAvailableInThisSession`): `dotnet test tests/DesktopMcp.Desktop.Tests -p:RunSettingsFilePath= --filter "FullyQualifiedName~InputMonitorDesktopTests"`. They install real LL hooks, register Raw Input, take the foreground and inject unsigned input into their own window; input is swallowed for up to 2 s at a time, and the dispatcher stall test lags input for 3 s. `RawInputReachesTheMonitorWindow` decides P4 Decisions 23: if it fails, switch the Raw Input sink to upstream's hidden zero-size top-level window and update spec §5.
+  - `OverlayWindowDesktopTests` (Task 9, 5 tests: `LayersAreClickThrough`, `LayersAreExcludedFromCapture`, `LayersAreNotInTheWindowCatalog`, `ALabelUnderTheIndicatorIsNotCovered`, `LayersNeverTakeTheForeground`): `--filter "FullyQualifiedName~OverlayWindowDesktopTests"`. Each shows the blue indicator or one layer for under 2 s; four take the foreground with a test window.
+  - `OverlayArtTests` (Task 8, off-screen Win2D art; 6 of 6 passed when the Task 8 implementer ran them): `--filter "FullyQualifiedName~OverlayArtTests"`.
+  - `CaptureFlashDesktopTests` (Task 10, 2 tests): `--filter "FullyQualifiedName~CaptureFlashDesktopTests"`. Each shows the orange flash for 3.5 s; the capture test takes the foreground and asserts that a capture taken at full intensity has no orange pixel.
+  - `SnapshotServiceDesktopTests` now also show the orange flash (Task 10: `SnapshotDependencies.CreateDefault` wires the real flash).
+  - The P3 tests still pending (the P3 section above).
+- By-hand control session through the AOT exe over stdio with control on (the user saves their work and watches). Expected results in brackets:
+  1. `Click {loc: <a point on the desktop background>}` [the blue border, notice and cursor ring appear on every monitor before the click; ControlStatus `ai`].
+  2. Move the mouse briefly by hand within 15 s [nothing moves: swallowed]; then keep moving it about 5 cm [the indicator disappears; a `notifications/message` with `USER_CONTROL`; ControlStatus `user` with `wait_seconds` near 10].
+  3. Wait 10 s hands off [`AI_CONTROL_AVAILABLE`; ControlStatus `ready`].
+  4. `Type {loc: <Notepad's edit>, text: 'a long text of about two hundred characters ...'}` and press Ctrl+Alt+Shift+Backspace during it [typing stops; the result is `CONTROL_PREEMPTED` with `executed_steps`; no Backspace reached Notepad; no key stays held].
+  5. Start a gated call, then lock the screen (Win+L) [`CONTROL_PREEMPTED` or `CONTROL_UNAVAILABLE`; after unlocking, ControlStatus `user`, then `ready`].
+  6. `Screenshot` [the orange flash for 3.5 s; neither the flash nor the indicator in the PNG]; then with `DESKTOP_MCP_DISABLE_FLASH=1` [no flash].
+  7. With `[control] process_allowlist = ["notepad.exe"]`: `Click` on Notepad [works]; `Click` on another app [`Input blocked: the target window belongs to ...`; nothing clicked]. A UWP app is owned by `ApplicationFrameHost.exe`, so it cannot be allowlisted by its own name.
+  8. From Chrome Remote Desktop (Open question 1): during `ai`, the remote mouse and the chord take over. Over Remote Desktop (RDP) the mouse arrives as absolute or null-device Raw Input, so there only the chord can take over.
+  9. `--control-policy balanced`: `PowerShell` is gated (the indicator appears).
+  10. With monitors of different DPI, if available: the cursor ring keeps its size and follows the cursor across them (Task 9 minor: `WM_DPICHANGED` on the ring is unverified).
+- Optional: `probes/out/desktop-mcp-probe.exe overlay-spike` (shows a 400x200 layer for about 2 s). The winner-only Task 1 probe was republished but never re-run after its refactor; the product path is covered by the hidden `overlay` step and `OverlayWindowDesktopTests`.
+- `pwsh scripts/build-release.ps1` again on the final branch (the smoke's control session and the AOT activation, UIA and overlay checks), as for every release build.
+
+## P4 leftovers
+
+Minor review findings deferred from the P4 tasks, one line per task (from the SDD ledger). Every line is for the final P4 review to triage; lines marked "final review must check" were flagged by their task review.
+
+- Task 1: minor (deferred): the probe's `Create` registers the class before its `try`, so a failed `CreateWindowEx` leaves it registered (the product's `LayeredWindow` unregisters it); `capture-excluded` should also require a non-empty image; `off-dispatcher` reads the thread id before the await; the probe hand-declares `GetPixel` and `GetModuleHandleW` (Task 14's `overlay` step adds `GetWindowLongPtrW`, `GetWindowDisplayAffinity` and `IsWindow` the same way). Closed: the §12 note that the winner-only probe was not re-run (Task 14).
+- Task 2: none deferred.
+- Task 3: minor (deferred): `PyText.FloatRepr` of NaN or infinity would break `WriteRawValue` (unreachable: the status has no such values).
+- Task 4: none deferred.
+- Task 5: minor (deferred): a redundant `GetRoot`; relative and wheel batches resolve the cursor once per event (unreachable today).
+- Task 6: minor (deferred): a physically held key's up releases an AI-injected hold of the same key (follows the up-inherits-down ruling); a delivered Alt's up after a swallowed Backspace could look like an Alt tap (with Ctrl and Shift held; unlikely).
+- Task 7: minor (deferred): a check-then-act gap between the stale check and `StopCoreAsync` in a failing current start (pass `run` into `StopCoreAsync`); a stale `SetUp`'s faulted task may go unobserved.
+- Task 8: minor (deferred): the edge bitmaps are re-rendered on every show (a cache is optional).
+- Task 9: minor (deferred): no test for the `WDA_EXCLUDEFROMCAPTURE` failure path; `WM_DPICHANGED` on the ring across mixed-DPI monitors unverified (by-hand item 10 above); a Withdraw/Hide queue-ordering window against a newer Apply (theoretical); the equal-generation note.
+- Task 10: minor (deferred): three or more monitors of different sizes thrash the 8-entry flash art cache (correct, slower); a burst of N screenshots queues about 4N small flash renders on the GPU gate; a 200 ms wait in the gate test.
+- Task 11: minor (deferred; final review must check): the ordering between the hook setting `_takeover` and queueing its Hotkey and the heartbeat's `ClearTakeover` could leave the flag stale; a permanently refused Arm makes joining calls re-show and get preempted until the lease ends (churn). Note: the heartbeat skips a renewal when the lock is busy (upstream fails open there); safe, because the deadline lapses within 1 s.
+- Task 12: minor (deferred): the ordering test does not test order; no server-level concurrent-call test; the `AppService` launch catch is untested; `DeclareLogging` covers the initial capabilities only (document it); the `logging/setLevel` per-version test pins SDK behaviour; clients on protocol 2026-07-28 and the raw `notifications/message` are unverified against a real client.
+- Task 13: minor (deferred; final review must check the first): per-session sends can reorder two quick events (as upstream). Task 14 found that this makes `ControlNotifierTests.TheReturnIsAnnouncedAsAiControlAvailable` fail in 4 of 5 full-suite runs (`AI_CONTROL_AVAILABLE` arrives before `USER_CONTROL`), because `ControlNotifier` starts each session's send with its own `Task.Run`. Also: the read-then-subscribe gap at start; event-name constant symmetry; no test with a failing and a succeeding session; `NothingIsSentAfterDisposal` is weak.
+- Task 14: minor: the probe's `overlay` step and the smoke ran on one monitor only (multi-monitor layer creation is unproven under NativeAOT); the smoke's control session reports its state but not its module count.
 
 ## P5 (HTTP)
 

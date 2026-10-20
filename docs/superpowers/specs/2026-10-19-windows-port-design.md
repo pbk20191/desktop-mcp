@@ -156,11 +156,16 @@ thread and its message loop; we post work with `DispatcherQueue.TryEnqueue`, and
 On shutdown, `ShutdownQueueAsync()` drains the queue after hooks are removed and windows destroyed.
 
 It hosts everything that needs a message loop:
-- the `WH_KEYBOARD_LL` and `WH_MOUSE_LL` hooks and a message-only window that receives Raw Input
-  (`RIDEV_INPUTSINK`),
+- the `WH_KEYBOARD_LL` and `WH_MOUSE_LL` hooks and a message-only window (`HWND_MESSAGE` parent) that
+  receives Raw Input (`RIDEV_INPUTSINK`). P4 Decisions 23 keeps the message-only window unless the Desktop
+  test `RawInputReachesTheMonitorWindow` fails, in which case upstream's hidden zero-size top-level window
+  replaces it; that test is pending with the user (follow-ups, P4), so the outcome is open,
 - the overlay windows (control indicator, capture flash),
-- `DispatcherQueueTimer`s for the idle timeout (10 s), hook reinstall (5 s), the capture flash
-  (3.5 s) and the missed-key-up check (0.1 s x 5).
+- `DispatcherQueueTimer`s (P4 plan, Decisions 13) for the hook reinstall (5 s), the missed-key-up
+  sampler and the dispatcher beat (0.1 s; five all-up samples clear a missed key-up), the capture flash
+  frames (30 ms, for 3.5 s) and, while the indicator is visible, the indicator refresh (50 ms: the
+  breathing opacity and the cursor ring). The idle timeout (10 s) is not a dispatcher timer: the control
+  coordinator's heartbeat on the thread pool evaluates it when it ticks the state machine (§7).
 
 Rule: work on this thread is short and never blocks. UIA, capture, file, process and network work
 are forbidden there, because a slow hook callback delays all input on the machine and a callback
@@ -188,7 +193,7 @@ fallback, a `MsgWaitForMultipleObjectsEx` loop with its own work queue, was not 
 Gated tools (per the control policy, §7) wait on one global desktop lock (`SemaphoreSlim(1)`),
 re-check the control state every 0.1 s while waiting, and keep a 15 s lease after the call ends.
 Ungated tools run concurrently without the lock. With `--no-control`, every call takes the lock.
-Until P4, the input tools hold one input lock for their whole call (P3 plan, Decisions 18).
+Since P4 the gate's lock replaces P3's input lock (P4 plan, Decisions 4).
 
 ### Cancellation
 
@@ -334,10 +339,10 @@ upstream; the implementation is split so the policy logic is pure and testable.
 
 | Component | Runs on | Responsibility |
 |---|---|---|
-| `InputMonitor` | dispatcher thread | LL hooks and Raw Input. Reports physical input only (ignores `LLMHF_INJECTED`/`LLKHF_INJECTED` and our `dwExtraInfo` signature). Swallows input while suppression is active. |
+| `InputMonitor` | dispatcher thread | LL hooks and Raw Input. Reports user input: physical input and, since P4 (Open question 1), input injected by other programs (Chrome Remote Desktop, Mouse Without Borders, AutoHotkey); it ignores only events carrying our `dwExtraInfo` signature `0x444D4350`. Swallows input while suppression is active; a key or button up inherits its down's verdict, so suppression never strands a key or button down in the user's apps (P4 plan, Decisions 29). |
 | `ControlStateMachine` | pure C#, `TimeProvider` injected | Turns events into state and effects. States: `disabled`, `unavailable`, `user`, `ready`, `ai`. |
 | `ControlGate` | SDK call-tool filter | Policy classification, the desktop lock, the 15 s lease, checkpoints, rejection results. |
-| `ControlOverlay` | dispatcher thread | Indicator: blue border on every monitor, the notice ("AI is controlling this computer" / "Move the mouse a significant distance" / "or press Ctrl + Alt + Shift + Backspace to take over"), and a ring that follows the cursor. Click-through, `WDA_EXCLUDEFROMCAPTURE`. P4 evaluates `AppWindow` with WinUI 3 or Composition plus Win2D first, and falls back to Win2D drawn into a bitmap shown with `UpdateLayeredWindow`. The evaluation must check whether WinUI 3 XAML needs a `.pri` file under NativeAOT, which would break the single-exe rule. Also shows the #FF4500 capture flash for 3.5 s (`DESKTOP_MCP_DISABLE_FLASH` turns it off). |
+| `ControlOverlay` | dispatcher thread | Indicator: blue border on every monitor, the notice ("AI is controlling this computer" / "Move the mouse a significant distance" / "or press Ctrl + Alt + Shift + Backspace to take over"), and a ring that follows the cursor. Click-through, `WDA_EXCLUDEFROMCAPTURE`. Technology (P4 Task 1, Decisions 2; §12): Win2D renders premultiplied pixels on the thread pool and layered popups show them with `UpdateLayeredWindow(ULW_ALPHA)`; Composition plus Win2D and WinUI 3 were rejected because they load d2d1 at window creation (and WinUI 3 blends its opacity with black, not with the desktop). The indicator stays visible during captures, which exclude it, instead of being hidden around them. Also shows the #FF4500 capture flash for 3.5 s (`DESKTOP_MCP_DISABLE_FLASH` turns it off) after the capture's render, and never shows a flash layer whose capture exclusion failed. |
 | `ControlNotifier` | thread pool | Sends `notifications/message` (level `notice`, logger `desktop-mcp.control`, data `{"event": "USER_CONTROL" or "AI_CONTROL_AVAILABLE", "status": {...}}`) to live sessions. |
 
 Rules:
@@ -361,10 +366,29 @@ Rules:
   C in `USER_CONTROL`, `CONTROL_UNAVAILABLE`, `CONTROL_PREEMPTED`, `PHYSICAL_INPUT_HELD`.
 - **ControlStatus** returns `{state, generation, wait_seconds, enabled, policy, idle_timeout_seconds}`
   and is never gated.
+- **Input from other programs** (P4 Open question 1): injected input without our signature counts
+  as user input, exactly like physical input (swallowed during `ai`, the chord works, keys and buttons
+  move `ready` to `user`); its pointer path in screen pixels counts toward `mouse_takeover_pixels`
+  (default 500, range 40 to 2000). Chrome Remote Desktop injects through `SendInput`, so its mouse and
+  the chord take over. Absolute or null-device Raw Input (Remote Desktop/RDP, some tablets) is not
+  relative motion, so over RDP moving the mouse cannot take over; only the chord does.
+- **Arming**: entering `ai` shows the indicator first; suppression is armed only after the show is
+  acknowledged and only if the monitor's last physical stamp is not after the `ai` entry stamp (P4
+  plan, Decisions 15; the Task 4 review ruling).
+- **Process allowlist** (P4 plan, Decisions 5): `[control] process_allowlist`, a list of process
+  image names (default empty: every process). Just before `SendInput`, whether control is enabled or
+  not, the process that owns the target window (the root window at an absolute mouse event's point,
+  under the cursor for wheel and button events without coordinates, the foreground window for
+  keyboard events) must be listed, else the batch sends nothing and fails with `Input blocked: the
+  target window belongs to <name>, which is not in control.process_allowlist.` A batch of only key
+  and button ups is never blocked. UWP apps are hosted by `ApplicationFrameHost.exe`, so allowlisting
+  a UWP app by its own name does not work.
+- **Notifications** are built as raw JSON: ModelContextProtocol 2.2.0 marks its logging API obsolete
+  (MCP9005), so the server declares the `logging` capability and sends `notifications/message`
+  without it (P4 plan, Decisions 22).
 
 **Input-lock safety.** The hook swallows input only while a suppression deadline (1 s) is in the
-future. The deadline is renewed by a heartbeat from the running tool call on the thread pool, not
-by a dispatcher timer, so a stuck or crashed call releases the user's input within a second. If
+future. The deadline is renewed by the control coordinator's heartbeat on the thread pool (every 50 ms while the state is ai and the indicator is visible), not by a dispatcher timer, so a stuck coordinator releases the user's input within a second (P4 plan, Decisions 12). If
 the dispatcher thread itself stalls, Windows removes the hook after `LowLevelHooksTimeout`. No path
 leaves input locked indefinitely; both cases are integration tests.
 
@@ -399,6 +423,10 @@ for stateless Streamable HTTP (as upstream).
   both or neither, a non-loopback HTTP bind requires an auth key, OAuth or
   `--allow-insecure-remote` (upstream's "Refusing to bind HTTP transport..." message), port range.
 - `--tools` / `--exclude-tools` filter the registered tools; ControlStatus is always kept.
+- `[control]` keys: `enabled`, `policy`, `idle_timeout_seconds`, `mouse_takeover_units`,
+  `mouse_takeover_pixels` (upstream's), and `process_allowlist`, a TOML array of process image names
+  checked before every `SendInput` (default empty: every process; an entry without a `.` also matches
+  `<entry>.exe`; no environment variable) (P4 plan, Decisions 5).
 
 ### Transports
 
@@ -539,8 +567,8 @@ logs focus changes at debug level.
 |---|---|---|
 | Core unit | config precedence and strict TOML types; ServePlan validation messages; SSRF rules; HTML to Markdown; OAuth/PKCE flows; PowerShell runner against real pwsh (encoding, timeout, tree kill); FileSystem formats; Shortcut parsing; table formatter; Snapshot text rendering from synthetic `UiElement` records and `SemanticNode` trees; fuzzy matching; control state machine with a fake `TimeProvider` (takeover, idle return, lease, policy classification) | always |
 | Server | ContractTests (`tools/list` equals `spec/windows/tools.json` as JSON); in-memory Kestrel tests of middleware order, 401/403 bodies, CORS, OPTIONS, trusted host, `/health`; stdio initialize, tools/list and call | always |
-| Desktop integration | the tests' own windows only (the P2 test window and, from P3, the WinForms target; never the user's windows, P3 Decisions 11): Snapshot reads, input through `GuardedInjector` (clicks, typing and paste, ToolStrip clicks, the signature), the label locator, Type's read-back, the foreground switch between test windows; capture and annotation; hooks, overlay, takeover; input-lock safety (heartbeat stops, input returns within 1 s). Notepad and App launch, switch and resize of real apps are by-hand checks (the follow-ups' P3 section), not automated tests | `Category=Desktop`, run by hand in an interactive session |
-| AOT smoke | `build-release.ps1` publishes win-x64 and win-arm64, launches the x64 exe and runs initialize, tools/list and the headless tools that leave the desktop alone over stdio, then DisplayInventory and Snapshot without vision (a named virtual desktop and at least one tree element; the graphics stack must still be unloaded), then Screenshot and Snapshot with vision (valid PNGs); `DESKTOP_MCP_EXCLUDE_PROCESSES` can keep processes out of the walk (§12). Before the graphics check it also calls the act tools (Click, Type, Shortcut, Move, MultiSelect, MultiEdit, App, WaitFor) with arguments that inject nothing and activate nothing: argument errors, an out-of-range label and point, a shortcut parse error, App lookups of an all-punctuation name (`#`), which fuzzy processing empties so it matches no app or window, and WaitFor timeouts (P3 plan, Decisions 12). It then runs the probe's `imaging` step (the AOT activation check) and `uia` step (the AOT UIA check); any IL2xxx/IL3xxx warning fails the build. The desktop calls need an unlocked interactive session; `smoke-stdio.ps1 -SkipCapture` leaves out the two capture calls | every release build |
+| Desktop integration | the tests' own windows only (the P2 test window and, from P3, the WinForms target; never the user's windows, P3 Decisions 11): Snapshot reads, input through `GuardedInjector` (clicks, typing and paste, ToolStrip clicks, the signature), the label locator, Type's read-back, the foreground switch between test windows; capture and annotation; hooks, overlay, takeover and input-lock safety (heartbeat stops, input returns within 1 s; a stalled dispatcher cannot lock input), done in P4 (`InputMonitorDesktopTests`, `OverlayWindowDesktopTests`, `OverlayArtTests`, `CaptureFlashDesktopTests`; written, by-hand runs pending with the user). Notepad and App launch, switch and resize of real apps are by-hand checks (the follow-ups' P3 section), not automated tests | `Category=Desktop`, run by hand in an interactive session |
+| AOT smoke | `build-release.ps1` publishes win-x64 and win-arm64, launches the x64 exe and runs initialize, tools/list and the headless tools that leave the desktop alone over stdio, then DisplayInventory and Snapshot without vision (a named virtual desktop and at least one tree element; the graphics stack must still be unloaded), then Screenshot and Snapshot with vision (valid PNGs); `DESKTOP_MCP_EXCLUDE_PROCESSES` can keep processes out of the walk (§12). Before the graphics check it also calls the act tools (Click, Type, Shortcut, Move, MultiSelect, MultiEdit, App, WaitFor) with arguments that inject nothing and activate nothing: argument errors, an out-of-range label and point, a shortcut parse error, App lookups of an all-punctuation name (`#`), which fuzzy processing empties so it matches no app or window, and WaitFor timeouts (P3 plan, Decisions 12). Since P4 the first session runs with `[control] enabled = false` and `DESKTOP_MCP_DISABLE_FLASH=1` and checks ControlStatus's disabled text, and the second session keeps control on and reads only ControlStatus and an ungated Wait (it never takes control; its hooks pass every event through), then checks that the hooks and the dispatcher did not load the graphics stack. It then runs the probe's `imaging` step (the AOT activation check), `uia` step (the AOT UIA check) and `overlay` step (the AOT overlay check: the indicator and one flash rendered and pushed to hidden layer windows, never shown); any IL2xxx/IL3xxx warning fails the build. The desktop calls need an unlocked interactive session; `smoke-stdio.ps1 -SkipCapture` leaves out the two capture calls | every release build |
 
 xUnit runs under the JIT, so AOT-only failures are caught by the smoke step.
 
@@ -605,6 +633,8 @@ by-hand act session: not run (pending with the user, with the App launch, `launc
 and job checks in the follow-ups' P3 section). Input tests inject only through GuardedInjector
 into the tests' own windows.
 
+P4 results (2026-10-21, Windows build 10.0.26220.9739): default suite 2034 (Core 1033, Server 272, Desktop non-desktop 729); Desktop suite 0 by hand, all pending (`InputMonitorDesktopTests` 8, `OverlayWindowDesktopTests` 5, `CaptureFlashDesktopTests` 2, `OverlayArtTests` (run off-screen by the Task 8 implementer, 6 of 6), the P3 tests still pending, and `SnapshotServiceDesktopTests`, which now flash); build-release: win-x64 19,095,552 bytes, win-arm64 20,341,248 bytes, each dist folder holding only the exe and its pdb, no publish warnings; stdio smoke OK under NativeAOT with the control session (ready) and no control taken (first session with control disabled and the flash off: ControlStatus disabled, 13 act-tool checks with no input sent, 1 display, active desktop "Desktop 1", 187 tree elements of which 159 labelled, graphics stack not loaded with 86 modules, a 1728x1080 Screenshot PNG and the 200x120 region PNG, the PowerShell grandchild died with the server, which exited 31 ms after stdin closed; second session: the excluding config listed 20 tools, ControlStatus `ready`, Wait ungated, the hooks and the dispatcher loaded no graphics DLL, exit within 5 s); AOT activation and UIA checks OK; AOT overlay check OK (hidden): `overlay: 11 layers, 4406824 bytes rendered, hidden -> OK` (one monitor: four edges, the notice glow and notice, the cursor ring and four flash strips); by-hand control session: pending with the user (follow-ups, P4). One default-suite test is flaky: `ControlNotifierTests.TheReturnIsAnnouncedAsAiControlAvailable` failed in 4 of 5 full-suite runs and in about 1 of 6 Server-only runs, every time with the two notifications reversed (`AI_CONTROL_AVAILABLE` before `USER_CONTROL`): `ControlNotifier` starts each session's send with its own `Task.Run`, so two quick changes can reach a session out of order (the Task 13 deferred minor "per-session sends can reorder two quick events", now a test failure; P4 leftovers, final review). The counts above are the passing runs.
+
 ## 10. Differences from upstream (for the Windows README)
 
 - **Naming**: `desktop-mcp`, `~/.desktop-mcp`, `DESKTOP_MCP_*`. No Python, uv, PowerShell 5.1,
@@ -612,7 +642,10 @@ into the tests' own windows.
 - **Installation**: Windows 11 22H2 or later and the system Windows App SDK 2.5 runtime are required.
   The runtime is bootstrapped lazily by the desktop services: if it is missing, the server still starts
   and headless tools work, while desktop tools return an error result that says how to install the
-  runtime. `desktop-mcp.exe` is the only shipped file; Win2D is linked into it.
+  runtime. With desktop control enabled (the default) the runtime is bootstrapped at startup, because
+  the hooks live on its dispatcher thread; without it control is `unavailable` and the gated tools
+  return `CONTROL_UNAVAILABLE` (fail closed, P4 Open question 2), while `--no-control` runs them
+  unprotected. `desktop-mcp.exe` is the only shipped file; Win2D is linked into it.
 - **Output cleanups**: no stray indentation in Snapshot/Screenshot text; labels shown in the UI
   tree text; a plain text result instead of a JSON-encoded array when there is no image; Scroll
   without `loc` reports `Scrolled ... at current cursor position (x,y).` instead of an empty
@@ -633,12 +666,25 @@ into the tests' own windows.
   outside the virtual desktop are rejected for every pointer action (Move, drag, Scroll,
   MultiSelect), not only Click and Type; a shortcut is validated before anything is sent (upstream
   could leave Ctrl held); `clicks` below 0 is an error; non-ASCII app and window names (Korean,
-  Japanese) can match in App.
+  Japanese) can match in App; a key or button up inherits its down's verdict while control
+  suppresses input, so no key or button stays down in the user's apps (upstream decides each event on
+  its own, P4 plan, Decisions 29).
 - **Protocol**: the legacy SSE message endpoint is `/message` (clients follow the `endpoint`
   event); no FastMCP `_meta` on tools; JSON serialisation details are the MCP C# SDK's.
 - **Implementation**: capture uses Windows.Graphics.Capture, so `DESKTOP_MCP_SCREENSHOT_BACKEND`
   is ignored; Registry, Notification, the app list and `install` do not use PowerShell;
-  `auth --with-tls` generates its own self-signed certificate.
+  `auth --with-tls` generates its own self-signed certificate. Desktop control (P4): input injected
+  by other programs (Chrome Remote Desktop, Mouse Without Borders, AutoHotkey) counts as user input,
+  and only our signed input is ignored (Open question 1; upstream ignores every injected event, so a
+  remote user could not take over); `mouse_takeover_pixels` applies to that foreign injected motion
+  (upstream accepts the key and ignores it); the indicator stays visible during captures, excluded
+  from them with `WDA_EXCLUDEFROMCAPTURE`, instead of being hidden around each capture, and
+  suppression is not paused for captures; the capture flash also covers display-selected captures
+  with an inward halo inside each captured monitor (upstream draws the outward halo of the union,
+  which falls off-screen), is shown after the capture's render, and is not shown at all when a layer
+  cannot be excluded from capture; the server declares the `logging` capability and sends
+  `notifications/message` as raw JSON (ModelContextProtocol 2.2.0 marks its logging API obsolete);
+  `[control] process_allowlist` restricts injected input to listed processes.
 - **P1 decisions**: P1's deliberate departures from upstream in the CLI, config and headless tools
   are listed in the P1 plan's "Decisions on upstream ambiguities"
   (`docs/superpowers/plans/2026-10-19-windows-p1-headless.md`), which also records the rulings
@@ -654,6 +700,10 @@ into the tests' own windows.
   WaitFor without full Snapshots, the bounded foreground switch, App's AppsFolder launch, async
   resize and fuzzy matching, the argument shapes) are listed in the P3 plan's "Decisions on
   upstream ambiguities" (`docs/superpowers/plans/2026-10-20-windows-p3-desktop-act.md`).
+- **P4 decisions**: P4's departures from upstream for desktop control (no `takeover_pending`
+  state, no hide-for-capture, no `rotating` pause, the thread-pool heartbeat, the monitor start that
+  never stops the server, the arming rule, the up-inherits-down rule, the process allowlist, the
+  flash geometry, the raw-JSON logging) are listed in the P4 plan's "Decisions on upstream ambiguities" (docs/superpowers/plans/2026-10-20-windows-p4-desktop-control.md).
 
 ## 11. Phases
 
@@ -667,7 +717,7 @@ work first.
 | P1 Server core and headless tools | CLI, config, ServePlan, stdio; Wait, PowerShell, FileSystem, Clipboard, Process, Registry, Notification, Scrape without sampling | A useful server without desktop access (done; results in §9) |
 | P2 Desktop read | Dispatcher (fixed in P2, first started in P4: P2 plan, Decisions 21), UIA wrapper, Tree, Snapshot without DOM, capture, imaging, Screenshot, DisplayInventory, virtual desktops | The agent can see the screen (done except a rerun of the WinRT clipboard test and the three Desktop tests left out of the final run; results in §9) |
 | P3 Desktop act | Input, InputLedger, Click, Type, Scroll, Move, Shortcut, MultiSelect, MultiEdit, App, WaitFor | Upstream's core workflows (done except the Desktop suite and the by-hand act session, pending with the user; results in §9) |
-| P4 Desktop control | InputMonitor, state machine, overlay, capture flash, gate, notifier, ControlStatus | Protection against fighting the user |
+| P4 Desktop control | InputMonitor, state machine, overlay, capture flash, gate, notifier, ControlStatus | Protection against fighting the user (done; results in §9) |
 | P5 HTTP | Kestrel, Streamable HTTP and SSE, middleware, TLS, OAuth, `/health`, Scrape sampling, telemetry | Remote use |
 | P6 Finish | Install, uninstall, auth, release script for x64 and arm64 (started in P0b, which already trims the output to one exe), Windows README, root README update | `windows-v0.1.0` |
 
@@ -690,9 +740,9 @@ P0 probe results were measured on Windows build 10.0.26220 (Insider).
 | Each exe `.pdb` is about 115 MB, and the Win2D cache needs about 173 MB per platform | The `.pdb` is not shipped; the cache is git-ignored in `windows/.deps/`. |
 | The undocumented virtual-desktop interface changes in a new Windows build | Only desktop names depend on it; fall back to registry names, then `Desktop N` |
 | The MCP SDK's serialisation or legacy SSE support changes | Pin the SDK version; ContractTests and HTTP tests catch drift |
-| LL hooks swallow input and lock the user out | Heartbeat-renewed suppression deadline, `LowLevelHooksTimeout`, integration tests |
+| LL hooks swallow input and lock the user out | Heartbeat-renewed suppression deadline (1 s, renewed every 50 ms by the coordinator on the thread pool), `LowLevelHooksTimeout`, fail-open on a lapsed deadline, a hook exception, a lost desktop or a queue overflow; an up inherits its down's verdict, so nothing stays held. Measured in the default suite with fakes: `PastTheDeadlineTheHookPassesAndRequestsFailOpen` (Task 6), `AStoppedHeartbeatLetsTheDeadlineLapse` (Task 11). The real-hook Desktop tests (`InputMonitorDesktopTests`: `SuppressionLapsesWithinOneSecondWhenTheHeartbeatStops`, `AStalledDispatcherCannotLockInput` and six more) are written and compile but have not run: they swallow input on the user's live machine, so they are pending with the user (follow-ups, P4). The P4 release smoke installed the real hooks on the user's session in pass-through mode only (never `ai`). |
 | UIA calls into hung apps | IUIAutomation2 timeouts, per-job deadlines, a replaceable UIA worker and a 90 s block of hung windows (P2 plan, Decisions 2) |
 | Snapshot's UIA walk hangs a Chromium app (cause measured; mitigated by P2 Decisions 36-38) | Windows logged an AppHang for VS Code (Code.exe 1.142) twice on 2026-10-20, the second during the P2 smoke's Snapshot, and VS Code closed. P2 Task 21 measured the cause on Edge with a page of N sibling buttons: the walker's word read on the page's DocumentControl. `GetCurrentPattern(TextPattern)` plus `GetVisibleRanges` alone blocks the UI thread for 5.2 s at 1,000 buttons, about 46 s at 3,000, and more than 65 s at 10,000 (roughly quadratic). Neither the cache request size nor accessibility first-enable nor the window-list probe causes it. Mitigated in Task 22 (P2 Decisions 36-38): no word read on content whose FrameworkId is `Chrome`; children by sibling navigation, at most 300 per parent; and a WM_NULL check (250 ms) before the window is read and before each children or word read: a timeout leaves the window out of that Snapshot, and only a window Windows considers hung (`IsHungAppWindow`) is blocked with its process for 90 s; a cut child list adds its own note after the tree. Measured after the change (JIT probe, product walk): on a 10,000-button Edge page, 370 elements in 0.35 s with no failed ping; on a 1,000-button page, 0.35-0.37 s with no failed ping; on a fresh VS Code with a 50,000-line file, 0.15-0.23 s with no failed ping. The hang itself was never reproduced on VS Code. On 2026-10-20 the user ran the AOT smoke with no exclusion and their VS Code open (86 tree elements) and the three real-window Desktop tests: all passed, VS Code stayed responsive, and no AppHang was logged during the runs. So the smoke's Code.exe exclusion and `build-release.ps1`'s skip of the probe's `uia` step were removed. (One AppHang from `old_mscopilot_proxy.exe` 156.0.4314.29, an Edge Beta component, was logged at 14:35 that day, about 12 minutes after the final build-release run; its cause is unknown.) The guard cannot interrupt a call already inside a provider. |
 | The Job Object kills every process the server started when the server exits, including apps started through the PowerShell tool (Start-Process) and by App `launch` and `launch_executable` | Spec §5 behaviour, kept in P1 and, for launched apps, in P3 (user decision, 2026-10-20; P3 plan, Open question 1); upstream has no job, so its launched apps survive. Launched apps die with the server, with unsaved work, except packaged apps (activated by the system through `IApplicationActivationManager`) and apps that hand off to a broker or an existing instance, which the system starts outside the job. Revisit if users report it; JOB_OBJECT_LIMIT_BREAKAWAY_OK plus CREATE_BREAKAWAY_FROM_JOB would let chosen launches escape. |
 | Under NativeAOT, a WinRT clipboard call on an MTA thread blocks | Known issue. P1 observed the block (where it saw the JIT throw) and WinRT then blocking on STA in the same process. P2 measured that under the JIT the MTA read succeeds, and that under NativeAOT the `GetTextAsync` operation's `Completed` handler never fires; a live main STA does not help. The root cause stays open, and the STA block is unverified. `SystemClipboard` calls WinRT only on its STA thread, bounds it by 5 s and falls back to the Win32 clipboard, bounded by its own 5 s. |
-| Overlay technology (P4 Task 1) | Verdict `UpdateLayeredWindow` (P4 plan Decisions 2), measured 2026-10-20 on build 26220, win-x64 NativeAOT. WinUI 3: a throwaway copy of the probe with `UseWinUI`, the `Microsoft.WindowsAppSDK.WinUI` and `Microsoft.WindowsAppSDK.Foundation` exclusions lifted and a minimal `Application` opening one `Window` without XAML markup published with 0 warnings, but the folder held `Microsoft.WindowsAppRuntime.Bootstrap.dll` and `Microsoft.Windows.ApplicationModel.Background.UniversalBGTask.dll` (Foundation's native assets) besides the exe and `.pdb`: rejected. No `.pri` reached the publish folder (with `AppxGeneratePriEnabled` on, `desktop-mcp-probe.pri` appeared only in `bin`); with Foundation's native assets excluded, or with Foundation left excluded, the folder held only the exe and `.pdb`. The WinUI window itself was never run. Composition (a `Microsoft.UI.Composition` `ContentIsland` with a Win2D `CompositionDrawingSurface` in our popup through `DesktopChildSiteBridge`): `graphics-not-loaded: FAIL (d2d1 after dispatcher start=False, before the first Win2D call=True)`, because creating the compositor and the bridge loads d2d1; `click-through`, `visible` (rgb(45,145,255)), `capture-excluded` (0 of 80000 pixels), `opacity` (rgb(45,145,255) -> rgb(94,144,199)), `off-dispatcher` and `cleanup` OK: rejected. `UpdateLayeredWindow` (`desktop-mcp-probe overlay-spike`): `graphics-not-loaded: OK (False, False)`, `click-through: OK` (the root window at the centre is the window below), `visible: OK (WDA_NONE, screen pixel rgb(45,145,255))`, `capture-excluded: OK (WDA_EXCLUDEFROMCAPTURE, 0 of 80000 captured pixels within 8 of the colour)`, `opacity: OK (SourceConstantAlpha 128 with a null source DC: rgb(45,145,255) -> rgb(94,144,199))`, `off-dispatcher: OK` (Win2D render and `UpdateLayeredWindow` on a thread-pool thread), `cleanup: OK` -> ACCEPT. Both probe publishes held only the exe and `.pdb` with 0 warnings. |
+| Overlay technology (P4 Task 1) | Verdict `UpdateLayeredWindow` (P4 plan Decisions 2), measured 2026-10-20 on build 26220, win-x64 NativeAOT. WinUI 3: a throwaway copy of the probe with `UseWinUI`, the `Microsoft.WindowsAppSDK.WinUI` and `Microsoft.WindowsAppSDK.Foundation` exclusions lifted and a minimal `Application` opening one `Window` without XAML markup published with 0 warnings, but the folder held `Microsoft.WindowsAppRuntime.Bootstrap.dll` and `Microsoft.Windows.ApplicationModel.Background.UniversalBGTask.dll` (Foundation's native assets) besides the exe and `.pdb`: rejected. No `.pri` reached the publish folder (with `AppxGeneratePriEnabled` on, `desktop-mcp-probe.pri` appeared only in `bin`); with Foundation's native assets excluded, or with Foundation left excluded, the folder held only the exe and `.pdb`. Task 1 never ran the WinUI window. A later measurement (WinUI 3 spike, 2026-10-20, build 26220, user-approved; Foundation's native assets excluded, `UseWinUI` and `Microsoft.WindowsAppSDK.WinUI` only): the publish held only the exe and `.pdb` with 0 warnings, and a `Window` without an `Application` object started under NativeAOT on the existing dispatcher thread (`WindowsXamlManager.InitializeForCurrentThread`, no `.pri`), but `graphics-not-loaded: FAIL` (XAML initialisation and window creation load d2d1, d3d11 and dcomp before any Win2D call); `Grid.Opacity` 0.5 gave rgb(34,109,192), a blend with the window's opaque black background, not with the desktop (about rgb(93,144,199)); setting a XAML brush off the UI thread threw `RPC_E_WRONG_THREAD` (0x8001010E), so off-dispatcher drawing needs a Win2D composition surface, which is the Composition candidate again; the exe grew by 550,400 bytes (+7.7%), and the shown window cost +89.0 MB working set over the dispatcher baseline against +29.0 MB for a ULW layer with its first Win2D upload (not shown). WinUI 3 rejected again; the verdict stands. Composition (a `Microsoft.UI.Composition` `ContentIsland` with a Win2D `CompositionDrawingSurface` in our popup through `DesktopChildSiteBridge`): `graphics-not-loaded: FAIL (d2d1 after dispatcher start=False, before the first Win2D call=True)`, because creating the compositor and the bridge loads d2d1; `click-through`, `visible` (rgb(45,145,255)), `capture-excluded` (0 of 80000 pixels), `opacity` (rgb(45,145,255) -> rgb(94,144,199)), `off-dispatcher` and `cleanup` OK: rejected. `UpdateLayeredWindow` (`desktop-mcp-probe overlay-spike`): `graphics-not-loaded: OK (False, False)`, `click-through: OK` (the root window at the centre is the window below), `visible: OK (WDA_NONE, screen pixel rgb(45,145,255))`, `capture-excluded: OK (WDA_EXCLUDEFROMCAPTURE, 0 of 80000 captured pixels within 8 of the colour)`, `opacity: OK (SourceConstantAlpha 128 with a null source DC: rgb(45,145,255) -> rgb(94,144,199))`, `off-dispatcher: OK` (Win2D render and `UpdateLayeredWindow` on a thread-pool thread), `cleanup: OK` -> ACCEPT. Both probe publishes held only the exe and `.pdb` with 0 warnings. After Task 1 moved the ULW code out of its candidate abstraction, the winner-only `overlay-spike` probe was republished but not re-run (the approval covered one run per candidate). The product path (`LayeredWindow`, `OverlayArt`) is checked on every release build by the probe's hidden `overlay` step (§9), which never shows a layer; its on-screen behaviour is covered by `OverlayWindowDesktopTests` and the by-hand control session, pending with the user. |

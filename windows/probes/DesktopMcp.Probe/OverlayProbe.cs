@@ -6,6 +6,8 @@ using DesktopMcp.Desktop.Capture;
 using DesktopMcp.Desktop.Dispatching;
 using DesktopMcp.Desktop.Displays;
 using DesktopMcp.Desktop.Imaging;
+using DesktopMcp.Desktop.Overlay;
+using DesktopMcp.Desktop.Snapshots;
 using Microsoft.Graphics.Canvas;
 using Windows.UI;
 using Windows.Win32;
@@ -38,6 +40,96 @@ internal static partial class OverlayProbe
     // Probe-only reads for the checks and the module handle (not product code).
     [LibraryImport("kernel32.dll", StringMarshalling = StringMarshalling.Utf16)] private static partial nint GetModuleHandleW(string? name);
     [LibraryImport("gdi32.dll")] private static partial uint GetPixel(nint hdc, int x, int y);
+
+    [LibraryImport("user32.dll")] private static partial nint GetWindowLongPtrW(nint hwnd, int index);
+    [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static partial bool GetWindowDisplayAffinity(nint hwnd, out uint affinity);
+
+    [LibraryImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] private static partial bool IsWindow(nint hwnd);
+
+    private const int GwlExStyle = -20;
+    private const uint WdaExcludeFromCapture = 0x11;
+
+    /// <summary>
+    /// P4 Task 14, <c>overlay</c>: the release check of the product's overlay path under NativeAOT, without showing anything.
+    /// Through <see cref="OverlayArt"/> and <see cref="LayeredWindowFactory"/> it renders the indicator for the real monitors
+    /// (edges, notices and the cursor ring) and one flash (inward strips on every monitor), creates every layer on its own
+    /// dispatcher, pushes its content and sets an opacity, never shows a layer, reads back that each window has the
+    /// click-through ex-styles and <c>WDA_EXCLUDEFROMCAPTURE</c>, and destroys them. Prints
+    /// <c>overlay: &lt;n&gt; layers, &lt;bytes&gt; bytes rendered, hidden -&gt; OK</c>.
+    /// </summary>
+    public static async Task<bool> RunHiddenAsync()
+    {
+        var host = new DispatcherHost();
+        var layers = new List<LayeredWindow>();
+        IDesktopDispatcher? dispatcher = null;
+        try
+        {
+            var displays = new Win32Displays();
+            var monitors = displays.GetDisplays().Select(d => d.Bounds).ToArray();
+            var art = OverlayArt.Shared;
+            // The notice is measured on the thread pool, never on the dispatcher (Task 8).
+            var specs = await Task.Run(() =>
+            {
+                var all = new List<LayerSpec>(OverlayLayout.Indicator(monitors, art.NoticeSize));
+                all.Add(OverlayLayout.CursorRing(DesktopSession.CursorPosition()));
+                all.AddRange(OverlayLayout.Flash(null, monitors, displays.GetVirtualScreen()));
+                return all;
+            });
+            var bitmaps = await Task.WhenAll(specs.Select(spec => art.RenderAsync(spec.Art, CancellationToken.None)));
+            var bytes = bitmaps.Sum(b => (long)b.Pixels.Length);
+
+            dispatcher = await host.GetAsync(CancellationToken.None);
+            var factory = new LayeredWindowFactory(null, LayeredWindow.IndicatorOverlay);
+            var problems = await dispatcher.InvokeAsync(() =>
+            {
+                var found = new List<string>();
+                for (var i = 0; i < specs.Count; i++)
+                {
+                    var layer = (LayeredWindow)factory.Create(specs[i].Bounds, specs[i].Name);
+                    layers.Add(layer);
+                    layer.SetContent(bitmaps[i]);
+                    layer.SetOpacity(128);
+                    var hwnd = (nint)layer.Handle;
+                    var exStyle = (WINDOW_EX_STYLE)(uint)GetWindowLongPtrW(hwnd, GwlExStyle);
+                    if ((exStyle & LayeredWindow.ExStyle) != LayeredWindow.ExStyle)
+                        found.Add($"{specs[i].Name}: ex-style 0x{(uint)exStyle:X8} lacks 0x{(uint)LayeredWindow.ExStyle:X8}");
+                    if (!GetWindowDisplayAffinity(hwnd, out var affinity) || affinity != WdaExcludeFromCapture || !layer.ExcludedFromCapture)
+                        found.Add($"{specs[i].Name}: display affinity 0x{affinity:X} (excluded={layer.ExcludedFromCapture})");
+                    if (layer.IsVisible) found.Add($"{specs[i].Name}: visible");
+                }
+                return found;
+            });
+            var count = layers.Count;
+            var destroyed = await dispatcher.InvokeAsync(() =>
+            {
+                var gone = 0;
+                foreach (var layer in layers)
+                {
+                    var hwnd = (nint)layer.Handle;
+                    layer.Dispose();
+                    if (!IsWindow(hwnd)) gone++;
+                }
+                layers.Clear();
+                return gone;
+            });
+            if (destroyed != count) problems.Add($"{count - destroyed} of {count} windows still exist after disposal");
+            foreach (var problem in problems) Console.WriteLine($"overlay: {problem}");
+            var ok = problems.Count == 0 && count > 0;
+            Console.WriteLine($"overlay: {count} layers, {bytes} bytes rendered, hidden -> {(ok ? "OK" : "FAIL")}");
+            return ok;
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine($"overlay: {e.GetType().Name} 0x{e.HResult:X8} {e.Message} -> FAIL");
+            return false;
+        }
+        finally
+        {
+            if (dispatcher is not null && layers.Count > 0)
+                await dispatcher.InvokeAsync(() => { foreach (var layer in layers) layer.Dispose(); });
+            await host.ShutdownAsync();
+        }
+    }
 
     public static async Task<bool> RunAsync()
     {

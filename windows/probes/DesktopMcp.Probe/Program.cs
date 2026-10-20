@@ -5,6 +5,7 @@ using DesktopMcp.Probe;
 // AOT probes. Usage: desktop-mcp-probe bootstrap | dispatcher | imaging [out.png] | capture [out.png] | clipboard | toast | uia
 //                    | clipboard-mta fresh|after-sta|with-dispatcher
 //                    | uia-hang <hwnd> <step,...> [--budget N] [--settle ms] [--baseline ms] [--final ms] [--doc name] (Task 21; one window of a process you started)
+//                    | overlay (P4 Task 14: renders the indicator and one flash, creates and fills every layer, never shows one)
 //                    | overlay-spike (P4 Task 1, UpdateLayeredWindow; shows a 400x200 layer in the primary monitor's top-left corner for about 2 s)
 var command = args.Length > 0 ? args[0] : "dispatcher";
 var ok = command switch
@@ -17,6 +18,7 @@ var ok = command switch
     "toast" => ProbeToast(),
     "uia" => await UiaProbe.RunAsync(),
     "uia-hang" => UiaHangProbe.Run(args),
+    "overlay" => await OverlayProbe.RunHiddenAsync(),
     "overlay-spike" => await OverlayProbe.RunAsync(),
     "clipboard-mta" => await ClipboardMtaProbe.RunAsync(args.Length > 1 ? args[1] : "fresh"),
     _ => Fail($"unknown probe '{command}'"),

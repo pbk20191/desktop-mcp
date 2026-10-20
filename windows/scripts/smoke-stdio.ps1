@@ -1,9 +1,10 @@
 #Requires -Version 7
 # Checks `serve --help`, then runs two stdio sessions of desktop-mcp.exe:
-# 1. `serve --config <empty file>`: initialize, that tools/list equals spec/windows/tools.json (all tools, as JSON
-#    values), Wait and the headless tools that leave the desktop alone (FileSystem, Process, Registry, PowerShell,
+# 1. `serve --config <file with [control] enabled = false>` and DESKTOP_MCP_DISABLE_FLASH=1, so the act-tool calls take no
+#    control and the captures flash nothing: initialize, that tools/list equals spec/windows/tools.json (all tools, as JSON
+#    values), Wait, ControlStatus (disabled) and the headless tools that leave the desktop alone (FileSystem, Process, Registry, PowerShell,
 #    Scrape), and that this headless run did not load the (delay-loaded) graphics stack: d2d1, d3d11,
-#    dwrite, d3dcompiler_47. The empty file keeps a developer's ~/.desktop-mcp/config.toml out of the check. A
+#    dwrite, d3dcompiler_47. The file keeps a developer's ~/.desktop-mcp/config.toml out of the check. A
 #    PowerShell call starts a ping that must die with the server (the kill-on-close Job Object, spec §5).
 #    The read-only desktop tools follow: DisplayInventory and Snapshot without vision before the graphics check (neither
 #    may load the graphics stack), then the act tools (Click, Type, Shortcut, Move, MultiSelect, MultiEdit, App, WaitFor)
@@ -15,7 +16,11 @@
 #    Both sessions run with DESKTOP_MCP_EXCLUDE_PROCESSES set to -ExcludeProcesses (default empty). P2 excluded Code.exe
 #    after the walk hung VS Code; Decisions 36-38 fixed that, and a run with VS Code open confirmed it (2026-10-20).
 # 2. `serve --config <file excluding Registry>`: tools/list equals the spec less Registry, which proves the NativeAOT
-#    exe parsed the TOML file.
+#    exe parsed the TOML file. Desktop control stays on (the default) in this session, which reads status only: ControlStatus
+#    (ready or user; unavailable with -SkipCapture, a host without the Windows App SDK runtime), an ungated Wait, and
+#    ControlStatus again. It never takes control, shows nothing and injects nothing; its low-level hooks and Raw Input sink
+#    pass every event through. The hooks and the dispatcher must not load the graphics stack, and the server must exit
+#    within 5 s of stdin closing.
 param(
     [Parameter(Mandatory)][string]$Exe,
     [string]$Spec = (Join-Path $PSScriptRoot '../../spec/windows/tools.json'),
@@ -71,7 +76,7 @@ function Invoke-Tool([int]$Id, [string]$Name, [hashtable]$Arguments, [int]$Timeo
 
 # Starts `serve --config $ConfigPath`, initializes and lists the tools, then runs $Body with the initialize response,
 # the tools/list response and its raw line before closing stdin and waiting up to $ExitSeconds for the server to exit.
-function Invoke-Session([string]$ConfigPath, [scriptblock]$Body, [int]$ExitSeconds = 5) {
+function Invoke-Session([string]$ConfigPath, [scriptblock]$Body, [int]$ExitSeconds = 5, [hashtable]$Environment = @{}) {
     $psi = [System.Diagnostics.ProcessStartInfo]::new($exePath)
     foreach ($argument in 'serve', '--config', $ConfigPath) { $psi.ArgumentList.Add($argument) }
     $psi.RedirectStandardInput = $true
@@ -82,6 +87,7 @@ function Invoke-Session([string]$ConfigPath, [scriptblock]$Body, [int]$ExitSecon
     $psi.UseShellExecute = $false
     $psi.Environment['ANONYMIZED_TELEMETRY'] = 'false'
     $psi.Environment['DESKTOP_MCP_EXCLUDE_PROCESSES'] = $ExcludeProcesses
+    foreach ($name in $Environment.Keys) { $psi.Environment[$name] = $Environment[$name] }
     $script:process = [System.Diagnostics.Process]::Start($psi)
     # Drain stderr from the start so a chatty server never blocks on a full pipe.
     $script:stderrTask = $script:process.StandardError.ReadToEndAsync()
@@ -108,6 +114,21 @@ function Invoke-Session([string]$ConfigPath, [scriptblock]$Body, [int]$ExitSecon
         if ($script:exitMilliseconds -gt 5000) { Write-Warning "server took $($script:exitMilliseconds) ms to exit after stdin closed" }
     }
     if ($script:exitFailure) { $failure = $script:exitFailure; $script:exitFailure = $null; throw $failure }
+}
+# The modules of the graphics stack the server has loaded (none may load before something renders).
+function Get-GraphicsModules {
+    $script:process.Refresh()
+    return @($script:process.Modules | Where-Object { $_.ModuleName -in 'd2d1.dll', 'd3d11.dll', 'dwrite.dll', 'd3dcompiler_47.dll' } | ForEach-Object ModuleName)
+}
+# ControlStatus: never an error; its text and structuredContent are the same status object.
+function Get-ControlStatus([int]$Id) {
+    $result = Invoke-Tool $Id 'ControlStatus' @{}
+    if ($result.isError) { throw "ControlStatus failed: $($result | ConvertTo-Json -Depth 5)" }
+    $text = "$($result.content[0].text)"
+    $status = $text | ConvertFrom-Json
+    if ($null -eq $result.structuredContent -or $result.structuredContent.state -cne $status.state -or
+        $result.structuredContent.enabled -ne $status.enabled) { throw "ControlStatus structuredContent differs from its text: $($result | ConvertTo-Json -Depth 5)" }
+    return @{ Text = $text; Status = $status }
 }
 # A PNG image block: the content type, the MIME type, the PNG signature and a non-empty IHDR size of the decoded data.
 function Assert-PngImage($Result, [string]$Name) {
@@ -142,18 +163,18 @@ $script:exitFailure = $null
 $help = (& $exePath serve --help) -join "`n"
 if ($LASTEXITCODE -ne 0 -or -not $help.Contains('--exclude-tools')) { throw "serve --help failed ($LASTEXITCODE): $help" }
 
-$emptyConfig = Join-Path ([IO.Path]::GetTempPath()) "desktop-mcp-smoke-$PID-empty.toml"
+$disabledConfig = Join-Path ([IO.Path]::GetTempPath()) "desktop-mcp-smoke-$PID-nocontrol.toml"
 $excludingConfig = Join-Path ([IO.Path]::GetTempPath()) "desktop-mcp-smoke-$PID.toml"
 # A non-default value with a visible effect: tools/list must lack the excluded tool.
 $excluded = 'Registry'
 try {
-    [IO.File]::WriteAllText($emptyConfig, '')
+    [IO.File]::WriteAllText($disabledConfig, "[control]`nenabled = false`n")
     [IO.File]::WriteAllText($excludingConfig, "[server]`ntransport = `"stdio`"`n`n[tools]`nexclude = [`"$excluded`"]`n`n[control]`npolicy = `"relaxed`"`n")
 
     # After a capture the exe has taken seconds to exit, its last thread in process teardown without using CPU (P2 Task
     # 19 measured 0.03-7.5 s in the attempt during which VS Code hung, then 23-25 ms on five runs with Code.exe
     # excluded; cause unknown, see the P2 leftovers). A run without capture keeps 5 s.
-    Invoke-Session $emptyConfig -ExitSeconds $(if ($SkipCapture) { 5 } else { 30 }) -Body {
+    Invoke-Session $disabledConfig -ExitSeconds $(if ($SkipCapture) { 5 } else { 30 }) -Environment @{ DESKTOP_MCP_DISABLE_FLASH = '1' } -Body {
         param($init, $list, $listLine)
         $expectedInstructions = "Windows MCP server provides tools to interact directly with the Windows desktop,`nthus enabling to operate the desktop on the user's behalf."
         if ($init.result.instructions -cne $expectedInstructions) { throw "unexpected instructions: $($init.result.instructions)" }
@@ -163,6 +184,11 @@ try {
         $call = Receive 3
         if ($null -eq $call.result -or $call.result.isError) { throw "Wait failed: $($call | ConvertTo-Json -Depth 5)" }
         if ($call.result.content[0].text -cne 'Waited for 0 seconds.') { throw "unexpected Wait text: $($call.result.content[0].text)" }
+
+        # Control is off in this session: the act tools below run unprotected and take no control.
+        $control = Get-ControlStatus 5
+        $expectedStatus = '{"state":"disabled","generation":0,"wait_seconds":0.0,"enabled":false,"policy":"relaxed","idle_timeout_seconds":10.0}'
+        if ($control.Text -cne $expectedStatus) { throw "unexpected ControlStatus with control disabled: $($control.Text)" }
 
         # Headless tools under NativeAOT. Clipboard and Notification are left out: they change the user's desktop.
         $cases = @(
@@ -241,10 +267,9 @@ try {
         $script:pingId = [int]$Matches[1]
 
         # The graphics stack is delay-loaded (Win2DStatic.targets): a run that never renders must not load it.
-        $script:process.Refresh()
-        $graphics = @($script:process.Modules | Where-Object { $_.ModuleName -in 'd2d1.dll', 'd3d11.dll', 'dwrite.dll', 'd3dcompiler_47.dll' } | ForEach-Object ModuleName)
+        $graphics = Get-GraphicsModules
         if ($graphics.Count -gt 0) { throw "headless run loaded the graphics stack: $($graphics -join ', ')" }
-        $script:full = "$($init.result.serverInfo.name) $($init.result.serverInfo.version), $($list.result.tools.Count) tools match spec/windows/tools.json, Wait and $($cases.Count) headless tools OK, $script:desktopRead, $script:actChecks, graphics stack not loaded ($($script:process.Modules.Count) modules)"
+        $script:full = "$($init.result.serverInfo.name) $($init.result.serverInfo.version), $($list.result.tools.Count) tools match spec/windows/tools.json, Wait, ControlStatus (disabled) and $($cases.Count) headless tools OK, $script:desktopRead, $script:actChecks, graphics stack not loaded ($($script:process.Modules.Count) modules)"
 
         # Capture under NativeAOT: Win2D and Windows.Graphics.Capture through the static activation. From here on the
         # graphics stack is expected to load.
@@ -266,10 +291,24 @@ try {
         param($init, $list, $listLine)
         Assert-ToolsMatchSpec $listLine $excluded
         $script:filtered = "--config excluded $excluded ($($list.result.tools.Count) tools match the rest)"
+
+        # Control on, status only: nothing here is gated, so no control is taken and nothing is shown or injected.
+        $allowed = if ($SkipCapture) { 'ready', 'user', 'unavailable' } else { 'ready', 'user' }
+        $first = (Get-ControlStatus 3).Status
+        if ($first.state -cnotin $allowed -or $first.enabled -ne $true -or $first.policy -cne 'relaxed') {
+            throw "unexpected ControlStatus with control on: $($first | ConvertTo-Json -Compress)"
+        }
+        $wait = Invoke-Tool 4 'Wait' @{ duration = 0 }
+        if ($wait.isError -or $wait.content[0].text -cne 'Waited for 0 seconds.') { throw "ungated Wait failed with control on: $($wait | ConvertTo-Json -Depth 5)" }
+        $second = (Get-ControlStatus 5).Status
+        if ($second.enabled -ne $first.enabled) { throw "ControlStatus enabled changed: $($second | ConvertTo-Json -Compress)" }
+        $graphics = Get-GraphicsModules
+        if ($graphics.Count -gt 0) { throw "the control session (hooks and dispatcher) loaded the graphics stack: $($graphics -join ', ')" }
+        $script:controlState = $first.state
     }
 
-    Write-Host "smoke OK: $script:full; $script:filtered"
+    Write-Host "smoke OK: $script:full; $script:filtered, control session OK ($script:controlState)"
 }
 finally {
-    Remove-Item $emptyConfig, $excludingConfig -ErrorAction SilentlyContinue
+    Remove-Item $disabledConfig, $excludingConfig -ErrorAction SilentlyContinue
 }
