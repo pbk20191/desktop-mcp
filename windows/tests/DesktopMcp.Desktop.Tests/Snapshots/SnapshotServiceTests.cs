@@ -3,6 +3,7 @@ using DesktopMcp.Desktop.Capture;
 using DesktopMcp.Desktop.Displays;
 using DesktopMcp.Desktop.Errors;
 using DesktopMcp.Desktop.Imaging;
+using DesktopMcp.Desktop.Overlay;
 using DesktopMcp.Desktop.Snapshots;
 using DesktopMcp.Desktop.Tree;
 using DesktopMcp.Desktop.Uia;
@@ -169,6 +170,18 @@ public class SnapshotServiceTests
         public Task<byte[]> RenderPngAsync(CapturedImage image, RenderOptions options, CancellationToken cancellationToken = default) => throw error;
     }
 
+    private sealed class FakeFlash : ICaptureFlash
+    {
+        public List<(ScreenRect? Region, ScreenRect[] Monitors)> Shows { get; } = [];
+        public void Show(ScreenRect? region, IReadOnlyList<ScreenRect> capturedMonitors) => Shows.Add((region, capturedMonitors.ToArray()));
+    }
+
+    private sealed class ThrowingFlash : ICaptureFlash
+    {
+        public void Show(ScreenRect? region, IReadOnlyList<ScreenRect> capturedMonitors) => throw new InvalidOperationException("flash");
+    }
+
+    private readonly FakeFlash _flash = new();
     private readonly FakeWindows _windows = new(new WindowScan([11, 12, 13], [Notepad, Paint], Notepad));
     private readonly FakeTree _tree = new();
     private readonly FakeCapture _capture = new();
@@ -188,6 +201,7 @@ public class SnapshotServiceTests
         EnsureSession = ensureSession ?? (() => { }),
         Environment = name => _environment.GetValueOrDefault(name),
         ProfileLog = _profile,
+        Flash = _flash,
     };
 
     private SnapshotService Service(Action? ensureSession = null) => new(Dependencies(ensureSession));
@@ -419,6 +433,65 @@ public class SnapshotServiceTests
         Assert.Equal(missing.Message, error.Message);
         Assert.Contains(AppRuntime.InstallHint(), error.Message);
         Assert.Same(missing, error.InnerException);
+    }
+
+    [Fact]
+    public async Task AVisionCaptureShowsTheFlashForTheRegion()
+    {
+        await Service().CaptureAsync(new SnapshotRequest { UseVision = true, Region = new RegionArgument([100, 100, 1000, 800], null) }, default);
+        var (region, monitors) = Assert.Single(_flash.Shows);
+        Assert.Equal(new ScreenRect(100, 100, 1000, 800), region);
+        Assert.Equal([Main.Bounds], monitors);
+    }
+
+    [Fact]
+    public async Task AFullCaptureFlashesEveryMonitorInward()
+    {
+        await Service().CaptureAsync(new SnapshotRequest { UseVision = true, UseUiTree = false }, default);
+        var (region, monitors) = Assert.Single(_flash.Shows);
+        Assert.Null(region);
+        Assert.Equal([Main.Bounds, Left.Bounds], monitors);
+    }
+
+    [Fact]
+    public async Task ADisplaySelectionFlashesOnlyTheSelectedMonitorsInward()
+    {
+        // Decisions 27: no outward halo around the display union; the selected monitors get their inward strips.
+        await Service().CaptureAsync(new SnapshotRequest { UseVision = true, Displays = [1] }, default);
+        var (region, monitors) = Assert.Single(_flash.Shows);
+        Assert.Null(region);
+        Assert.Equal([Left.Bounds], monitors);
+    }
+
+    [Fact]
+    public async Task ACaptureFailureShowsNoFlash()
+    {
+        var service = new SnapshotService(Dependencies() with { Capture = new ThrowingCapture(new DesktopException("capture failed")) });
+        await Assert.ThrowsAsync<DesktopException>(() => service.CaptureAsync(new SnapshotRequest { UseVision = true }, default));
+        Assert.Empty(_flash.Shows);
+    }
+
+    [Fact]
+    public async Task NoVisionNoFlash()
+    {
+        await Service().CaptureAsync(new SnapshotRequest(), default);
+        Assert.Empty(_flash.Shows);
+    }
+
+    [Fact]
+    public async Task AFailingFlashNeverFailsTheCapture()
+    {
+        var snapshot = await new SnapshotService(Dependencies() with { Flash = new ThrowingFlash() })
+            .CaptureAsync(new SnapshotRequest { UseVision = true }, default);
+        Assert.NotNull(snapshot.Png);
+    }
+
+    [Fact]
+    public void TheDefaultDependenciesUseTheMachinesFlash()
+    {
+        var flash = new FakeFlash();
+        Assert.Same(flash, SnapshotDependencies.CreateDefault(DesktopMachine.CreateDefault(flash)).Flash);
+        Assert.IsType<CaptureFlash>(DesktopMachine.CreateDefault().Flash);
     }
 
     [Fact]

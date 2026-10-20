@@ -5,6 +5,7 @@ using DesktopMcp.Desktop.Capture;
 using DesktopMcp.Desktop.Displays;
 using DesktopMcp.Desktop.Errors;
 using DesktopMcp.Desktop.Imaging;
+using DesktopMcp.Desktop.Overlay;
 using DesktopMcp.Desktop.Tree;
 using DesktopMcp.Desktop.Uia;
 using DesktopMcp.Desktop.VirtualDesktops;
@@ -76,6 +77,9 @@ internal sealed record SnapshotDependencies
     public required Func<string, string?> Environment { get; init; }
     public required TextWriter ProfileLog { get; init; }
 
+    /// <summary>Shown after every successful screen capture (Decisions 27); none unless set.</summary>
+    public ICaptureFlash Flash { get; init; } = NoFlash.Instance;
+
     /// <summary>
     /// The real parts over <paramref name="machine"/>. Creating them starts no thread and touches no COM, UIA, desktop or
     /// Windows App SDK: the UIA worker starts its thread on the first job, and the capture and the renderer initialise the
@@ -100,6 +104,7 @@ internal sealed record SnapshotDependencies
             EnsureSession = DesktopSession.ThrowIfUnavailable,
             Environment = System.Environment.GetEnvironmentVariable,
             ProfileLog = Console.Error,
+            Flash = machine.Flash,
         };
     }
 }
@@ -214,9 +219,11 @@ public sealed class SnapshotService : IDesktopSnapshots
         {
             var area = captureRect ?? screen;
             var monitors = displays.Select(display => display.Bounds).ToArray();
-            var deadline = CaptureTimeout ?? CaptureDeadline(monitors.Count(monitor => ScreenRect.Clip(monitor, area) is not null));
+            var captured = monitors.Where(monitor => ScreenRect.Clip(monitor, area) is not null).ToArray();
+            var deadline = CaptureTimeout ?? CaptureDeadline(captured.Length);
             var image = await WithRuntimeAsync(() => BoundedAsync(token => _machine.Capture.CaptureAsync(area, monitors, token), deadline,
                 "Screen capture", cancellationToken)).ConfigureAwait(false);
+            ShowFlash(region, captured);
             Stage("screenshot_capture");
             originalSize = new PixelSize(image.Width, image.Height);
             scale = SnapshotSettings.ImageScale(_machine.Environment(SnapshotSettings.ScreenshotScaleVariable), image.Width, image.Height);
@@ -246,6 +253,21 @@ public sealed class SnapshotService : IDesktopSnapshots
         if (SnapshotSettings.ProfileEnabled(_machine.Environment(SnapshotSettings.ProfileSnapshotVariable)))
             Profile(stages, clock.Elapsed.TotalMilliseconds, request, displayIndices);
         return snapshot;
+    }
+
+    // upstream desktop/service.py:1382: the flash follows the capture (and is excluded from the next one). A region gets
+    // outward strips; a display selection or a full capture gets inward strips inside each captured monitor (Decisions 27,
+    // so not the region-style halo around a display union). It returns at once; nothing it does may fail the capture.
+    private void ShowFlash(ScreenRect? region, ScreenRect[] captured)
+    {
+        try
+        {
+            _machine.Flash.Show(region, captured);
+        }
+        catch (Exception)
+        {
+            // ICaptureFlash.Show never throws; a broken implementation still must not fail the screenshot.
+        }
     }
 
     /// <summary>

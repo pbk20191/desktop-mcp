@@ -1,4 +1,5 @@
 using DesktopMcp.Desktop.Displays;
+using DesktopMcp.Desktop.Overlay;
 using DesktopMcp.Desktop.Tree;
 using DesktopMcp.Desktop.Uia;
 using DesktopMcp.Desktop.VirtualDesktops;
@@ -12,13 +13,14 @@ namespace DesktopMcp.Desktop;
 public sealed class DesktopMachine
 {
     private DesktopMachine(UiaWorker<UiaSession> uia, HangBlockList blocks, IWindowSystem windows, VirtualDesktopService desktops,
-        IDisplayProvider displays)
+        IDisplayProvider displays, ICaptureFlash flash)
     {
         Uia = uia;
         Blocks = blocks;
         Windows = windows;
         Desktops = desktops;
         Displays = displays;
+        Flash = flash;
         Catalog = new WindowCatalog(windows, new UiaWindowProbe(uia), desktops, blocks, Environment.ProcessId, Task.Delay);
         Tree = new TreeService(windows, new UiaWindowWalker(uia), blocks, Environment.GetEnvironmentVariable, Task.Delay);
     }
@@ -31,14 +33,21 @@ public sealed class DesktopMachine
     internal WindowCatalog Catalog { get; }
     internal TreeService Tree { get; }
 
+    /// <summary>The flash shown after every screenshot (Decisions 27); the snapshot service shows it.</summary>
+    public ICaptureFlash Flash { get; }
+
     /// <summary>
     /// The real machine. Cheap: it starts no thread and touches no COM, UIA, desktop or Windows App SDK (the UIA worker
     /// starts its thread on the first job).
     /// </summary>
-    public static DesktopMachine CreateDefault() => new(
+    public static DesktopMachine CreateDefault() => CreateDefault(CaptureFlash.CreateDefault());
+
+    /// <summary>The real machine with <paramref name="flash"/> in place of the real capture flash (tests).</summary>
+    internal static DesktopMachine CreateDefault(ICaptureFlash flash) => new(
         new UiaWorker<UiaSession>(UiaSession.Create),
         new HangBlockList(TimeProvider.System, HangBlockList.DefaultDuration),
         new Win32WindowSystem(),
         new VirtualDesktopService(),
-        new Win32Displays());
+        new Win32Displays(),
+        flash ?? throw new ArgumentNullException(nameof(flash)));
 }

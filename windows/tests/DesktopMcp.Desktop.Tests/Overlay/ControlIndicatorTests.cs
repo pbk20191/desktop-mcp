@@ -383,6 +383,9 @@ internal sealed class FakeLayerFactory : IOverlayLayerFactory
 
     public bool FailShow { get; set; }
 
+    /// <summary>Once this many layers exist, <see cref="Create"/> throws (as a failed CreateWindowEx).</summary>
+    public int? FailCreateAfter { get; set; }
+
     public IReadOnlyList<FakeLayer> Created
     {
         get { lock (_created) return _created.ToArray(); }
@@ -390,9 +393,13 @@ internal sealed class FakeLayerFactory : IOverlayLayerFactory
 
     public IOverlayLayer Create(ScreenRect bounds, string name)
     {
-        var layer = new FakeLayer(this, bounds, name);
-        lock (_created) _created.Add(layer);
-        return layer;
+        lock (_created)
+        {
+            if (_created.Count >= FailCreateAfter) throw new InvalidOperationException("overlay window could not be created");
+            var layer = new FakeLayer(this, bounds, name);
+            _created.Add(layer);
+            return layer;
+        }
     }
 }
 
