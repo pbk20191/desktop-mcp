@@ -83,6 +83,7 @@ internal sealed class InputMonitor : IInputMonitor
     // Thread-pool side, under _gate: the dispatcher of the current run and its teardown.
     private IDesktopDispatcher? _dispatcher;
     private Task? _stopping;
+    private long _generation; // every start and stop moves it on; a start proceeds only while its own is current
     private Task<IDisposable>? _rehookTimer;
     private Task<IDisposable>? _tickTimer;
 
@@ -129,8 +130,9 @@ internal sealed class InputMonitor : IInputMonitor
     /// <summary>
     /// Starts the sink window, the hooks and the timers on the shared dispatcher, bounded by 3 s (a slower start throws
     /// <see cref="TimeoutException"/>). One monitor per process: another running monitor makes this throw
-    /// <see cref="InvalidOperationException"/>. A failed start leaves nothing installed (work that runs after the bound is
-    /// undone right after it), so the same instance may be started again.
+    /// <see cref="InvalidOperationException"/>. A failed start leaves nothing installed (a set-up still queued on a stalled
+    /// dispatcher finds its start stale and installs nothing; one already done is undone by the teardown queued behind it),
+    /// so the same instance may be started again once that teardown has run.
     /// </summary>
     public async Task StartAsync(CancellationToken ct)
     {
@@ -141,11 +143,13 @@ internal sealed class InputMonitor : IInputMonitor
             {
                 throw new InvalidOperationException(_stopping is null
                     ? "This input monitor is already running."
-                    : "This input monitor's previous start is still being undone on the dispatcher; try again later.");
+                    : "The previous run of this input monitor is still being torn down on the dispatcher; try again later.");
             }
         }
+        long run;
         lock (_gate)
         {
+            run = ++_generation;
             _stopping = null;
             _dispatcher = null;
             _rehookTimer = _tickTimer = null;
@@ -157,16 +161,17 @@ internal sealed class InputMonitor : IInputMonitor
             var dispatcher = await _host.GetAsync(bound.Token).ConfigureAwait(false);
             lock (_gate)
             {
-                // A StopAsync while the dispatcher was starting has already freed the slot: install nothing.
-                if (_stopping is not null) throw new OperationCanceledException("The input monitor was stopped while starting.");
+                // A StopAsync while the dispatcher was starting has already freed the slot (and a newer start of this instance
+                // may own it now): install nothing.
+                ThrowIfStale(run);
                 _dispatcher = dispatcher;
             }
-            await dispatcher.InvokeAsync(SetUp).WaitAsync(bound.Token).ConfigureAwait(false);
+            await dispatcher.InvokeAsync(() => SetUp(run)).WaitAsync(bound.Token).ConfigureAwait(false);
             Task<IDisposable> rehook, tick;
             lock (_gate)
             {
                 // A StopAsync during the start has already queued the teardown; timers started now would outlive it.
-                if (_stopping is not null) throw new OperationCanceledException("The input monitor was stopped while starting.");
+                ThrowIfStale(run);
                 rehook = _rehookTimer = dispatcher.StartTimerAsync(RehookInterval, RehookTick);
                 tick = _tickTimer = dispatcher.StartTimerAsync(TickInterval, Tick);
             }
@@ -176,7 +181,10 @@ internal sealed class InputMonitor : IInputMonitor
         {
             // Queued behind the start on the dispatcher, so it undoes whatever the start did; nobody awaits it, so a failure is
             // reported to the host's sink.
-            ReportFailure(StopCoreAsync());
+            // A stale start (stopped, or superseded by a newer start of this instance) installed nothing and owns nothing.
+            bool stale;
+            lock (_gate) stale = run != _generation;
+            if (!stale) ReportFailure(StopCoreAsync());
             if (e is OperationCanceledException && bound.IsCancellationRequested && !ct.IsCancellationRequested)
                 throw new TimeoutException($"The input monitor did not start within {_startLimit.TotalSeconds:0.#} s.", e);
             throw;
@@ -185,7 +193,10 @@ internal sealed class InputMonitor : IInputMonitor
 
     /// <summary>
     /// Turns suppression off at once (a fail-safe), then on the dispatcher stops the timers, removes the hooks and the sink
-    /// window and frees the process's monitor slot. Idempotent; a monitor that never started does nothing.
+    /// window and frees the process's monitor slot. Idempotent; a monitor that never started does nothing. The wait is bounded
+    /// at 2 s: on a stalled dispatcher it gives up, reports a <see cref="TimeoutException"/> to the host's
+    /// <see cref="DispatcherHost.Report"/> sink and returns; the teardown still runs (and frees the slot) when the dispatcher
+    /// wakes, and a failure of it is reported then.
     /// </summary>
     public async Task StopAsync()
     {
@@ -219,6 +230,7 @@ internal sealed class InputMonitor : IInputMonitor
     {
         lock (_gate)
         {
+            _generation++; // any start still in progress is stale from now on
             if (_stopping is not null) return _stopping;
             if (_dispatcher is not { } dispatcher)
             {
@@ -245,8 +257,16 @@ internal sealed class InputMonitor : IInputMonitor
         }
     }
 
-    private void SetUp()
+    // Under _gate.
+    private void ThrowIfStale(long run)
     {
+        if (_stopping is not null || run != _generation)
+            throw new OperationCanceledException("The input monitor was stopped while starting.");
+    }
+
+    private void SetUp(long run)
+    {
+        lock (_gate) ThrowIfStale(run); // checked on the dispatcher too: a stop may have come while this was queued
         _native.CreateSink();
         _sinkCreated = true;
         (_keyboardHook, _mouseHook) = _native.InstallHooks(); // a failure is undone by the teardown queued behind this

@@ -108,16 +108,17 @@ public class InputMonitorTests
     }
 
     [Fact]
-    public async Task AStartThatDoesNotFinishInTimeThrowsAndIsUndoneWhenItRuns()
+    public async Task AStartThatDoesNotFinishInTimeThrowsAndInstallsNothingLater()
     {
         var stalled = new StalledDispatcher();
         var monitor = NewMonitor(dispatcher: stalled, startLimit: TimeSpan.FromMilliseconds(100));
         await Assert.ThrowsAsync<TimeoutException>(() => monitor.StartAsync(default));
         Assert.Empty(_native.Calls);
 
-        // The dispatcher wakes up: the start runs, then the queued undo removes what it installed.
+        // The dispatcher wakes up: the queued start is stale (the failed start's undo moved the generation on), so it
+        // installs nothing, and the queued undo frees the slot.
         stalled.RunAll();
-        Assert.Equal(["sink", "install k1 m2", "unhook k1", "unhook m2", "destroy sink"], _native.Calls);
+        Assert.Empty(_native.Calls);
         Assert.Empty(_native.Installed);
         await using var next = NewMonitor();
         await next.StartAsync(default);
@@ -366,6 +367,26 @@ public class InputMonitorTests
     }
 
     [Fact]
+    public async Task AStaleStartOfTheSameInstanceInstallsNothing()
+    {
+        using var release = new ManualResetEventSlim();
+        var host = new DispatcherHost(() => { release.Wait(); return _dispatcher; });
+        var monitor = NewMonitor(host: host);
+
+        var first = monitor.StartAsync(default);   // waiting for the dispatcher
+        await monitor.StopAsync();                 // frees the slot
+        var second = monitor.StartAsync(default);  // the same instance wins the slot again
+        release.Set();
+
+        await second;
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
+        Assert.Equal(["sink", "install k1 m2"], _native.Calls);
+        Assert.Equal(2, _dispatcher.Timers.Count);
+        await monitor.StopAsync();
+        Assert.Empty(_native.Installed);
+    }
+
+    [Fact]
     public async Task StopGivesUpOnAStalledDispatcherAfterItsBound()
     {
         var filter = NewFilter();
@@ -386,13 +407,14 @@ public class InputMonitorTests
     [Fact]
     public async Task AFailedUndoOfATimedOutStartIsReported()
     {
-        var stalled = new StalledDispatcher();
+        // The hooks and the sink are in; the timers never start, so the start times out and its undo (unawaited) fails.
+        var stalled = new StalledDispatcher { Stalled = false, StallTimers = true };
         var monitor = NewMonitor(dispatcher: stalled, startLimit: TimeSpan.FromMilliseconds(100));
-        await Assert.ThrowsAsync<TimeoutException>(() => monitor.StartAsync(default));
         _native.DestroySinkThrows = true;
 
-        stalled.RunAll();
+        await Assert.ThrowsAsync<TimeoutException>(() => monitor.StartAsync(default));
 
+        Assert.Empty(_native.Installed);
         Assert.Equal("destroy sink", Assert.IsType<InvalidOperationException>(await ReportedAsync()).Message);
     }
 
@@ -404,7 +426,7 @@ public class InputMonitorTests
         await Assert.ThrowsAsync<TimeoutException>(() => monitor.StartAsync(default));
 
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => monitor.StartAsync(default));
-        Assert.Equal("This input monitor's previous start is still being undone on the dispatcher; try again later.", error.Message);
+        Assert.Equal("The previous run of this input monitor is still being torn down on the dispatcher; try again later.", error.Message);
 
         stalled.RunAll();
         stalled.Stalled = false;
@@ -457,6 +479,9 @@ public class InputMonitorTests
         /// <summary>While false, work runs inline as it is queued.</summary>
         public bool Stalled { get; set; } = true;
 
+        /// <summary>Timers never finish starting.</summary>
+        public bool StallTimers { get; set; }
+
         public bool HasThreadAccess => false;
         public int ManagedThreadId => -1;
         public event Action<Exception>? UnhandledException { add { } remove { } }
@@ -478,8 +503,9 @@ public class InputMonitorTests
 
         public Task InvokeAsync(Func<Task> func) => InvokeAsync<Task>(func).Unwrap();
 
-        public Task<IDisposable> StartTimerAsync(TimeSpan interval, Action tick) =>
-            InvokeAsync<IDisposable>(() => new FakeDispatcher.FakeTimer(interval, tick));
+        public Task<IDisposable> StartTimerAsync(TimeSpan interval, Action tick) => StallTimers
+            ? new TaskCompletionSource<IDisposable>().Task
+            : InvokeAsync<IDisposable>(() => new FakeDispatcher.FakeTimer(interval, tick));
 
         public void RunAll()
         {
