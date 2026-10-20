@@ -126,7 +126,7 @@ public sealed class SnapshotService : IDesktopSnapshots
     public const string Backend = "wgc";
 
     /// <summary>use_dom=True before the browser DOM exists (P6; Decisions 4).</summary>
-    public const string UseDomUnavailable = "use_dom=True is not supported yet: browser DOM extraction arrives in a later release";
+    public const string UseDomUnavailable = "use_dom=True is not supported: this server reads browsers through UI Automation only. For web page content, use a browser automation MCP server such as Playwright MCP or Chrome DevTools MCP";
 
     private readonly SnapshotDependencies _machine;
 

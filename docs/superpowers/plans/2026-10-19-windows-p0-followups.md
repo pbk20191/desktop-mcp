@@ -125,7 +125,6 @@ Ideas from the desk-mcp analysis (`DigitalDog1/desk-mcp` at e6d42fc, Apache-2.0)
 - NOTICE line 3 is about 110 characters.
 - Registry list wraps nothing: if a client depends on PowerShell's Format-List line wrapping, reproduce it; P1 prints each value on one line (P1 plan, Decisions 13).
 - Spec polish: re-flow the long line in §4 and the ragged line in §5.
-- Scrape use_dom: read DOM text nodes from the last snapshot once Snapshot exists (spec §8); P1 always returns "No DOM information found" (deferred from P2: P2 plan, Decisions 4 and 20).
 - OCR fallback in Snapshot: when UIA yields nothing for a window, run WinRT `Windows.Media.Ocr` on the captured frame in memory (tiled, with de-duplication) and report the text lines. This changes the Snapshot text, not the tool schema (deferred from P2: P2 plan, Decisions 4 and 20).
-- Browser DOM mode: enter it below RootWebArea, build the browser window's semantic tree from the DOM lists, accept use_dom=True in Snapshot and Scrape, and add the IA2 path for Firefox (P2 plan, Decisions 4).
+- Browser DOM mode and Scrape `use_dom`: dropped (user decision, 2026-10-20; P2 plan, Decisions 39). The Windows README should tell users to pair desktop-mcp with a browser automation MCP server (Playwright MCP, Chrome DevTools MCP) for web pages.
 - DESKTOP_MCP_WATCHDOG: a UIA focus-changed handler that logs at debug level (P2 plan, Decisions 22).

@@ -248,12 +248,11 @@ exposes immutable `UiNode` records.
 - **Virtual desktop names** use the undocumented `IVirtualDesktopManagerInternal`, with interface
   IDs keyed by build (22621 and 26100; Windows 10's 19041 is no longer supported) declared by hand, then the registry name, then
   `Desktop N`. Failure only affects the report.
-- **Browser DOM**: Chrome and Edge enter DOM mode below the UIA element with
-  `AutomationId == "RootWebArea"`, including upstream's DOM corrections. Firefox falls back to MSAA
-  `IAccessible` from `AccessibleObjectFromWindow(OBJID_CLIENT)`; the few IAccessible2 interfaces we
-  need are declared by hand with `[GeneratedComInterface]` because they are not in the Windows SDK
-  metadata. P2 walks `RootWebArea` like any element and answers `use_dom=True` with an error text
-  until P6 (P2 plan, Decisions 4).
+- **Browser DOM**: not ported (user decision; P2 plan, Decisions 39). Upstream's DOM mode below
+  `AutomationId == "RootWebArea"` and a Firefox IAccessible2 path are not planned: web page content
+  is left to a browser automation MCP server (Playwright MCP, Chrome DevTools MCP). The UIA walk
+  treats `RootWebArea` like any element (Decisions 4 and 36-38), and `use_dom=True` returns an error
+  that points to a browser MCP server.
 - **Region and display selection**, validation and error strings follow upstream.
 
 ### Snapshot text
@@ -460,7 +459,7 @@ uses System.Text.Json source generation.
   for 198.18.0.0/15 and 2001:2::/48); `100.64.0.0/10` (CGNAT) and `fec0::/10` are also blocked,
   stricter than upstream (P1 plan, Decisions 16); at most 5 requests (4 redirects), as upstream, with
   redirects followed manually and re-validated; 10 s timeout. HTML is converted by a C# port of the
-  macOS port's `HTMLToMarkdown.swift`. `use_dom` reads DOM text nodes from the last snapshot.
+  macOS port's `HTMLToMarkdown.swift`. `use_dom` would read DOM text nodes from the last snapshot; with no DOM mode (P2 plan, Decisions 39) it always returns upstream's "No DOM information found" text.
   `use_sampling` calls the SDK's `SampleAsync` with upstream's system prompt and `max_tokens` 2048,
   returning the raw content when the client cannot sample or sampling fails. P1 ships without
   sampling and without DOM: use_dom returns upstream's "No DOM information found" text, and
@@ -596,7 +595,7 @@ and restore the clipboard text, and the toast test leaves a notification.
   listed in the P2 plan's "Decisions on upstream ambiguities"
   (`docs/superpowers/plans/2026-10-19-windows-p2-desktop-read.md`): the text layout and labels,
   `Screenshot Backend: wgc`, regions clipped to the screen, window order, the UIA hang breaker,
-  `use_dom` before P6, no word elements for Chromium content, and at most 300 children per parent.
+  `use_dom` (no DOM mode, Decisions 39), no word elements for Chromium content, and at most 300 children per parent.
 
 ## 11. Phases
 
@@ -608,11 +607,11 @@ work first.
 | P0 Foundations and probes | Move `spec/tools.json` to `spec/macos/` and fix the macOS test path; write `spec/windows/tools.json`; solution skeleton and build settings; AOT probes for `DispatcherQueue` + LL hooks, Windows.Graphics.Capture, Win2D imaging; spec-driven `McpServerTool` base class and ContractTests | An empty server answers `tools/list` |
 | P0b Single exe | Windows 11 22H2 minimum; self-bootstrap of the system Windows App SDK 2.5 through the Dynamic Dependencies API; dispatcher and display ids on the Windows App SDK; Win2D linked statically from the pinned fork release; publish output trimmed to one exe | `dist/<rid>/desktop-mcp.exe` runs alone in an empty folder |
 | P1 Server core and headless tools | CLI, config, ServePlan, stdio; Wait, PowerShell, FileSystem, Clipboard, Process, Registry, Notification, Scrape without sampling | A useful server without desktop access (done; results in §9) |
-| P2 Desktop read | Dispatcher (fixed in P2, first started in P4: P2 plan, Decisions 21), UIA wrapper, Tree, Snapshot without DOM, capture, imaging, Screenshot, DisplayInventory, virtual desktops | The agent can see the screen (done except Tasks 20 and 21, a rerun of the WinRT clipboard test and the three Desktop tests left out of the final run; results in §9) |
+| P2 Desktop read | Dispatcher (fixed in P2, first started in P4: P2 plan, Decisions 21), UIA wrapper, Tree, Snapshot without DOM, capture, imaging, Screenshot, DisplayInventory, virtual desktops | The agent can see the screen (done except a rerun of the WinRT clipboard test and the three Desktop tests left out of the final run; results in §9) |
 | P3 Desktop act | Input, InputLedger, Click, Type, Scroll, Move, Shortcut, MultiSelect, MultiEdit, App, WaitFor | Upstream's core workflows |
 | P4 Desktop control | InputMonitor, state machine, overlay, capture flash, gate, notifier, ControlStatus | Protection against fighting the user |
 | P5 HTTP | Kestrel, Streamable HTTP and SSE, middleware, TLS, OAuth, `/health`, Scrape sampling, telemetry | Remote use |
-| P6 Finish | Browser DOM (Chrome, Edge, Firefox), install, uninstall, auth, release script for x64 and arm64 (started in P0b, which already trims the output to one exe), Windows README, root README update | `windows-v0.1.0` |
+| P6 Finish | Install, uninstall, auth, release script for x64 and arm64 (started in P0b, which already trims the output to one exe), Windows README, root README update | `windows-v0.1.0` |
 
 ## 12. Risks
 
