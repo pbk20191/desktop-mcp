@@ -6,13 +6,20 @@ public class SnapshotTextTests
 {
     private static readonly DisplayInfo Primary = new(0, @"\\.\DISPLAY1", new ScreenRect(0, 0, 2560, 1600), true, null, 144, 1.5, "landscape");
 
-    private static TreeSnapshot SampleTree(bool truncated = false)
+    private static TreeSnapshot SampleTree(bool truncated = false, bool decorated = false)
     {
         var close = new UiElement(3, "Close", "button", "Notepad", new ScreenRect(0, 10, 20, 30), new ScreenPoint(10, 20), UiMetadata.Empty);
         var editor = new UiElement(5, "Text editor", "edit", "Notepad", new ScreenRect(0, 0, 100, 120), new ScreenPoint(50, 60),
             new UiMetadata { HasFocus = true, Value = "hello" });
         var body = new UiElement(9, "Body", "pane", "Notepad", new ScreenRect(0, 0, 200, 400), new ScreenPoint(100, 200),
             new UiMetadata { VerticallyScrollable = true, VerticalScrollPercent = 33.33 });
+
+        if (decorated)
+        {
+            var identity = new ElementIdentity(99, "1.2.3", 50000, "auto", "name", new ScreenPoint(1, 2));
+            UiElement Decorate(UiElement e) => e with { Metadata = e.Metadata with { IsSelected = true, IsEnabled = false }, Identity = identity };
+            (close, editor, body) = (Decorate(close), Decorate(editor), Decorate(body));
+        }
 
         var root = new SemanticNode(SemanticKind.Desktop, "Desktop", "Desktop");
         var window = new SemanticNode(SemanticKind.Window, "Window", "Notepad");
@@ -22,6 +29,10 @@ public class SnapshotTextTests
         root.Children.Add(window);
         return new TreeSnapshot([close, editor], [body], root, truncated, 500);
     }
+
+    [Fact]
+    public void IdentityAndNewMetadataDoNotChangeTheText() =>
+        Assert.Equal(TreeText.Render(SampleTree()), TreeText.Render(SampleTree(decorated: true)));
 
     private static SemanticNode Semantic(SemanticKind kind, UiElement element) =>
         new(kind, element.ControlType, element.Name) { Box = element.Box, Center = element.Center, ElementId = element.Id, Metadata = element.Metadata };

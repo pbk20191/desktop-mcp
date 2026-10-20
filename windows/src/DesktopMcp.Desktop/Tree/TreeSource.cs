@@ -28,6 +28,12 @@ internal sealed record UiaElementData
     public bool IsKeyboardFocusable { get; init; }
     public bool IsPassword { get; init; }
     public ScreenRect Bounds { get; init; }
+
+    /// <summary>UIA's clickable point (physical pixels), or null when the element has none.</summary>
+    public ScreenPoint? ClickablePoint { get; init; }
+
+    /// <summary>SelectionItem.IsSelected, or null without the pattern.</summary>
+    public bool? IsSelected { get; init; }
     public int? LegacyRole { get; init; }
     public string? LegacyValue { get; init; }
     public string? LegacyDefaultAction { get; init; }

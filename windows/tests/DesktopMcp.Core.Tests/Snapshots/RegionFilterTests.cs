@@ -25,12 +25,16 @@ public class RegionFilterTests
     [Fact]
     public void ElementsAreClippedAndRecentred()
     {
-        var element = new UiElement(7, "OK", "button", "App", new ScreenRect(80, 80, 120, 120), new ScreenPoint(100, 100), UiMetadata.Empty);
+        var element = new UiElement(7, "OK", "button", "App", new ScreenRect(80, 80, 120, 120), new ScreenPoint(100, 100), UiMetadata.Empty)
+        {
+            Identity = new ElementIdentity(5, "1.2", 50000, "", "OK", null),
+        };
         var gone = element with { Id = 8, Box = new ScreenRect(150, 150, 160, 160) };
         var tree = new TreeSnapshot([element, gone], [], null, false, 500);
         var filtered = RegionFilter.Tree(tree, Region);
         var kept = Assert.Single(filtered.Interactive);
         Assert.Equal((new ScreenRect(80, 80, 100, 100), new ScreenPoint(90, 90)), (kept.Box, kept.Center));
+        Assert.Equal(element.Identity, kept.Identity);
     }
 
     [Fact]

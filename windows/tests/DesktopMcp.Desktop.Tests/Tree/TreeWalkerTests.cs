@@ -82,7 +82,46 @@ public class TreeWalkerTests
 
     private static int _ids;
 
-    private static UiaElementData Window(string name = "App") => new() { Name = name, ControlType = TreeConfig.Window, LocalizedControlType = "window", Bounds = new ScreenRect(0, 0, 800, 600), RuntimeId = $"w{++_ids}" };
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<UiaElementData, UiaElementData[]> Declared = new();
+
+    private static UiaElementData Window(string name = "App", UiaElementData[]? children = null)
+    {
+        var window = new UiaElementData { Name = name, ControlType = TreeConfig.Window, LocalizedControlType = "window", Bounds = new ScreenRect(0, 0, 800, 600), RuntimeId = $"w{++_ids}" };
+        if (children is not null) Declared.Add(window, children);
+        return window;
+    }
+
+    private static UiaElementData Element(
+        string localizedType, int controlType, string? runtimeId, string automationId = "", string name = "", ScreenPoint? clickable = null,
+        bool verticallyScrollable = false, bool enabled = true, bool? selected = null, bool focusable = false, WordBox[]? words = null)
+    {
+        var data = new UiaElementData
+        {
+            Name = name, AutomationId = automationId, LocalizedControlType = localizedType, ControlType = controlType, RuntimeId = runtimeId,
+            ClickablePoint = clickable, VerticallyScrollable = verticallyScrollable, IsEnabled = enabled, IsSelected = selected,
+            IsKeyboardFocusable = focusable, LegacyRole = controlType == TreeConfig.Edit ? 0x2A : controlType == TreeConfig.ListItem ? 0x22 : 0x2B,
+            Bounds = new ScreenRect(10, 10, 60, 30),
+        };
+        if (words is not null) Pending.Add(data, words);
+        return data;
+    }
+
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<UiaElementData, WordBox[]> Pending = new();
+
+    /// <summary>Walks a tree declared with <see cref="Window"/> children, as window <paramref name="handle"/>.</summary>
+    private static WindowWalk Walk(UiaElementData root, long handle)
+    {
+        var source = new FakeSource();
+        void Fill(UiaElementData node)
+        {
+            if (Pending.TryGetValue(node, out var words)) source.Words[node] = words;
+            if (!Declared.TryGetValue(node, out var children)) return;
+            source.Children[node] = children;
+            foreach (var child in children) Fill(child);
+        }
+        Fill(root);
+        return new TreeWalker(source, new ElementBudget(500), Counter()).Walk(root, App with { Handle = handle });
+    }
 
     private static UiaElementData Button(string name, int x = 10) => new()
     {
@@ -111,6 +150,35 @@ public class TreeWalkerTests
     {
         var budget = new ElementBudget(limit);
         return (new TreeWalker(source, budget, Counter(), maxDepth).Walk(root, context ?? App), budget);
+    }
+
+    [Fact]
+    public void InteractiveAndScrollableElementsCarryTheirIdentity()
+    {
+        var button = Element("button", TreeConfig.Button, runtimeId: "42.1.2", automationId: "ok", name: " OK ", clickable: new ScreenPoint(15, 15));
+        var list = Element("list", 50008, runtimeId: "42.1.3", verticallyScrollable: true, enabled: false);
+        var walk = Walk(Window(children: [button, list]), handle: 4242);
+        var element = Assert.Single(walk.Interactive);
+        Assert.Equal(new ElementIdentity(4242, "42.1.2", TreeConfig.Button, "ok", "OK", new ScreenPoint(15, 15)), element.Identity);
+        var scrollable = Assert.Single(walk.Scrollable);
+        Assert.Equal("42.1.3", scrollable.Identity!.RuntimeId);
+        Assert.False(scrollable.Metadata.IsEnabled);
+    }
+
+    [Fact]
+    public void WordsAndElementsWithoutARuntimeIdHaveNoIdentity()
+    {
+        var edit = Element("edit", TreeConfig.Edit, runtimeId: null, name: "doc", words: [new WordBox("hello", new ScreenRect(1, 1, 20, 10))]);
+        var walk = Walk(Window(children: [edit]), handle: 1);
+        Assert.Equal(2, walk.Interactive.Count);
+        Assert.All(walk.Interactive, element => Assert.Null(element.Identity));
+    }
+
+    [Fact]
+    public void SelectionStateIsInTheMetadata()
+    {
+        var item = Element("list item", TreeConfig.ListItem, runtimeId: "7", name: "a", selected: true, focusable: true);
+        Assert.True(Assert.Single(Walk(Window(children: [item]), handle: 1).Interactive).Metadata.IsSelected);
     }
 
     [Fact]

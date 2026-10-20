@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using DesktopMcp.Core.Snapshots;
 using Windows.Win32;
 using Windows.Win32.Foundation;
 using Windows.Win32.System.Com;
@@ -62,6 +63,25 @@ internal static unsafe class UiaValues
         if (value.VarType != (VarEnum.VT_ARRAY | VarEnum.VT_I4)) return null;
         var parts = ReadInts((SAFEARRAY*)value.GetRawDataRef<nint>());
         return parts.Length == 0 ? null : string.Join('.', parts);
+    }
+
+    /// <summary>
+    /// A cached point property (ClickablePoint): a two-element VT_ARRAY | VT_R8 of x and y, rounded half-even, else null
+    /// (the "not supported" sentinel, an empty array, or any other shape).
+    /// </summary>
+    public static ScreenPoint? CachedPoint(IUIAutomationElement element, UIA_PROPERTY_ID id)
+    {
+        using var value = element.GetCachedPropertyValue(id);
+        if (value.VarType != (VarEnum.VT_ARRAY | VarEnum.VT_R8)) return null;
+        return ToPoint(ReadDoubles((SAFEARRAY*)value.GetRawDataRef<nint>()));
+    }
+
+    /// <summary>x and y rounded half-even from exactly two doubles; null for any other count or a non-finite value.</summary>
+    internal static ScreenPoint? ToPoint(double[] values)
+    {
+        if (values.Length != 2 || !double.IsFinite(values[0]) || !double.IsFinite(values[1])) return null;
+        if (Math.Abs(values[0]) > int.MaxValue || Math.Abs(values[1]) > int.MaxValue) return null;
+        return new ScreenPoint((int)Math.Round(values[0], MidpointRounding.ToEven), (int)Math.Round(values[1], MidpointRounding.ToEven));
     }
 
     /// <summary>Reads a one-dimensional SAFEARRAY of VT_I4 without taking ownership; any other array reads as empty.</summary>

@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using DesktopMcp.Core.Snapshots;
 using DesktopMcp.Desktop.Uia;
 using Windows.Win32.System.Com;
 
@@ -40,6 +41,31 @@ public unsafe partial class UiaValuesTests
         {
             SafeArrayDestroy(ints);
             SafeArrayDestroy(doubles);
+        }
+    }
+
+    [Fact]
+    public void ClickablePointReadsTwoDoubles()
+    {
+        var array = Create(VtR8, [10.5, 21.5]);
+        try { Assert.Equal(new ScreenPoint(10, 22), UiaValues.ToPoint(UiaValues.ReadDoubles(array))); }
+        finally { SafeArrayDestroy(array); }
+    }
+
+    [Fact]
+    public void ClickablePointIsNullForAnEmptyArray()
+    {
+        var empty = Create(VtR8, Array.Empty<double>());
+        var three = Create(VtR8, [1.0, 2.0, 3.0]);
+        try
+        {
+            Assert.Null(UiaValues.ToPoint(UiaValues.ReadDoubles(empty)));
+            Assert.Null(UiaValues.ToPoint(UiaValues.ReadDoubles(three)));
+        }
+        finally
+        {
+            SafeArrayDestroy(empty);
+            SafeArrayDestroy(three);
         }
     }
 

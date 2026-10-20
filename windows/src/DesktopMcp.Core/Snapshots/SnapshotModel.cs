@@ -55,13 +55,29 @@ public sealed record UiMetadata
     public double HorizontalScrollPercent { get; init; }
     public bool VerticallyScrollable { get; init; }
     public double VerticalScrollPercent { get; init; }
+
+    /// <summary>UIA IsEnabled. Port-only (WaitFor's element_enabled); the tree text does not render it.</summary>
+    public bool IsEnabled { get; init; } = true;
+
+    /// <summary>SelectionItem.IsSelected, null when the element has no SelectionItem pattern. Port-only; not rendered.</summary>
+    public bool? IsSelected { get; init; }
 }
+
+/// <summary>
+/// What re-finds an element after the snapshot (Decisions 40): the window it was walked in, its UIA RuntimeId ("a.b.c"),
+/// control type, AutomationId, trimmed name and UIA's clickable point when it had one.
+/// </summary>
+public sealed record ElementIdentity(long Window, string RuntimeId, int ControlTypeId, string AutomationId, string Name, ScreenPoint? ClickablePoint);
 
 /// <summary>
 /// An interactive or scrollable element (upstream TreeElementNode / ScrollElementNode, tree/views.py:257-282). Id is
 /// unique within one capture and links the element to its node in the semantic tree.
 /// </summary>
-public sealed record UiElement(int Id, string Name, string ControlType, string WindowName, ScreenRect Box, ScreenPoint Center, UiMetadata Metadata);
+public sealed record UiElement(int Id, string Name, string ControlType, string WindowName, ScreenRect Box, ScreenPoint Center, UiMetadata Metadata)
+{
+    /// <summary>Port-only: how the element is found again. Null for word elements and elements without a RuntimeId.</summary>
+    public ElementIdentity? Identity { get; init; }
+}
 
 /// <summary>upstream tree/views.py:104-112 element_type.</summary>
 public enum SemanticKind

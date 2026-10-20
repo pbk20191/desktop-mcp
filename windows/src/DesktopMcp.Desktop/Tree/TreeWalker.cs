@@ -6,7 +6,11 @@ using DesktopMcp.Desktop.Errors;
 namespace DesktopMcp.Desktop.Tree;
 
 /// <summary>The window being walked (upstream tree/service.py:922-952).</summary>
-internal sealed record WindowContext(string WindowName, bool IsBrowser, ScreenRect WindowBox, ScreenRect ScreenBox);
+internal sealed record WindowContext(string WindowName, bool IsBrowser, ScreenRect WindowBox, ScreenRect ScreenBox)
+{
+    /// <summary>The walked top-level window (HWND as long); recorded in each element's identity.</summary>
+    public long Handle { get; init; }
+}
 
 /// <summary>One window's elements in visit order and its semantic node with children in document order.</summary>
 internal sealed class WindowWalk(SemanticNode window)
@@ -138,6 +142,10 @@ internal sealed class TreeWalker(ITreeSource source, ElementBudget budget, Func<
         }
     }
 
+    private static ElementIdentity? Identity(UiaElementData node, WindowContext context) => node.RuntimeId is { } runtimeId
+        ? new ElementIdentity(context.Handle, runtimeId, node.ControlType, node.AutomationId, node.Name.Trim(), node.ClickablePoint)
+        : null;
+
     // upstream tree/service.py:483-534. The centre is the box centre, not upstream's random point (spec §10).
     private bool AddScrollable(UiaElementData node, string typeName, SemanticNode? parent, WindowWalk walk, WindowContext context)
     {
@@ -157,9 +165,14 @@ internal sealed class TreeWalker(ITreeSource source, ElementBudget budget, Func<
             HorizontalScrollPercent = node.HorizontallyScrollable ? PyText.Round(node.HorizontalScrollPercent ?? 0, 2) : 0,
             VerticallyScrollable = true,
             VerticalScrollPercent = PyText.Round(node.VerticalScrollPercent ?? 0, 2),
+            IsEnabled = node.IsEnabled,
+            IsSelected = node.IsSelected,
         };
         budget.TryConsume();
-        var element = new UiElement(nextId(), name, node.LocalizedControlType, context.WindowName, node.Bounds, node.Bounds.Center, metadata);
+        var element = new UiElement(nextId(), name, node.LocalizedControlType, context.WindowName, node.Bounds, node.Bounds.Center, metadata)
+        {
+            Identity = Identity(node, context),
+        };
         walk.Scrollable.Add(element);
         if (parent is null) return false;
         parent.Children.Add(Semantic(SemanticKind.Scrollable, element));
@@ -185,7 +198,10 @@ internal sealed class TreeWalker(ITreeSource source, ElementBudget budget, Func<
         if (name.Length > 0)
         {
             budget.TryConsume();
-            var element = new UiElement(nextId(), name, node.LocalizedControlType, context.WindowName, box, box.Center, metadata);
+            var element = new UiElement(nextId(), name, node.LocalizedControlType, context.WindowName, box, box.Center, metadata)
+            {
+                Identity = Identity(node, context),
+            };
             walk.Interactive.Add(element);
             if (parent is not null)
             {
@@ -240,6 +256,8 @@ internal sealed class TreeWalker(ITreeSource source, ElementBudget budget, Func<
         var metadata = new UiMetadata
         {
             HasFocus = node.HasKeyboardFocus,
+            IsEnabled = node.IsEnabled,
+            IsSelected = node.IsSelected,
             Shortcut = node.AcceleratorKey.Length > 0 ? node.AcceleratorKey : null,
         };
         IReadOnlyList<WordBox> words = [];

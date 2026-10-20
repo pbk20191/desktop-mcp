@@ -28,7 +28,7 @@ internal sealed class UiaWindowWalker(UiaWorker<UiaSession> worker) : IWindowWal
         worker.RunAsync((session, token) => UiaJob.Run("UI Automation window walk", () =>
         {
             var source = new UiaTreeSource(session, window);
-            return Walk(source, () => source.ReadWindow(window), isBrowser, screen, budget, nextId, token);
+            return Walk(source, () => source.ReadWindow(window), isBrowser, screen, budget, nextId, token, window);
         }), Deadline, cancellationToken);
 
     /// <summary>
@@ -37,13 +37,13 @@ internal sealed class UiaWindowWalker(UiaWorker<UiaSession> worker) : IWindowWal
     /// </summary>
     internal static WindowWalk Walk(
         ITreeSource source, Func<UiaElementData> readWindow, bool isBrowser, ScreenRect screen, ElementBudget budget, Func<int> nextId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, long handle = 0)
     {
         TreeWalker.ThrowIfNotResponding(source);
         var root = readWindow();
         // upstream tree/service.py:939-941 strips the title before app_name_correction.
         var name = TreeConfig.WindowName(root.Name.Trim(), root.ClassName);
-        return new TreeWalker(source, budget, nextId).Walk(root, new WindowContext(name, isBrowser, root.Bounds, screen), cancellationToken);
+        return new TreeWalker(source, budget, nextId).Walk(root, new WindowContext(name, isBrowser, root.Bounds, screen) { Handle = handle }, cancellationToken);
     }
 }
 
