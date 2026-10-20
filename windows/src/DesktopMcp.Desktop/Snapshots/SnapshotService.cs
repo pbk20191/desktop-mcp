@@ -27,11 +27,28 @@ public sealed record SnapshotRequest
 /// <summary>The latest snapshot; labels resolve against it (spec §5 "Shared state").</summary>
 public sealed class DesktopStateStore
 {
-    private DesktopSnapshot? _latest;
+    private sealed record Entry(long Sequence, DesktopSnapshot Snapshot);
 
-    public DesktopSnapshot? Latest => Volatile.Read(ref _latest);
+    private Entry? _latest;
 
-    internal void Replace(DesktopSnapshot snapshot) => Volatile.Write(ref _latest, snapshot);
+    public DesktopSnapshot? Latest => Volatile.Read(ref _latest)?.Snapshot;
+
+    /// <summary>
+    /// Stores <paramref name="snapshot"/> unless a snapshot that started later is already stored: snapshots run
+    /// concurrently (spec §5), and a slow earlier one must not overwrite a newer one. <paramref name="sequence"/> is the
+    /// snapshot's start order.
+    /// </summary>
+    internal void Replace(DesktopSnapshot snapshot, long sequence)
+    {
+        var entry = new Entry(sequence, snapshot);
+        var current = Volatile.Read(ref _latest);
+        while (current is null || current.Sequence < sequence)
+        {
+            var seen = Interlocked.CompareExchange(ref _latest, entry, current);
+            if (ReferenceEquals(seen, current)) return;
+            current = seen;
+        }
+    }
 }
 
 public interface IDesktopSnapshots
@@ -95,12 +112,13 @@ internal sealed record SnapshotDependencies
 /// (tools/_snapshot_helpers.py:175-215).
 /// </summary>
 /// <remarks>
-/// Every machine call that can block is bounded here as well as inside the real services (global constraints, bounded
-/// blocking): the window scan, the tree walk, the screen capture and the rendering fail with a
-/// <see cref="DesktopException"/> past their deadline, and the virtual desktop read falls back to the default desktop.
-/// Each runs on the thread pool, so an implementation that blocks before its first await is bounded too; past a deadline
-/// the work is cancelled and abandoned, not waited for. The deadlines sit above the services' own bounds, so they only
-/// fire when a service misses its own.
+/// Bounded blocking (global constraints): the window scan and the tree walk are bounded inside, call by call (the UIA
+/// worker's probe and walk deadlines, its stuck-worker fail-fast, and bounded retries), and get only the caller's token:
+/// like upstream, no global deadline cuts off a capture that is still making progress. The screen capture and the
+/// rendering also get an outer deadline here, which covers the runtime initialisation and the code outside the services'
+/// own deadlines; past it they fail with a <see cref="DesktopException"/>. The virtual desktop read falls back to the
+/// default desktop past its deadline. Each bounded call runs on the thread pool, so an implementation that blocks before
+/// its first await is bounded too; past a deadline its token is cancelled and it is abandoned, not waited for.
 /// </remarks>
 public sealed class SnapshotService : IDesktopSnapshots
 {
@@ -119,26 +137,30 @@ public sealed class SnapshotService : IDesktopSnapshots
 
     internal SnapshotService(SnapshotDependencies machine) => _machine = machine;
 
+    // The start order of the snapshots, so the store keeps the one that started last.
+    private long _started;
+
     public DesktopStateStore State { get; } = new();
-
-    /// <summary>The window scan: 5 s per hung probe, and at most four hung probes before UIA reports itself unavailable.</summary>
-    internal TimeSpan ScanTimeout { get; init; } = TimeSpan.FromSeconds(60);
-
-    /// <summary>The tree walk: 20 s per hung window, with retries after 0.5, 1 and 2 s for failing ones.</summary>
-    internal TimeSpan TreeTimeout { get; init; } = TimeSpan.FromSeconds(120);
 
     /// <summary>The virtual desktop read: the service's gate wait plus its own call (2 x 2 s).</summary>
     internal TimeSpan DesktopsTimeout { get; init; } = TimeSpan.FromSeconds(5);
 
-    /// <summary>The screen capture: the 2 s access request plus 6 s per monitor.</summary>
-    internal TimeSpan CaptureTimeout { get; init; } = TimeSpan.FromSeconds(30);
+    /// <summary>Tests: replaces <see cref="CaptureDeadline"/>.</summary>
+    internal TimeSpan? CaptureTimeout { get; init; }
 
-    /// <summary>The rendering: Win2D's own 10 s deadline.</summary>
+    /// <summary>The rendering: Win2D's own 10 s deadline plus 5 s.</summary>
     internal TimeSpan RenderTimeout { get; init; } = TimeSpan.FromSeconds(15);
+
+    /// <summary>
+    /// The screen capture's deadline for an area that overlaps <paramref name="monitors"/> monitors: the 2 s borderless
+    /// access request, 6 s per monitor (GraphicsCaptureService's own bounds) and 5 s for the rest.
+    /// </summary>
+    internal static TimeSpan CaptureDeadline(int monitors) => TimeSpan.FromSeconds(2 + 6 * monitors + 5);
 
     public async Task<DesktopSnapshot> CaptureAsync(SnapshotRequest request, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
+        var sequence = Interlocked.Increment(ref _started);
         var clock = Stopwatch.StartNew();
         var stages = new List<(string Name, double Milliseconds)>();
         void Stage(string name)
@@ -158,7 +180,7 @@ public sealed class SnapshotService : IDesktopSnapshots
 
         // upstream desktop/service.py:137-150: the Screenshot path skips the window scan.
         var scan = request.UseUiTree
-            ? await BoundedAsync(_machine.Windows.ScanAsync, ScanTimeout, "Window scan", cancellationToken).ConfigureAwait(false)
+            ? await _machine.Windows.ScanAsync(cancellationToken).ConfigureAwait(false)
             : WindowScan.Empty;
         ScreenPoint? cursor = _machine.Cursor();
         var (activeDesktop, allDesktops) = await DesktopsAsync(cancellationToken).ConfigureAwait(false);
@@ -182,8 +204,7 @@ public sealed class SnapshotService : IDesktopSnapshots
                 .Where(handle => handle != active?.Handle && (!applications.Contains(handle) || inArea.Contains(handle)))
                 .Distinct()
                 .ToArray();
-            tree = await BoundedAsync(token => _machine.Tree.CaptureAsync(treeActive, others, screen, token), TreeTimeout, "UI tree capture",
-                cancellationToken).ConfigureAwait(false);
+            tree = await _machine.Tree.CaptureAsync(treeActive, others, screen, cancellationToken).ConfigureAwait(false);
         }
         Stage("tree_capture");
 
@@ -203,7 +224,8 @@ public sealed class SnapshotService : IDesktopSnapshots
         {
             var area = captureRect ?? screen;
             var monitors = displays.Select(display => display.Bounds).ToArray();
-            var image = await WithRuntimeAsync(() => BoundedAsync(token => _machine.Capture.CaptureAsync(area, monitors, token), CaptureTimeout,
+            var deadline = CaptureTimeout ?? CaptureDeadline(monitors.Count(monitor => ScreenRect.Clip(monitor, area) is not null));
+            var image = await WithRuntimeAsync(() => BoundedAsync(token => _machine.Capture.CaptureAsync(area, monitors, token), deadline,
                 "Screen capture", cancellationToken)).ConfigureAwait(false);
             Stage("screenshot_capture");
             originalSize = new PixelSize(image.Width, image.Height);
@@ -230,14 +252,15 @@ public sealed class SnapshotService : IDesktopSnapshots
             Tree = tree,
             Png = png,
         };
-        State.Replace(snapshot);
+        State.Replace(snapshot, sequence);
         if (SnapshotSettings.ProfileEnabled(_machine.Environment(SnapshotSettings.ProfileSnapshotVariable)))
             Profile(stages, clock.Elapsed.TotalMilliseconds, request, displayIndices);
         return snapshot;
     }
 
-    // upstream desktop/service.py:154-162: the desktops cannot be read (an error, or here a missed deadline), so the
-    // report names the default desktop.
+    // upstream desktop/service.py:154-162: the desktops cannot be read, so the report names the default desktop.
+    // VirtualDesktopService already fails open on shell errors and bounds itself; only this outer deadline is caught
+    // here, so a bug in the service is not hidden.
     private async Task<(VirtualDesktopInfo Active, IReadOnlyList<VirtualDesktopInfo> All)> DesktopsAsync(CancellationToken cancellationToken)
     {
         try
@@ -245,7 +268,7 @@ public sealed class SnapshotService : IDesktopSnapshots
             return await BoundedAsync(_ => Task.FromResult(_machine.Desktops.GetDesktops()), DesktopsTimeout, "Virtual desktop read",
                 cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+        catch (DeadlineExceededException)
         {
             return (VirtualDesktopInfo.Default, [VirtualDesktopInfo.Default]);
         }
@@ -284,7 +307,7 @@ public sealed class SnapshotService : IDesktopSnapshots
         {
             // The deadline passed; the call may still have finished just after it.
             if (work.IsCompleted) return await work.ConfigureAwait(false);
-            throw new DesktopException(string.Create(CultureInfo.InvariantCulture,
+            throw new DeadlineExceededException(string.Create(CultureInfo.InvariantCulture,
                 $"{operation} failed: it did not finish within {timeout.TotalSeconds:0.###} s."));
         }
         finally
@@ -334,3 +357,6 @@ public sealed class SnapshotService : IDesktopSnapshots
         _machine.ProfileLog.WriteLine("Snapshot profile: " + string.Join(" ", parts));
     }
 }
+
+/// <summary>A call bounded by <see cref="SnapshotService"/> missed its deadline.</summary>
+internal sealed class DeadlineExceededException(string message) : DesktopException(message);

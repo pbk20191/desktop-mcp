@@ -115,15 +115,36 @@ public class SnapshotServiceTests
         public Task<byte[]> RenderPngAsync(CapturedImage image, RenderOptions options) => new TaskCompletionSource<byte[]>().Task;
     }
 
-    private sealed class HungTree : ITreeCapture
+    /// <summary>Takes its time, like a walk over many slow windows, then finishes.</summary>
+    private sealed class SlowTree(TimeSpan duration) : ITreeCapture
     {
-        public Task<TreeSnapshot> CaptureAsync(long? active, IReadOnlyList<long> others, ScreenRect screen, CancellationToken cancellationToken) =>
-            new TaskCompletionSource<TreeSnapshot>().Task;
+        public async Task<TreeSnapshot> CaptureAsync(long? active, IReadOnlyList<long> others, ScreenRect screen, CancellationToken cancellationToken)
+        {
+            await Task.Delay(duration, cancellationToken);
+            return TreeSnapshot.Empty with { ElementLimit = 500 };
+        }
     }
 
-    private sealed class HungWindows : IWindowScanner
+    /// <summary>Waits for the test's signal.</summary>
+    private sealed class GatedTree(Task gate) : ITreeCapture
     {
-        public Task<WindowScan> ScanAsync(CancellationToken cancellationToken) => new TaskCompletionSource<WindowScan>().Task;
+        public async Task<TreeSnapshot> CaptureAsync(long? active, IReadOnlyList<long> others, ScreenRect screen, CancellationToken cancellationToken)
+        {
+            await gate;
+            return TreeSnapshot.Empty;
+        }
+    }
+
+    /// <summary>Never finishes and ignores cancellation, but keeps the token it was given.</summary>
+    private sealed class TokenCapture : IScreenCapture
+    {
+        public CancellationToken Token { get; private set; }
+
+        public Task<CapturedImage> CaptureAsync(ScreenRect area, IReadOnlyList<ScreenRect> monitors, CancellationToken cancellationToken)
+        {
+            Token = cancellationToken;
+            return new TaskCompletionSource<CapturedImage>().Task;
+        }
     }
 
     private sealed class ThrowingCapture(Exception error) : IScreenCapture
@@ -279,7 +300,7 @@ public class SnapshotServiceTests
     public async Task AHungScreenCaptureFailsWithinItsDeadline()
     {
         var service = new SnapshotService(Dependencies() with { Capture = new HungCapture() }) { CaptureTimeout = ShortDeadline };
-        var error = await Assert.ThrowsAsync<DesktopException>(
+        var error = await Assert.ThrowsAnyAsync<DesktopException>(
             () => service.CaptureAsync(new SnapshotRequest { UseVision = true, UseUiTree = false }, default).WaitAsync(TestBound));
         Assert.Equal("Screen capture failed: it did not finish within 0.2 s.", error.Message);
         Assert.Null(service.State.Latest);
@@ -289,25 +310,50 @@ public class SnapshotServiceTests
     public async Task AHungRenderFailsWithinItsDeadline()
     {
         var service = new SnapshotService(Dependencies() with { Renderer = new HungRenderer() }) { RenderTimeout = ShortDeadline };
-        var error = await Assert.ThrowsAsync<DesktopException>(
+        var error = await Assert.ThrowsAnyAsync<DesktopException>(
             () => service.CaptureAsync(new SnapshotRequest { UseVision = true }, default).WaitAsync(TestBound));
         Assert.Equal("Image rendering failed: it did not finish within 0.2 s.", error.Message);
     }
 
     [Fact]
-    public async Task AHungTreeWalkFailsWithinItsDeadline()
+    public async Task TheCaptureDeadlineCancelsTheAbandonedCallsToken()
     {
-        var service = new SnapshotService(Dependencies() with { Tree = new HungTree() }) { TreeTimeout = ShortDeadline };
-        var error = await Assert.ThrowsAsync<DesktopException>(() => service.CaptureAsync(new SnapshotRequest(), default).WaitAsync(TestBound));
-        Assert.Equal("UI tree capture failed: it did not finish within 0.2 s.", error.Message);
+        var capture = new TokenCapture();
+        var service = new SnapshotService(Dependencies() with { Capture = capture }) { CaptureTimeout = ShortDeadline };
+        await Assert.ThrowsAnyAsync<DesktopException>(
+            () => service.CaptureAsync(new SnapshotRequest { UseVision = true, UseUiTree = false }, default).WaitAsync(TestBound));
+        Assert.True(capture.Token.CanBeCanceled);
+        Assert.True(capture.Token.IsCancellationRequested);
+    }
+
+    [Theory]
+    [InlineData(1, 13)]
+    [InlineData(2, 19)]
+    public void TheCaptureDeadlineGrowsWithTheMonitors(int monitors, int seconds) =>
+        Assert.Equal(TimeSpan.FromSeconds(seconds), SnapshotService.CaptureDeadline(monitors));
+
+    [Fact]
+    public async Task ASlowTreeWalkIsNotCutOff()
+    {
+        // No global deadline on the walk (upstream has none): a walk that keeps making progress finishes, however long.
+        var snapshot = await new SnapshotService(Dependencies() with { Tree = new SlowTree(TimeSpan.FromSeconds(1)) })
+            .CaptureAsync(new SnapshotRequest(), default).WaitAsync(TestBound);
+        Assert.Equal(500, snapshot.Tree.ElementLimit);
     }
 
     [Fact]
-    public async Task AHungWindowScanFailsWithinItsDeadline()
+    public async Task ASlowerEarlierSnapshotDoesNotReplaceANewerOne()
     {
-        var service = new SnapshotService(Dependencies() with { Windows = new HungWindows() }) { ScanTimeout = ShortDeadline };
-        var error = await Assert.ThrowsAsync<DesktopException>(() => service.CaptureAsync(new SnapshotRequest(), default).WaitAsync(TestBound));
-        Assert.Equal("Window scan failed: it did not finish within 0.2 s.", error.Message);
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var service = new SnapshotService(Dependencies() with { Tree = new GatedTree(gate.Task) });
+        // The earlier snapshot walks the (gated) tree; the later one has no tree, so it finishes first.
+        var earlier = service.CaptureAsync(new SnapshotRequest(), default);
+        var later = await service.CaptureAsync(new SnapshotRequest { UseUiTree = false }, default).WaitAsync(TestBound);
+        Assert.Same(later, service.State.Latest);
+        gate.SetResult();
+        var slow = await earlier.WaitAsync(TestBound);
+        Assert.NotSame(slow, later);
+        Assert.Same(later, service.State.Latest);
     }
 
     [Fact]
@@ -329,11 +375,12 @@ public class SnapshotServiceTests
     }
 
     [Fact]
-    public async Task AFailingVirtualDesktopCallFallsBackToTheDefaultDesktop()
+    public async Task AVirtualDesktopBugIsNotHidden()
     {
-        var snapshot = await new SnapshotService(Dependencies() with { Desktops = new ThrowingDesktops() }).CaptureAsync(new SnapshotRequest(), default);
-        Assert.Same(VirtualDesktopInfo.Default, snapshot.ActiveDesktop);
-        Assert.Equal([VirtualDesktopInfo.Default], snapshot.AllDesktops);
+        // VirtualDesktopService fails open on shell errors itself; anything else it throws is a bug and is reported.
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => new SnapshotService(Dependencies() with { Desktops = new ThrowingDesktops() }).CaptureAsync(new SnapshotRequest(), default));
+        Assert.Equal("shell", error.Message);
     }
 
     [Fact]
@@ -356,7 +403,7 @@ public class SnapshotServiceTests
         var dependencies = inCapture
             ? Dependencies() with { Capture = new ThrowingCapture(missing) }
             : Dependencies() with { Renderer = new ThrowingRenderer(missing) };
-        var error = await Assert.ThrowsAsync<DesktopException>(
+        var error = await Assert.ThrowsAnyAsync<DesktopException>(
             () => new SnapshotService(dependencies).CaptureAsync(new SnapshotRequest { UseVision = true }, default));
         Assert.Equal(missing.Message, error.Message);
         Assert.Contains(AppRuntime.InstallHint(), error.Message);
