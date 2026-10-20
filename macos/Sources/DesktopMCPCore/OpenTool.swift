@@ -31,19 +31,57 @@ public struct SystemWorkspace: Workspace {
         await MainActor.run { NSWorkspace.shared.activateFileViewerSelecting([url]) }
     }
 
+    /// By bundle id, then by name through LaunchServices (as `open -a` finds it), then by
+    /// searching the application folders.
     public func applicationURL(for nameOrBundleID: String) async -> URL? {
-        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: nameOrBundleID) { return url }
-        let name = nameOrBundleID.hasSuffix(".app") ? nameOrBundleID : nameOrBundleID + ".app"
-        let directories = ["/Applications", "/System/Applications", NSHomeDirectory() + "/Applications"]
-        return directories.map { URL(fileURLWithPath: $0).appendingPathComponent(name) }
-            .first { FileManager.default.fileExists(atPath: $0.path) }
+        await offload {
+            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: nameOrBundleID) { return url }
+            if let path = (NSWorkspace.shared as any ApplicationPathLookup).fullPath(forApplication: nameOrBundleID) {
+                return URL(fileURLWithPath: path)
+            }
+            return OpenTool.findApplication(nameOrBundleID, in: OpenTool.applicationFolders)
+        }
     }
 }
+
+/// `fullPath(forApplication:)` is deprecated without a replacement that takes a name; calling it
+/// through this protocol keeps the build free of the deprecation warning.
+private protocol ApplicationPathLookup {
+    func fullPath(forApplication appName: String) -> String?
+}
+
+extension NSWorkspace: ApplicationPathLookup {}
 
 enum OpenTool {
     enum Target: Equatable {
         case url(URL)
         case file(URL)
+    }
+
+    static let applicationFolders = [
+        "/Applications", "/Applications/Utilities", "/System/Applications", "/System/Applications/Utilities",
+        NSHomeDirectory() + "/Applications",
+    ].map { URL(fileURLWithPath: $0) }
+
+    /// `<name>.app` directly in one of `roots` (in order), else the first one found in their
+    /// subfolders, up to three levels down, ignoring case. App bundles are not searched inside.
+    static func findApplication(_ name: String, in roots: [URL]) -> URL? {
+        let bundle = name.lowercased().hasSuffix(".app") ? name : name + ".app"
+        let fileManager = FileManager.default
+        for root in roots {
+            let direct = root.appendingPathComponent(bundle)
+            if fileManager.fileExists(atPath: direct.path) { return direct }
+        }
+        let wanted = bundle.lowercased()
+        for root in roots {
+            guard let walk = fileManager.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey],
+                                                    options: [.skipsPackageDescendants, .skipsHiddenFiles]) else { continue }
+            for case let url as URL in walk {
+                if walk.level >= 3 { walk.skipDescendants() }
+                if url.lastPathComponent.lowercased() == wanted { return url }
+            }
+        }
+        return nil
     }
 
     /// A target with a URL scheme of two or more letters is a URL (`file:` ones are paths);

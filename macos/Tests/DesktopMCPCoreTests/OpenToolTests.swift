@@ -71,6 +71,27 @@ final class OpenToolTests: XCTestCase {
         }
     }
 
+    func testFindsApplicationInNestedFolder() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let nested = root.appendingPathComponent("Vendor/Tools/Foo.app")
+        try FileManager.default.createDirectory(at: nested.appendingPathComponent("Contents/Bar.app"),
+                                                withIntermediateDirectories: true)
+        let direct = root.appendingPathComponent("Other/Direct.app")
+        try FileManager.default.createDirectory(at: direct, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("A/Direct.app"),
+                                                withIntermediateDirectories: true)
+        let roots = [root.appendingPathComponent("Missing"), root, root.appendingPathComponent("Other")]
+
+        XCTAssertEqual(OpenTool.findApplication("Foo", in: roots)?.standardizedFileURL, nested.standardizedFileURL)
+        XCTAssertEqual(OpenTool.findApplication("foo.app", in: roots)?.standardizedFileURL, nested.standardizedFileURL)
+        // A direct child of a later root wins over a subfolder of an earlier one.
+        XCTAssertEqual(OpenTool.findApplication("Direct", in: roots)?.standardizedFileURL, direct.standardizedFileURL)
+        // App bundles are not searched inside.
+        XCTAssertNil(OpenTool.findApplication("Bar", in: roots))
+        XCTAssertNil(OpenTool.findApplication("Nope", in: roots))
+    }
+
     func testURLIsNotCheckedOnDisk() throws {
         let target = try OpenTool.resolve("https://example.com/a?b=1")
         guard case .url(let url) = target else { return XCTFail("not a URL") }
