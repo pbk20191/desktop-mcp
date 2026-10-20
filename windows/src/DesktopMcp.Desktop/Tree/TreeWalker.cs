@@ -31,6 +31,9 @@ internal sealed class TreeWalker(ITreeSource source, ElementBudget budget, Func<
     /// <summary>Elements deeper than this below the window are not visited.</summary>
     public const int MaxDepth = 256;
 
+    /// <summary>The FrameworkId of Chromium content (Chrome, Edge, WebView2, Electron): its words are not read (Decisions 36).</summary>
+    public const string ChromiumFramework = "Chrome";
+
     private readonly record struct Frame(UiaElementData? Node, SemanticNode? Parent, int Depth, string? ExitKey);
 
     /// <summary>
@@ -109,6 +112,7 @@ internal sealed class TreeWalker(ITreeSource source, ElementBudget budget, Func<
             // Children of an element at the cap would not be visited; do not read them over COM.
             if (frame.Depth >= maxDepth) return;
             IReadOnlyList<UiaElementData> children;
+            ThrowIfNotResponding();
             try
             {
                 children = source.GetChildren(node);
@@ -268,6 +272,10 @@ internal sealed class TreeWalker(ITreeSource source, ElementBudget budget, Func<
 
     private IReadOnlyList<WordBox> Words(UiaElementData node, CancellationToken cancellationToken)
     {
+        // Decisions 36: Chromium's TextPattern (GetVisibleRanges) holds the app's UI thread for seconds to minutes on a
+        // large page (P2 Task 21). Upstream skips words only below a browser's RootWebArea (tree/service.py:656).
+        if (string.Equals(node.FrameworkId, ChromiumFramework, StringComparison.Ordinal)) return [];
+        ThrowIfNotResponding();
         IReadOnlyList<WordBox> words;
         try
         {
@@ -281,6 +289,16 @@ internal sealed class TreeWalker(ITreeSource source, ElementBudget budget, Func<
         // An abandoned walk resuming after a hung read must not consume the budget or ids.
         cancellationToken.ThrowIfCancellationRequested();
         return words;
+    }
+
+    /// <summary>
+    /// Decisions 38: a window that stops answering WM_NULL ends its walk as the hang breaker's timeout does (the caller
+    /// blocks the window and its process). The check cannot interrupt a call already inside the provider.
+    /// </summary>
+    private void ThrowIfNotResponding()
+    {
+        if (!source.IsWindowResponding())
+            throw new UiaTimeoutException("UI Automation window walk stopped: the window is not responding.");
     }
 
     private static string LegacyValue(UiaElementData node) =>

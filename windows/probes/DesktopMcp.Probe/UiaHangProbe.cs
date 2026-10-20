@@ -23,7 +23,7 @@ namespace DesktopMcp.Probe;
 /// <item><c>element</c>: ElementFromHandleBuildCache with the product's ElementRequest (the first call turns on the
 /// app's accessibility).</item>
 /// <item><c>probe</c>: the WindowCatalog probe (<see cref="UiaTreeSource.ProbeWindow"/>).</item>
-/// <item><c>walk</c>: the product's single-window walk (UiaTreeSource, TreeWalker, ElementBudget, same caps).</item>
+/// <item><c>walk</c>: the product's single-window walk (UiaTreeSource with its responsiveness guard, TreeWalker, ElementBudget, same caps).</item>
 /// <item><c>walk-mc100</c>: the walk with at most 100 children kept per element (the product's MaxChildren cut).</item>
 /// <item><c>walk-min</c>: the walk with a minimal property set (no patterns).</item>
 /// <item><c>walk-sib</c>, <c>walk-sib100</c>, <c>walk-sib-min</c>: children read one at a time through the control view
@@ -136,7 +136,7 @@ internal static class UiaHangProbe
 
     private static void RunStep(UiaSession session, string step, nint hwnd, int budget, WalkStats stats)
     {
-        var source = new UiaTreeSource(session);
+        var source = new UiaTreeSource(session, hwnd); // the walk step runs the product guard (Decisions 38)
         switch (step)
         {
             case "element":
@@ -411,6 +411,8 @@ internal static class UiaHangProbe
         public IReadOnlyList<WordBox> GetWords(UiaElementData element, int maxWords) => inner.GetWords(element, maxWords);
 
         public void Release(UiaElementData element) => inner.Release(element);
+
+        public bool IsWindowResponding() => inner.IsWindowResponding();
     }
 
     /// <summary>A walk source with another property set, child cap or child-reading strategy.</summary>
@@ -476,6 +478,8 @@ internal static class UiaHangProbe
         public void Release(UiaElementData element)
         {
         }
+
+        public bool IsWindowResponding() => true;
 
         private UiaElementData Read(IUIAutomationElement element) => minimal ? ReadMinimal(element) : UiaTreeSource.Read(element);
 

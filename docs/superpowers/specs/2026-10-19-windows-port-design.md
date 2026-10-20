@@ -176,8 +176,9 @@ fallback, a `MsgWaitForMultipleObjectsEx` loop with its own work queue, was not 
   windows. `IUIAutomation2` connection (2 s) and transaction (5 s) timeouts and per-job deadlines
   (window probe 5 s, window walk 20 s) bound a hung target app; a job past its deadline abandons the
   worker thread, the next job gets a new one, and the window and its process are skipped for 90 s
-  (P2 plan, Decisions 2). These bounds protect the server, not the target app: a walk can still
-  hold a Chromium app's UI thread (§12).
+  (P2 plan, Decisions 2). These bounds protect the server, not the target app; the walk itself
+  avoids the measured Chromium hang and stops at a window that stops answering WM_NULL (P2 plan,
+  Decisions 36-38; §12).
 - Everything else (input injection, capture, PowerShell, HTTP and the MCP SDK) runs on the thread
   pool.
 
@@ -214,8 +215,10 @@ Role, Value, DefaultAction, State; Scroll horizontal/vertical scrollable and per
 ExpandCollapseState; Selection CanSelectMultiple, IsSelectionRequired; SelectionItem IsSelected;
 Window IsModal; Toggle state; RangeValue Value, Minimum, Maximum; plus the LegacyIAccessible,
 Scroll and Window patterns. LegacyIAccessible property IDs must be in the cache request; without
-them `get_Cached*` fails with `E_INVALIDARG`. Children are fetched one level at a time with
-`BuildUpdatedCache` at `TreeScope_Children` under the control view.
+them `get_Cached*` fails with `E_INVALIDARG`. Children are read one sibling at a time through the
+control view (`GetFirstChildElementBuildCache` / `GetNextSiblingElementBuildCache` with the element
+cache request), at most the first 300 per parent, so the provider never builds more children than
+are read (P2 plan, Decisions 37; upstream reads all of them with one `TreeScope_Children` fetch).
 
 The wrapper frees every BSTR (`SysFreeString`) and disposes every `ComVariant` before returning, and
 exposes immutable `UiNode` records.
@@ -233,7 +236,12 @@ exposes immutable `UiNode` records.
   `TreeConfig.cs` (interactive, scrollable and informative types, roles, browser special cases,
   Word nodes from TextPattern, modal-dialog reset, window-name fixes such as Progman to "Desktop").
 - **Limits**: `DESKTOP_MCP_MAX_TREE_ELEMENTS` (default 500) with upstream's truncation note; a
-  RuntimeId cycle guard; three retries per window with 0.5/1/2 s backoff.
+  RuntimeId cycle guard; three retries per window with 0.5/1/2 s backoff; 300 children per parent.
+- **Target protection** (P2 plan, Decisions 36 and 38; §12): no TextPattern word read on content whose
+  FrameworkId is `Chrome` (Chrome, Edge, WebView2, Electron; upstream skips it only inside a
+  browser's RootWebArea), and before every children or word read the walked window must answer
+  `SendMessageTimeout(WM_NULL, SMTO_ABORTIFHUNG | SMTO_BLOCK, 250 ms)`, else its walk stops and is
+  handled like a timed-out window.
 - **Virtual desktop names** use the undocumented `IVirtualDesktopManagerInternal`, with interface
   IDs keyed by build (22621 and 26100; Windows 10's 19041 is no longer supported) declared by hand, then the registry name, then
   `Desktop N`. Failure only affects the report.
@@ -584,8 +592,8 @@ and restore the clipboard text, and the toast test leaves a notification.
 - **P2 decisions**: P2's departures from upstream for Snapshot, Screenshot and DisplayInventory are
   listed in the P2 plan's "Decisions on upstream ambiguities"
   (`docs/superpowers/plans/2026-10-19-windows-p2-desktop-read.md`): the text layout and labels,
-  `Screenshot Backend: wgc`, regions clipped to the screen, window order, the UIA hang breaker, and
-  `use_dom` before P6.
+  `Screenshot Backend: wgc`, regions clipped to the screen, window order, the UIA hang breaker,
+  `use_dom` before P6, no word elements for Chromium content, and at most 300 children per parent.
 
 ## 11. Phases
 
@@ -624,6 +632,6 @@ P0 probe results were measured on Windows build 10.0.26220 (Insider).
 | The MCP SDK's serialisation or legacy SSE support changes | Pin the SDK version; ContractTests and HTTP tests catch drift |
 | LL hooks swallow input and lock the user out | Heartbeat-renewed suppression deadline, `LowLevelHooksTimeout`, integration tests |
 | UIA calls into hung apps | IUIAutomation2 timeouts, per-job deadlines, a replaceable UIA worker and a 90 s block of hung windows (P2 plan, Decisions 2) |
-| Snapshot's UIA walk hangs a Chromium app (known issue; mitigation pending the user's decision) | Windows logged an AppHang for VS Code (Code.exe 1.142) twice on 2026-10-20, the second during the P2 smoke's Snapshot, and VS Code closed. P2 Task 21 measured the cause on Edge with a page of N sibling buttons: the walker's word read on the page's DocumentControl. `GetCurrentPattern(TextPattern)` plus `GetVisibleRanges` alone blocks the UI thread for 5.2 s at 1,000 buttons, about 46 s at 3,000, and more than 65 s at 10,000 (roughly quadratic). Neither the cache request size (35 properties over 10,000 children: longest stretch 1.1 s without the word read) nor accessibility first-enable nor the window-list probe causes it. Upstream never reads words inside a browser's RootWebArea. The port does, because it walks RootWebArea like any element. The fresh VS Code sample did not reproduce the hang (about 300 elements). Recommended, in order: skip the word read on Chromium documents; bound the child fetch with sibling navigation and a per-parent cap (one call per child, about 0.4 ms; 300 children: 0.34 s, no stretch); stop a walk when the window stops answering WM_NULL. The hang breaker protects only the server. The smoke excludes Code.exe through `DESKTOP_MCP_EXCLUDE_PROCESSES` (which keeps it out of the walk but not out of the window list's probe, which was measured harmless); the P2 Desktop run left out the three tests that read real windows (§9). The probe's `uia` step caches every top-level window and walks the foreground window without any exclusion, so `build-release.ps1` skips it with a warning while a Code process runs. |
+| Snapshot's UIA walk hangs a Chromium app (cause measured; mitigated by P2 Decisions 36-38) | Windows logged an AppHang for VS Code (Code.exe 1.142) twice on 2026-10-20, the second during the P2 smoke's Snapshot, and VS Code closed. P2 Task 21 measured the cause on Edge with a page of N sibling buttons: the walker's word read on the page's DocumentControl. `GetCurrentPattern(TextPattern)` plus `GetVisibleRanges` alone blocks the UI thread for 5.2 s at 1,000 buttons, about 46 s at 3,000, and more than 65 s at 10,000 (roughly quadratic). Neither the cache request size nor accessibility first-enable nor the window-list probe causes it. Mitigated in Task 22 (P2 Decisions 36-38): no word read on content whose FrameworkId is `Chrome`; children by sibling navigation, at most 300 per parent; and the walk stops, as a timed-out window, when the window does not answer WM_NULL within 250 ms before a children or word read. Measured after the change (JIT probe, product walk): on a 10,000-button Edge page, 370 elements in 0.35 s with no failed ping; on a 1,000-button page, 0.35-0.37 s with no failed ping; on a fresh VS Code with a 50,000-line file, 0.15-0.23 s with no failed ping. The hang itself was never reproduced on VS Code, so the user still has to confirm that a Snapshot with VS Code open no longer hangs it. Until then the smoke excludes Code.exe through `DESKTOP_MCP_EXCLUDE_PROCESSES` (the window list's probe still runs, measured harmless), and `build-release.ps1` skips the probe's `uia` step (which walks the foreground window without exclusions) with a warning while a Code process runs. The guard cannot interrupt a call already inside a provider. |
 | The Job Object kills every process the server started when the server exits, including apps started through the PowerShell tool (Start-Process) | Spec §5 behaviour, kept in P1; upstream has no job. Revisit if users report it; JOB_OBJECT_LIMIT_BREAKAWAY_OK plus CREATE_BREAKAWAY_FROM_JOB would let chosen launches escape. |
 | Under NativeAOT, a WinRT clipboard call on an MTA thread blocks | Known issue. P1 observed the block (where it saw the JIT throw) and WinRT then blocking on STA in the same process. P2 measured that under the JIT the MTA read succeeds, and that under NativeAOT the `GetTextAsync` operation's `Completed` handler never fires; a live main STA does not help. The root cause stays open, and the STA block is unverified. `SystemClipboard` calls WinRT only on its STA thread, bounds it by 5 s and falls back to the Win32 clipboard, bounded by its own 5 s. |

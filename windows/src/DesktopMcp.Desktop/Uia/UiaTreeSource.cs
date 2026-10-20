@@ -16,15 +16,16 @@ internal sealed record WindowProbe(
 
 /// <summary>
 /// <see cref="ITreeSource"/> over a <see cref="UiaSession"/>. Runs only on the UIA worker thread that owns the session.
+/// <paramref name="window"/> is the walked top-level window whose UI thread <see cref="IsWindowResponding"/> checks; 0 (the
+/// window probe) skips the check.
 /// </summary>
-internal sealed unsafe class UiaTreeSource(UiaSession session) : ITreeSource
+internal sealed unsafe class UiaTreeSource(UiaSession session, long window = 0) : ITreeSource
 {
     /// <summary>
-    /// The most children read from one element. From the cached children array these are the last ones, which the walk
-    /// visits first (Decisions 9). The fallback sibling walk keeps the first ones instead: it walks forward and cannot
-    /// know the count (the exception noted in Decisions 9).
+    /// The most children read from one element: the first ones in document order, one sibling step each (Decisions 37).
+    /// One cached TreeScope_Children fetch would make the provider build every child first (P2 Task 21).
     /// </summary>
-    public const int MaxChildren = 10_000;
+    public const int MaxChildren = 300;
 
     /// <summary>The most word moves through one control's text, so a provider that never advances cannot spin forever.</summary>
     public const int MaxWordSteps = 10_000;
@@ -59,28 +60,38 @@ internal sealed unsafe class UiaTreeSource(UiaSession session) : ITreeSource
             hasChildren);
     }
 
-    public IReadOnlyList<UiaElementData> GetChildren(UiaElementData parent)
+    // upstream tree/cache_utils.py:173-213 reads all children with one cached TreeScope_Children fetch; this port steps
+    // through the control view instead, so the cap also bounds the provider's work (Decisions 37).
+    public IReadOnlyList<UiaElementData> GetChildren(UiaElementData parent) => ReadSiblings(
+        Element(parent),
+        element => session.ControlView.GetFirstChildElementBuildCache(element, session.ElementRequest),
+        child => session.ControlView.GetNextSiblingElementBuildCache(child, session.ElementRequest),
+        Read,
+        MaxChildren);
+
+    /// <summary>
+    /// The first <paramref name="max"/> children in document order, one step each, so no step is taken past the cap. A
+    /// dead parent has no children; a sibling that dies during the steps ends the list with what was read (upstream
+    /// tree/service.py:902-905 keeps what was found). Timeouts and other failures propagate.
+    /// </summary>
+    internal static List<UiaElementData> ReadSiblings<T>(T parent, Func<T, T?> first, Func<T, T?> next, Func<T, UiaElementData> read, int max)
+        where T : class
     {
-        var element = Element(parent);
+        var result = new List<UiaElementData>();
         try
         {
-            var children = element.BuildUpdatedCache(session.ChildrenRequest).GetCachedChildren();
-            if (children is null) return [];
-            var count = children.get_Length();
-            var result = new List<UiaElementData>(Math.Min(count, MaxChildren));
-            for (var i = Math.Max(0, count - MaxChildren); i < count; i++) result.Add(Read(children.GetElement(i)));
-            return result;
+            var child = first(parent);
+            while (child is not null)
+            {
+                result.Add(read(child));
+                if (result.Count >= max) break;
+                child = next(child);
+            }
         }
         catch (Exception e) when (ComErrors.IsDeadElement(e))
         {
-            return [];
         }
-        catch (Exception e) when (!ComErrors.IsTimeout(e))
-        {
-            // upstream tree/cache_utils.py:201-213: fall back to walking the control view one sibling at a time.
-            try { return WalkChildren(element); }
-            catch (Exception fallback) when (ComErrors.IsDeadElement(fallback)) { return []; }
-        }
+        return result;
     }
 
     // upstream uia/controls.py:1240-1294 GetAllWordBoundingBoxes and _iter_word_ranges.
@@ -137,6 +148,9 @@ internal sealed unsafe class UiaTreeSource(UiaSession session) : ITreeSource
     {
     }
 
+    /// <summary>The walked window answers WM_NULL within <see cref="Win32WindowSystem.ResponseTimeout"/> (Decisions 38).</summary>
+    public bool IsWindowResponding() => window == 0 || Win32WindowSystem.IsResponding(window);
+
     /// <summary>upstream uia/controls.py:1396-1411: the line box shrunk to the font's pixel height, kept on its bottom edge.</summary>
     internal static ScreenRect ShrinkToFontSize(ScreenRect box, double points, int dpi)
     {
@@ -176,18 +190,6 @@ internal sealed unsafe class UiaTreeSource(UiaSession session) : ITreeSource
         };
     }
 
-    private IReadOnlyList<UiaElementData> WalkChildren(IUIAutomationElement element)
-    {
-        var result = new List<UiaElementData>();
-        var child = session.ControlView.GetFirstChildElementBuildCache(element, session.ElementRequest);
-        while (child is not null && result.Count < MaxChildren)
-        {
-            result.Add(Read(child));
-            child = session.ControlView.GetNextSiblingElementBuildCache(child, session.ElementRequest);
-        }
-        return result;
-    }
-
     private static IUIAutomationElement Element(UiaElementData data) =>
         data.Handle as IUIAutomationElement ?? throw new InvalidOperationException("The element has no UIA handle.");
 
@@ -199,6 +201,7 @@ internal sealed unsafe class UiaTreeSource(UiaSession session) : ITreeSource
         LocalizedControlType = UiaValues.Take(element.get_CachedLocalizedControlType()),
         AcceleratorKey = UiaValues.Take(element.get_CachedAcceleratorKey()),
         ClassName = UiaValues.Take(element.get_CachedClassName()),
+        FrameworkId = UiaValues.Take(element.get_CachedFrameworkId()),
         ControlType = (int)element.get_CachedControlType(),
         RuntimeId = UiaValues.CachedRuntimeId(element),
         IsOffscreen = element.get_CachedIsOffscreen(),

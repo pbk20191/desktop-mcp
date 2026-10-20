@@ -80,7 +80,8 @@ internal sealed class UiaSession
         Automation = automation;
         ElementRequest = CreateRequest(automation, TraversalProperties, TraversalPatterns, TreeScope.TreeScope_Element);
         // Children only: BuildUpdatedCache with this request returns a placeholder whose cached children carry the
-        // properties (upstream tree/cache_utils.py:173-186).
+        // properties (upstream tree/cache_utils.py:173-186). The tree walk no longer uses it (it makes the provider build
+        // every child; Decisions 37); the probes' AOT check and measurements still do.
         ChildrenRequest = CreateRequest(automation, TraversalProperties, TraversalPatterns, TreeScope.TreeScope_Children);
         ProbeRequest = CreateRequest(automation, ProbeProperties, [UIA_PATTERN_ID.UIA_WindowPatternId], TreeScope.TreeScope_Element);
         ControlView = automation.get_ControlViewWalker();

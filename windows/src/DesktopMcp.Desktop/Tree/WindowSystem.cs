@@ -52,6 +52,23 @@ internal sealed unsafe class Win32WindowSystem : IWindowSystem
         return windows;
     }
 
+    /// <summary>How long <see cref="IsResponding"/> waits for the window's UI thread (Decisions 38).</summary>
+    public static readonly TimeSpan ResponseTimeout = TimeSpan.FromMilliseconds(250);
+
+    /// <summary>
+    /// Whether the window's UI thread answers WM_NULL within <see cref="ResponseTimeout"/> (SMTO_ABORTIFHUNG returns at once
+    /// for a thread Windows already considers hung). A window that no longer exists counts as responding, so the next UIA
+    /// call reports it as a dead element instead of a hang.
+    /// </summary>
+    public static bool IsResponding(long window)
+    {
+        nuint result;
+        return PInvoke.SendMessageTimeout(Hwnd(window), PInvoke.WM_NULL, default, default,
+                   SEND_MESSAGE_TIMEOUT_FLAGS.SMTO_ABORTIFHUNG | SEND_MESSAGE_TIMEOUT_FLAGS.SMTO_BLOCK,
+                   (uint)ResponseTimeout.TotalMilliseconds, &result) != 0
+            || !PInvoke.IsWindow(Hwnd(window));
+    }
+
     public bool IsWindow(long window) => PInvoke.IsWindow(Hwnd(window));
     public bool IsVisible(long window) => PInvoke.IsWindowVisible(Hwnd(window));
     public bool IsMinimized(long window) => PInvoke.IsIconic(Hwnd(window));

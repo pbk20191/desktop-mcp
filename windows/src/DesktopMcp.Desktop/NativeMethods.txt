@@ -81,6 +81,9 @@ GetAncestor
 OpenProcess
 QueryFullProcessImageName
 CloseHandle
+// The walk's responsiveness guard (Decisions 38)
+SendMessageTimeout
+WM_NULL
 // Capture: the monitor behind a display rectangle
 MonitorFromRect
 // Snapshot: the cursor and the interactive-session check (spec §5)

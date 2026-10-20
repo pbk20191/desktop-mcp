@@ -13,6 +13,9 @@ internal sealed record UiaElementData
     public string LocalizedControlType { get; init; } = "";
     public string AcceleratorKey { get; init; } = "";
     public string ClassName { get; init; } = "";
+
+    /// <summary>The UI framework ("Chrome" for Chromium content, "Win32", "WPF", ...), or empty.</summary>
+    public string FrameworkId { get; init; } = "";
     public int ControlType { get; init; }
 
     /// <summary>The RuntimeId as "a.b.c", or null when the provider gave none.</summary>
@@ -59,4 +62,7 @@ internal interface ITreeSource
 
     /// <summary>The walk is done with the element: the source may drop what it holds for it.</summary>
     void Release(UiaElementData element);
+
+    /// <summary>Whether the walked window's UI thread still answers; checked before every children and word read.</summary>
+    bool IsWindowResponding();
 }

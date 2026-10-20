@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using DesktopMcp.Core.Snapshots;
+using DesktopMcp.Desktop.Errors;
 using DesktopMcp.Desktop.Tree;
 
 namespace DesktopMcp.Desktop.Tests.Tree;
@@ -29,6 +30,15 @@ public class TreeWalkerTests
         /// <summary>Runs before an element's words are read; it may throw to fail the read.</summary>
         public Action<UiaElementData>? BeforeWords { get; set; }
 
+        /// <summary>Answers each responsiveness check; the window answers by default.</summary>
+        public Func<bool> Responding { get; set; } = () => true;
+
+        /// <summary>How many responsiveness checks the walk made.</summary>
+        public int Checks { get; private set; }
+
+        /// <summary>Elements whose words were read, in order.</summary>
+        public List<UiaElementData> WordsRead { get; } = [];
+
         public IReadOnlyList<UiaElementData> GetChildren(UiaElementData parent)
         {
             ChildrenRead.Add(parent);
@@ -40,11 +50,18 @@ public class TreeWalkerTests
 
         public IReadOnlyList<WordBox> GetWords(UiaElementData element, int maxWords)
         {
+            WordsRead.Add(element);
             BeforeWords?.Invoke(element);
             return Words.GetValueOrDefault(element, []).Take(maxWords).ToArray();
         }
 
         public void Release(UiaElementData element) => Released++;
+
+        public bool IsWindowResponding()
+        {
+            Checks++;
+            return Responding();
+        }
 
         public UiaElementData Add(UiaElementData parent, params UiaElementData[] children)
         {
@@ -438,5 +455,59 @@ public class TreeWalkerTests
         var source = new FakeSource();
         var element = Assert.Single(Walk(source, source.Add(Window(), Button("Edge") with { Bounds = new ScreenRect(780, 10, 900, 30) })).Walk.Interactive);
         Assert.Equal((new ScreenRect(780, 10, 800, 30), new ScreenPoint(790, 20)), (element.Box, element.Center));
+    }
+
+    [Fact]
+    public void ChromiumContentIsListedWithoutReadingItsWords()
+    {
+        var source = new FakeSource();
+        var web = Text("Page") with { ControlType = TreeConfig.Document, LocalizedControlType = "document", FrameworkId = "Chrome" };
+        var native = Text("Notes") with { FrameworkId = "Win32" };
+        source.Words[web] = [new WordBox("hidden", new ScreenRect(5, 5, 40, 20))];
+        source.Words[native] = [new WordBox("hello", new ScreenRect(5, 5, 40, 20))];
+        var (walk, _) = Walk(source, source.Add(Window(), web, native));
+        Assert.Equal([native], source.WordsRead);
+        Assert.Equal(["Notes", "hello", "Page"], walk.Interactive.Select(e => e.Name));
+    }
+
+    [Fact]
+    public void TheWindowIsCheckedBeforeEveryChildrenAndWordRead()
+    {
+        var source = new FakeSource();
+        var edit = Text("Notes");
+        source.Words[edit] = [new WordBox("hello", new ScreenRect(5, 5, 40, 20))];
+        Walk(source, source.Add(Window(), edit, Button("A")));
+        // children of the window, A and the edit, plus the edit's words
+        Assert.Equal(source.ChildrenRead.Count + source.WordsRead.Count, source.Checks);
+        Assert.Equal(4, source.Checks);
+    }
+
+    [Fact]
+    public void AnUnresponsiveWindowStopsTheWalkAsATimeout()
+    {
+        var source = new FakeSource();
+        var pane = Pane("Content");
+        source.Add(pane, Button("Inner"));
+        var root = source.Add(Window(), pane, Button("A"));
+        var checks = 0;
+        source.Responding = () => ++checks < 3; // the window, then A, answer; the pane's check fails
+        var error = Assert.Throws<UiaTimeoutException>(() => Walk(source, root));
+        Assert.True(ComErrors.IsTimeout(error));
+        Assert.Equal(2, source.ChildrenRead.Count);
+        Assert.DoesNotContain(pane, source.ChildrenRead);
+        Assert.Equal(source.Fetched + 1, source.Released);
+    }
+
+    [Fact]
+    public void AnUnresponsiveWindowIsNotAskedForWords()
+    {
+        var source = new FakeSource();
+        var edit = Text("Notes");
+        source.Words[edit] = [new WordBox("hello", new ScreenRect(5, 5, 40, 20))];
+        var root = source.Add(Window(), edit);
+        var checks = 0;
+        source.Responding = () => ++checks < 2; // the window answers; the check before the edit's words fails
+        Assert.Throws<UiaTimeoutException>(() => Walk(source, root));
+        Assert.Empty(source.WordsRead);
     }
 }

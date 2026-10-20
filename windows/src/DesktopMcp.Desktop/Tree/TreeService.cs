@@ -27,7 +27,7 @@ internal sealed class UiaWindowWalker(UiaWorker<UiaSession> worker) : IWindowWal
         // next element instead of racing the next window's walk for the budget and the ids.
         worker.RunAsync((session, token) => UiaJob.Run("UI Automation window walk", () =>
         {
-            var source = new UiaTreeSource(session);
+            var source = new UiaTreeSource(session, window);
             var root = source.ReadWindow(window);
             // upstream tree/service.py:939-941 strips the title before app_name_correction.
             var name = TreeConfig.WindowName(root.Name.Trim(), root.ClassName);

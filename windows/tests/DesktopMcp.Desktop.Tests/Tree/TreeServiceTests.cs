@@ -155,6 +155,48 @@ public class TreeServiceTests
         Assert.Equal(["B3"], tree.Interactive.Select(e => e.Name));
     }
 
+    /// <summary>Walks each window with the real walker over a one-button tree; the listed windows stop answering WM_NULL.</summary>
+    private sealed class GuardedWalker(HashSet<long> unresponsive) : IWindowWalker
+    {
+        public List<long> Walked { get; } = [];
+
+        public Task<WindowWalk> WalkAsync(long window, bool isBrowser, ScreenRect screen, ElementBudget budget, Func<int> nextId, CancellationToken cancellationToken)
+        {
+            Walked.Add(window);
+            var root = new UiaElementData { Name = $"W{window}", ControlType = TreeConfig.Window, Bounds = new ScreenRect(0, 0, 100, 100) };
+            var button = new UiaElementData
+            {
+                Name = $"B{window}", ControlType = TreeConfig.Button, LocalizedControlType = "button", LegacyRole = 0x2B,
+                Bounds = new ScreenRect(0, 0, 10, 10),
+            };
+            var source = new OneButtonSource(root, button, () => !unresponsive.Contains(window));
+            return Task.FromResult(new TreeWalker(source, budget, nextId).Walk(root, new WindowContext($"W{window}", isBrowser, root.Bounds, screen), cancellationToken));
+        }
+
+        private sealed class OneButtonSource(UiaElementData root, UiaElementData button, Func<bool> responding) : ITreeSource
+        {
+            public IReadOnlyList<UiaElementData> GetChildren(UiaElementData parent) => ReferenceEquals(parent, root) ? [button] : [];
+            public IReadOnlyList<WordBox> GetWords(UiaElementData element, int maxWords) => [];
+            public void Release(UiaElementData element) { }
+            public bool IsWindowResponding() => responding();
+        }
+    }
+
+    [Fact]
+    public async Task AnUnresponsiveWindowIsHandledAsATimeoutWhileTheOthersAreWalked()
+    {
+        _system.Processes[1] = 500;
+        _system.Processes[2] = 500;
+        var walker = new GuardedWalker([1]);
+        var service = new TreeService(_system, walker, _blocks, _ => null, (delay, _) => { _delays.Add(delay); return Task.CompletedTask; });
+        var tree = await service.CaptureAsync(null, [1, 2, 3], Screen, default);
+        Assert.Equal([1L, 3L], walker.Walked); // window 2 shares the blocked process
+        Assert.Empty(_delays);
+        Assert.True(_blocks.IsBlocked(1, 500));
+        Assert.Equal(["B3"], tree.Interactive.Select(e => e.Name));
+        Assert.Equal([0], tree.Interactive.Select(e => e.Id));
+    }
+
     [Fact]
     public async Task NoWindowIsWalkedTwice()
     {
