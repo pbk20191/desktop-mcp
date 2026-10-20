@@ -18,6 +18,6 @@ public sealed class CliEnvironment
         Error = Console.Error,
         GetVariable = Environment.GetEnvironmentVariable,
         HomeDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-        Serve = StdioServer.RunAsync,
+        Serve = ServeCommand.RunAsync,
     };
 }

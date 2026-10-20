@@ -129,6 +129,35 @@ public sealed class StdioServerTests
         });
     }
 
+    /// <summary>
+    /// preflight F1: the SDK gives every request its own <c>McpServer</c> object, so the registry keys on the session,
+    /// not on the call's server; two calls are one session and hear one notification per change.
+    /// </summary>
+    [Fact]
+    public async Task TwoCallsAreOneSessionAndHearOneNotification()
+    {
+        var control = new FakeControl();
+        await ServeAsync(ToolServices.CreateDefault() with { Control = control }, async (client, ct) =>
+        {
+            var received = 0;
+            var first = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            await using var registration = client.RegisterNotificationHandler(McpLogging.MessageMethod, (_, _) =>
+            {
+                Interlocked.Increment(ref received);
+                first.TrySetResult();
+                return ValueTask.CompletedTask;
+            });
+            for (var i = 0; i < 2; i++)
+                Assert.False((await client.CallToolAsync("Wait", new Dictionary<string, object?> { ["duration"] = 0 }, cancellationToken: ct)).IsError ?? false);
+            control.RaiseStateChanged(new(ControlState.User, 2, 10, true, "relaxed", 10));
+            await first.Task.WaitAsync(TimeSpan.FromSeconds(5), ct);
+            // Give a duplicate time to arrive (each session has its own send queue).
+            await Task.Delay(TimeSpan.FromMilliseconds(500), ct);
+            await client.ListToolsAsync(cancellationToken: ct);
+            Assert.Equal(1, Volatile.Read(ref received));
+        });
+    }
+
     [Fact]
     public async Task TheControlStartsBeforeServingAndStopsAfter()
     {

@@ -12,6 +12,8 @@
     <PackageVersion Include="Microsoft.Web.WebView2" Version="1.0.3719.77" />
     <PackageVersion Include="Microsoft.Graphics.Win2D" Version="1.4.0" />
     <PackageVersion Include="ModelContextProtocol" Version="2.2.0" />
+    <!-- Kestrel endpoints for the MCP SDK (spec §2); its only dependency is ModelContextProtocol [2.2.0]. -->
+    <PackageVersion Include="ModelContextProtocol.AspNetCore" Version="2.2.0" />
     <!-- Published 2026-07-02. Source-generated, NativeAOT ready; reads TOML 1.1. -->
     <PackageVersion Include="Tomlyn" Version="2.10.1" />
     <!-- Published 2026-09-08 (2.0.13 is newer than two weeks). AOT probe on 2026-10-19: zero warnings. -->

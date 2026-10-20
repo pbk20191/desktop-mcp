@@ -5,6 +5,7 @@
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <PackageReference Include="ModelContextProtocol" />
+    <PackageReference Include="ModelContextProtocol.AspNetCore" />
     <PackageReference Include="System.CommandLine" />
     <ProjectReference Include="..\DesktopMcp.Core\DesktopMcp.Core.csproj" />
     <ProjectReference Include="..\DesktopMcp.Desktop\DesktopMcp.Desktop.csproj" />

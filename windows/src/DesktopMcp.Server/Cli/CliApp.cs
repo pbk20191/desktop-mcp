@@ -105,11 +105,6 @@ public static class CliApp
             return 1;
         }
 
-        if (plan.Transport != "stdio")
-        {
-            environment.Error.WriteLine($"Error: The {plan.Transport} transport is not available in this build yet; it arrives in phase P5. Use --transport stdio.");
-            return 1;
-        }
         return await environment.Serve(plan, cancellationToken).ConfigureAwait(false);
     }
 

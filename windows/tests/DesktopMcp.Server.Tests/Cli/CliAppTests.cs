@@ -121,12 +121,12 @@ public sealed class CliAppTests : IDisposable
 
     [Theory]
     [InlineData("sse")]
-    [InlineData("streamable-http")]
-    public async Task HttpTransportsArriveInP5(string transport)
+    [InlineData("streamable-http", "--host", "127.0.0.1")]
+    public async Task HttpTransportsAreServed(string transport, params string[] more)
     {
-        Assert.Equal(1, await RunAsync("serve", "--transport", transport));
-        Assert.Contains($"Error: The {transport} transport is not available in this build yet; it arrives in phase P5. Use --transport stdio.", _error.ToString());
-        Assert.Null(_served);
+        Assert.Equal(0, await RunAsync(["serve", "--transport", transport, .. more]));
+        Assert.Equal(transport, _served!.Transport);
+        Assert.Empty(_error.ToString());
     }
 
     [Fact]
