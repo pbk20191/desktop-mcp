@@ -9,11 +9,13 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using ModelContextProtocol.AspNetCore;
 
 namespace DesktopMcp.Server.Http;
@@ -24,6 +26,16 @@ namespace DesktopMcp.Server.Http;
 /// </summary>
 public static class HttpServer
 {
+    /// <summary>
+    /// The SDK's documented AppContext switch that turns on the legacy SSE endpoints, in place of the obsolete
+    /// <c>EnableLegacySse</c> property (Decisions 4). Each <see cref="HttpServerTransportOptions"/> reads it once, when it
+    /// is constructed (preflight F6).
+    /// </summary>
+    internal const string LegacySseSwitch = "ModelContextProtocol.AspNetCore.EnableLegacySse";
+
+    /// <summary>Held from setting <see cref="LegacySseSwitch"/> until this host's transport options have read it.</summary>
+    private static readonly Lock LegacySseLock = new();
+
     /// <summary>The production HTTP server.</summary>
     public static Task<int> RunAsync(ServePlan plan, CancellationToken ct)
     {
@@ -101,7 +113,7 @@ public static class HttpServer
         await using var app = builder.Build();
         var logger = McpServerSetup.AfterBuild(app.Services, plan, services, desktopLog);
         using var releaseOnStop = McpServerSetup.ReleaseHeldInputOnStop(app.Services, services, logger);
-        app.MapMcp(EndpointPath(plan) == "/sse" ? "" : "/mcp");
+        MapTransport(app, plan);
 
         try
         {
@@ -141,8 +153,12 @@ public static class HttpServer
     /// <summary>The MCP endpoint's path: <c>/sse</c> for the legacy SSE transport, else <c>/mcp</c>.</summary>
     internal static string EndpointPath(ServePlan plan) => plan.Transport == "sse" ? "/sse" : "/mcp";
 
-    /// <summary>How long a session that called no tool still gets control notifications (Decisions 18).</summary>
-    internal static TimeSpan? SessionTtl(ServePlan plan) => TimeSpan.FromSeconds(60);
+    /// <summary>
+    /// How long a session that called no tool still gets control notifications (Decisions 18; upstream
+    /// <c>__main__.py:512-516</c>): zero for stateless Streamable HTTP, whose requests have no session to notify (they
+    /// would all share <see cref="McpServerSetup.NoSessionIdKey"/>), else 60 s.
+    /// </summary>
+    internal static TimeSpan? SessionTtl(ServePlan plan) => IsStateless(plan) ? TimeSpan.Zero : TimeSpan.FromSeconds(60);
 
     private const string HostCategory = "Microsoft.Extensions.Hosting.Internal.Host";
 
@@ -152,7 +168,39 @@ public static class HttpServer
 
     /// <summary>Decisions 4: stateful sessions unless --stateless-http (legacy SSE needs sessions, so it stays stateful).</summary>
     private static void ConfigureTransport(ServePlan plan, HttpServerTransportOptions options) =>
-        options.SessionMode = plan.StatelessHttp && plan.Transport != "sse" ? HttpServerSessionMode.Stateless : HttpServerSessionMode.Stateful;
+        options.SessionMode = IsStateless(plan) ? HttpServerSessionMode.Stateless : HttpServerSessionMode.Stateful;
+
+    /// <summary>Streamable HTTP with --stateless-http; --stateless-http has no effect on SSE, as upstream.</summary>
+    private static bool IsStateless(ServePlan plan) => plan.StatelessHttp && plan.Transport != "sse";
+
+    /// <summary>
+    /// Maps only the selected transport (Decisions 4): <c>/mcp</c> for Streamable HTTP; for <c>sse</c>,
+    /// <c>MapMcp("")</c>'s <c>GET /sse</c> and <c>POST /message</c>, with the Streamable endpoint it also maps at
+    /// <c>/</c> answering 404. The switch is process-wide, so it is set for every host and read while the lock is held.
+    /// </summary>
+    private static void MapTransport(WebApplication app, ServePlan plan)
+    {
+        var sse = plan.Transport == "sse";
+        if (sse) app.Use(StreamableEndpointNotFound);
+        lock (LegacySseLock)
+        {
+            AppContext.SetSwitch(LegacySseSwitch, sse);
+            app.MapMcp(sse ? "" : "/mcp");
+            // MapMcp reads the options already; resolving them here makes sure they were built under the lock.
+            _ = app.Services.GetRequiredService<IOptions<HttpServerTransportOptions>>().Value;
+        }
+    }
+
+    /// <summary>For <c>sse</c>: 404 for <c>/</c> and <c>/mcp</c> (with or without the trailing slash).</summary>
+    private static Task StreamableEndpointNotFound(HttpContext context, RequestDelegate next)
+    {
+        if (context.Request.Path.Value is null or "" or "/" or "/mcp" or "/mcp/")
+        {
+            context.Response.StatusCode = StatusCodes.Status404NotFound;
+            return Task.CompletedTask;
+        }
+        return next(context);
+    }
 
     private static IPAddress[] LookUp(string host)
     {

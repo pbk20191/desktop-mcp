@@ -46,7 +46,7 @@ The five conditions the spec implies but no feature test would naturally hit, mo
 
 1. **A web page in the user's browser reaching the loopback server** (DNS rebinding with `Host: attacker.example`, or a cross-site `fetch` with `Origin: https://attacker.example`). It must get 400 or 403 before the auth or the MCP endpoint runs, also when no auth key is set. Tests: Task 3 `TrustedHostTable`, `OriginTable`; Task 4 `ARebindingHostIsRejectedBeforeTheEndpoint`, `ACrossSiteOriginIsRejectedEvenWithoutAuth`.
 2. **IPv6 loopback and IPv4-mapped clients.** `Host: [::1]:8000` must pass the trusted-host check (upstream's port strip rejects it), and a client seen as `::ffff:10.1.2.3` must match an `10.0.0.0/8` allowlist entry. Tests: Task 3 `TrustedHostTable` (`[::1]`), `AMappedClientMatchesAnIPv4Entry`; Task 4 `AnIPv6LoopbackClientPassesTheChecks` (binds `[::1]`).
-3. **A session that ends while a notification is being sent** (client DELETE, dropped connection, server-side expiry). The notifier must forget it and keep serving others; no exception may reach the host. Tests: Task 2 `ADeletedSessionIsForgottenAndOthersStillHearNotifications`.
+3. **A session that ends while a notification is being sent** (client DELETE, dropped connection, server-side expiry). The notifier must forget it on a failed send or after the TTL (the SDK drops a send to a stream that is not open without failing it) and keep serving others; no exception may reach the host. Tests: Task 2 `ADeletedSessionIsForgottenAndOthersStillHearNotifications`.
 4. **A sampling client that never answers, or a call cancelled while sampling waits.** The Scrape call must end with the cancellation, and stateless HTTP (which cannot send requests) must never wait. Tests: Task 8 `ACancelledCallStopsWaitingForSampling`, `SamplingIsSkippedWhenDisabled`.
 5. **Bad TLS or bind inputs at startup** (a key that does not match the certificate, a missing file, an encrypted key, a port already in use). `serve` must print one `Error: ...` line and exit 1 within a few seconds, never hang or crash. Tests: Task 7 `AMismatchedKeyIsAConfigError`, `AMissingFileIsAConfigError`; Task 1 `APortInUseExitsWithAnError`.
 
@@ -405,6 +405,8 @@ public class HttpSessionTests
 
 `HttpRig.ReadSseEndpointEventAsync()` opens `GET /sse` with `Accept: text/event-stream` and returns the `data` of the first `endpoint` event (5 s bound). `HttpRig.OnLogMessage(tcs)` builds `McpClientOptions` whose `Handlers.NotificationHandlers` maps `notifications/message` to `tcs.TrySetResult(params)`. `HttpRig.HostIsRunning` is true while `RunAsync` has not completed.
 
+As built (preflight F1, F5): `OnLogMessage(tcs, eventName)` completes only on the first message whose `data.event` is `eventName` (an `OnLogMessage(Action<JsonElement>)` overload sees every message). The SDK drops a notification while the client's GET stream is not open yet, so the notification tests raise `user`/`ready` alternately with rising generations every 250 ms until `USER_CONTROL` is heard (5 s bound) instead of once. `TwoCallsInOneHttpSessionHearOneNotification` makes two calls in one session, warms the stream that way, then raises one change and expects exactly one more `USER_CONTROL`.
+
 - [ ] **Step 2: Run them to see them fail**
 
 Run: `dotnet test tests/DesktopMcp.Server.Tests --filter "FullyQualifiedName~LegacySseTests|FullyQualifiedName~HttpSessionTests"`
@@ -412,7 +414,7 @@ Expected: FAIL (no `/sse`; the TTL theory fails for stateless).
 
 - [ ] **Step 3: Implement**
 
-`SessionTtl` per Decisions 18. In `HttpServer`: under `static readonly Lock LegacySseLock`, `AppContext.SetSwitch(LegacySseSwitch, plan.Transport == "sse")`, then `MapMcp`, then resolve `IOptions<HttpServerTransportOptions>.Value` so the switch is read while held. For `sse`, add before `MapMcp` a middleware that answers 404 to any request whose path is `/` or `/mcp` (with or without trailing slash) and is not `/sse` or `/message` (Decisions 4). If `HostsAfterAnSseHostMapNoSse` shows the SDK reads the switch once per process, stop and report to the controller (no fallback is approved).
+`SessionTtl` per Decisions 18. In `HttpServer`: under `static readonly Lock LegacySseLock`, `AppContext.SetSwitch(LegacySseSwitch, plan.Transport == "sse")`, then `MapMcp`, then resolve `IOptions<HttpServerTransportOptions>.Value` so the switch is read while held. For `sse`, add before `MapMcp` a middleware that answers 404 to any request whose path is `/` or `/mcp` (with or without trailing slash) and is not `/sse` or `/message` (Decisions 4). Each `HttpServerTransportOptions` reads the switch when it is constructed, once per host (preflight F6), so no fallback is needed; `HostsAfterAnSseHostMapNoSse` keeps it so.
 
 - [ ] **Step 4: Run the tests**
 
@@ -1403,7 +1405,7 @@ git commit -m "Smoke-test HTTP and HTTPS under NativeAOT and record the P5 resul
 - Follow-ups P5: sampling (Task 8), mapped allowlist (Tasks 3, 4), audit log (Open question 2, moved), telemetry (dropped); P1 leftover secrets (Task 9).
 - Single exe and AOT: Task 1 Step 6, Task 10 Step 4; smoke never takes control: Task 10 Step 1.
 
-**Step scan:** every test step names its tests with exact strings; code steps give signatures, files and the upstream lines or Decisions their behaviour follows. The only conditional step is Task 2's switch check, which stops and reports rather than choosing a fallback.
+**Step scan:** every test step names its tests with exact strings; code steps give signatures, files and the upstream lines or Decisions their behaviour follows. Task 2's conditional switch check was dropped: the preflight (F6) found the switch is read per options instance.
 
 **Type consistency:** `HttpRig` (Task 1: `StartAsync`, `Plan`, `InitializeRequest`, `Endpoint`, `Base`, `Http`, `Announced`, `ConnectAsync`; Task 2 adds `ReadSseEndpointEventAsync`, `OnLogMessage`, `HostIsRunning`; Task 4 `SendAsync`, `SendInitializeAsync`; Task 6 `OAuthTokenAsync`; Task 7 `PinnedClient` and `ConnectAsync(http:)`); `HttpServer.RunAsync/EndpointPath/SessionTtl/Issuer` (Tasks 1, 2, 6); `HttpGuards`, `SecurityJson` (Task 3) used by Tasks 4, 5, 6; `OAuthServer`, `OAuthResult` (Task 5) used by Task 6; `HttpPipeline.Use(app, plan, validateOAuthToken)` (Task 4) extended in Task 6; `TlsCertificate.Load` (Task 7); `IWebScraper`, `ToolServices.SamplingEnabled`, `McpSampling`, `ScrapeTool.SystemPrompt` (Task 8) and `HttpServer` setting `SamplingEnabled` from `SessionTtl`.
 

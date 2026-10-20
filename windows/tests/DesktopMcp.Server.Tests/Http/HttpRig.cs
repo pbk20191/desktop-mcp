@@ -1,9 +1,12 @@
 using System.Net.Http.Headers;
 using System.Text;
+using System.Text.Json;
 using DesktopMcp.Core.Config;
+using DesktopMcp.Server.Control;
 using DesktopMcp.Server.Http;
 using DesktopMcp.Server.Tools;
 using ModelContextProtocol.Client;
+using ModelContextProtocol.Protocol;
 
 namespace DesktopMcp.Server.Tests.Http;
 
@@ -39,6 +42,9 @@ public sealed class HttpRig : IAsyncDisposable
 
     /// <summary>The announcement line the server wrote (Decisions 8), without its line break.</summary>
     public string Announced { get; }
+
+    /// <summary>True while the server's <c>RunAsync</c> has not completed.</summary>
+    public bool HostIsRunning => !_serving.IsCompleted;
 
     /// <summary>
     /// The plan <paramref name="arguments"/> resolve to over <paramref name="config"/> or the defaults (never
@@ -90,6 +96,63 @@ public sealed class HttpRig : IAsyncDisposable
         using var timeout = new CancellationTokenSource(Timeout);
         return await McpClient.CreateAsync(transport, options, cancellationToken: timeout.Token);
     }
+
+    /// <summary>
+    /// Opens <c>GET /sse</c> and returns the <c>data</c> of its first <c>endpoint</c> event (5 s bound); the stream is
+    /// closed afterwards.
+    /// </summary>
+    public async Task<string> ReadSseEndpointEventAsync()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(Base, "/sse"));
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+        using var response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+        response.EnsureSuccessStatusCode();
+        using var reader = new StreamReader(await response.Content.ReadAsStreamAsync(timeout.Token));
+        string? eventName = null;
+        while (await reader.ReadLineAsync(timeout.Token) is { } line)
+        {
+            if (line.Length == 0) eventName = null;
+            else if (line.StartsWith("event:", StringComparison.Ordinal)) eventName = line["event:".Length..].Trim();
+            else if (line.StartsWith("data:", StringComparison.Ordinal) && eventName == "endpoint") return line["data:".Length..].Trim();
+        }
+        throw new InvalidOperationException("GET /sse ended without an endpoint event.");
+    }
+
+    /// <summary>
+    /// Client options whose <c>notifications/message</c> handler completes <paramref name="received"/> with the
+    /// notification's params: the first message, or the first whose <c>data.event</c> is <paramref name="eventName"/>.
+    /// </summary>
+    public static McpClientOptions OnLogMessage(TaskCompletionSource<JsonElement> received, string? eventName = null) =>
+        OnLogMessage(message =>
+        {
+            if (eventName is null || EventOf(message) == eventName) received.TrySetResult(message);
+        });
+
+    /// <summary>Client options that pass the params of every <c>notifications/message</c> to <paramref name="heard"/>.</summary>
+    public static McpClientOptions OnLogMessage(Action<JsonElement> heard) => new()
+    {
+        Handlers = new McpClientHandlers
+        {
+            NotificationHandlers =
+            [
+                new(McpLogging.MessageMethod, (notification, _) =>
+                {
+                    if (notification.Params is { } parameters) {
+                        using var document = JsonDocument.Parse(parameters.ToJsonString());
+                        heard(document.RootElement.Clone());
+                    }
+                    return ValueTask.CompletedTask;
+                }),
+            ],
+        },
+    };
+
+    /// <summary>The <c>data.event</c> of a <c>notifications/message</c>'s params, or null.</summary>
+    public static string? EventOf(JsonElement message) =>
+        message.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Object && data.TryGetProperty("event", out var name)
+            ? name.GetString()
+            : null;
 
     /// <summary>A raw <c>initialize</c> POST to <paramref name="endpoint"/>.</summary>
     public static HttpRequestMessage InitializeRequest(Uri endpoint)
