@@ -10,7 +10,7 @@ Only the command name, the config directory (`~/.desktop-mcp`) and the environme
 | Port | Port of | Status | Language |
 |---|---|---|---|
 | [`macos/`](macos/) + root `Package.swift` | [CursorTouch/MacOS-MCP](https://github.com/CursorTouch/MacOS-MCP) | working, 12 tools | Swift 6 (SwiftPM) |
-| `windows/` | [CursorTouch/Windows-MCP](https://github.com/CursorTouch/Windows-MCP) | planned | to be decided (C# NativeAOT or Rust) |
+| [`windows/`](windows/) | [CursorTouch/Windows-MCP](https://github.com/CursorTouch/Windows-MCP) | in progress, Windows 11 22H2+ | C# (.NET 10 NativeAOT) |
 | `linux/` | none upstream | idea | to be decided (Rust) |
 
 ## Layout
@@ -20,9 +20,10 @@ desktop-mcp/
   Package.swift     # the macOS port's SwiftPM manifest; targets point into macos/, so
   Package.resolved  # `swift build`, `swift test` and Xcode work from the repository root
   spec/
-    tools.json      # the tool contract every port must match (names, parameters, descriptions)
+    macos/tools.json    # the macOS port's tool contract (names, parameters, descriptions)
+    windows/tools.json  # the Windows port's tool contract
   macos/            # Sources, Tests, README, scripts/build-release.sh (output: macos/dist/)
-  windows/          # (planned; its own solution or Cargo workspace)
+  windows/          # .NET 10 NativeAOT solution, scripts/build-release.ps1 (output: windows/dist/<rid>/)
   linux/            # (idea)
 ```
 
@@ -31,15 +32,16 @@ with the port (`macos-v0.1.0`), since the upstream projects version independentl
 
 ## The tool contract
 
-`spec/tools.json` is the single description of the tools: it is what `tools/list` must return,
-byte for byte apart from ordering. The macOS port generates it today and has a test that fails
-when its own `tools/list` drifts from it; every new port gets the same test. Platform-specific
-behaviour (what a key name means, which windows can be switched to) belongs in each port's
-README, not in the contract.
+Each port's contract is the tool list of its upstream server, kept in `spec/<port>/tools.json`
+(`spec/macos/tools.json`, `spec/windows/tools.json`): what `tools/list` must return, compared as
+JSON values. Each port has a test that fails when its own `tools/list` drifts from its file, so a
+change to a tool's name, parameters or description is a deliberate change to the contract. The
+upstream servers expose different tool sets, so the files differ; platform-specific behaviour
+belongs in each port's README.
 
 Tools split into two groups, which matters for headless use:
 
-- **Core tools** work without a display: `Shell`, `Scrape`, `Wait`, and the like. They run on a
+- **Core tools** work without a display: `Shell`/`PowerShell`, `Scrape`, `Wait`, and the like. They run on a
   server or in CI as they are.
 - **Desktop tools** need a session to drive: `Snapshot`, `Click`, `Type`, `Screenshot`, `App`.
   Without a display they return an error result instead of failing to start. On a headless
@@ -49,6 +51,8 @@ Tools split into two groups, which matters for headless use:
 ## Principles shared by all ports
 
 - No runtime dependencies. Build-time packages compiled into the binary are fine.
+  The Windows port is an exception: it requires the system Windows App SDK 2.5 runtime (user
+  decision), and ships as one exe that bootstraps it itself.
 - One root task per process; servers, telemetry and signal handling are its children, and the
   process exits by returning, never by calling `exit()`.
 - System frameworks over hand-rolled parsers where the platform has them, and the official MCP Swift SDK

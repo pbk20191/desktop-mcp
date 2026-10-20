@@ -1,0 +1,27 @@
+// Console control events (the PowerShell graceful stop)
+GenerateConsoleCtrlEvent
+CTRL_BREAK_EVENT
+// Job Objects (spec §5)
+CreateJobObject
+SetInformationJobObject
+AssignProcessToJobObject
+IsProcessInJob
+GetCurrentProcess
+CloseHandle
+JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+// Final path names (FileSystem path resolution)
+CreateFile
+GetFinalPathNameByHandle
+// The system process snapshot
+NtQuerySystemInformation
+SYSTEM_PROCESS_INFORMATION
+STATUS_INFO_LENGTH_MISMATCH
+// Opening and terminating a process
+OpenProcess
+GetProcessTimes
+GetExitCodeProcess
+TerminateProcess
+STILL_ACTIVE
+// The system code pages
+GetACP
+GetOEMCP

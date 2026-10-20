@@ -1,5 +1,5 @@
 {
-  "$comment": "Tool contract shared by every desktop-mcp port: names, parameters and descriptions must match this file. Generated from the macOS port (tools/list) and checked by each port's conformance test.",
+  "$comment": "Tool contract of the macOS port: names, parameters and descriptions must match this file. Generated from the macOS port (tools/list) and checked by its conformance test.",
   "tools": [
     {
       "annotations": {

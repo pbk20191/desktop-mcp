@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>desktop-mcp</AssemblyName>
+    <RootNamespace>DesktopMcp</RootNamespace>
+    <PublishAot>true</PublishAot>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <OptimizationPreference>Size</OptimizationPreference>
+    <EventSourceSupport>false</EventSourceSupport>
+    <!-- The Web SDK is used for Kestrel/hosting only; there are no static web assets, so no endpoints manifest. -->
+    <StaticWebAssetsEnabled>false</StaticWebAssetsEnabled>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\DesktopMcp.Server\DesktopMcp.Server.csproj" />
+  </ItemGroup>
+</Project>
