@@ -31,7 +31,8 @@ internal interface IOverlayArt
 internal sealed class OverlayArt : IOverlayArt
 {
     private const float Dpi = 96;
-    private const string Operation = "Control indicator";
+    private const string IndicatorOperation = "Control indicator";
+    private const string FlashOperation = "Capture flash";
 
     private static readonly Color White = Color.FromArgb(255, 255, 255, 255);
     private static readonly Color Clear = Color.FromArgb(0, 0, 0, 0);
@@ -85,7 +86,7 @@ internal sealed class OverlayArt : IOverlayArt
             }
             catch (Exception e) when (ComErrors.ShouldTranslate(e))
             {
-                throw ComErrors.Translate(Operation, e);
+                throw ComErrors.Translate(IndicatorOperation, e);
             }
         }
         return metrics is null ? null : new PixelSize(metrics.Width, metrics.Height);
@@ -99,16 +100,19 @@ internal sealed class OverlayArt : IOverlayArt
         if (art.Kind is ArtKind.EdgeTop or ArtKind.EdgeBottom or ArtKind.EdgeLeft or ArtKind.EdgeRight or ArtKind.CursorRing)
             return await Task.Run(() => art.Kind == ArtKind.CursorRing ? RenderCursor(art) : RenderEdge(art), ct).ConfigureAwait(false);
 
+        // The overlay the errors (and the gate's busy and abandoned messages) name.
+        var operation = art.Kind == ArtKind.FlashEdge ? FlashOperation : IndicatorOperation;
+
         try
         {
             _ensureRuntime();
         }
         catch (Exception e) when (ComErrors.ShouldTranslate(e))
         {
-            throw ComErrors.Translate(Operation, e);
+            throw ComErrors.Translate(operation, e);
         }
 
-        using var lease = await _gate.EnterAsync(Operation, GateWait, ct).ConfigureAwait(false);
+        using var lease = await _gate.EnterAsync(operation, GateWait, ct).ConfigureAwait(false);
         ct.ThrowIfCancellationRequested();
         Task<OverlayBitmap>? work = null;
         try
@@ -121,7 +125,7 @@ internal sealed class OverlayArt : IOverlayArt
             if (!work.IsCompleted)
             {
                 lease.AbandonUntil(work);
-                throw new DesktopException($"{Operation} failed: Win2D did not finish within {RenderTimeout.TotalSeconds:0.###} s.");
+                throw new DesktopException($"{operation} failed: Win2D did not finish within {RenderTimeout.TotalSeconds:0.###} s.");
             }
         }
         catch (OperationCanceledException) when (work is not null && ct.IsCancellationRequested && !work.IsCompleted)
@@ -131,7 +135,7 @@ internal sealed class OverlayArt : IOverlayArt
         }
         catch (Exception e) when (ComErrors.ShouldTranslate(e))
         {
-            throw ComErrors.Translate(Operation, e);
+            throw ComErrors.Translate(operation, e);
         }
 
         try
@@ -140,7 +144,7 @@ internal sealed class OverlayArt : IOverlayArt
         }
         catch (Exception e) when (ComErrors.ShouldTranslate(e))
         {
-            throw ComErrors.Translate(Operation, e);
+            throw ComErrors.Translate(operation, e);
         }
     }
 

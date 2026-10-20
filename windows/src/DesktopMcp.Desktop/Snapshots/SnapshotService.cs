@@ -223,7 +223,6 @@ public sealed class SnapshotService : IDesktopSnapshots
             var deadline = CaptureTimeout ?? CaptureDeadline(captured.Length);
             var image = await WithRuntimeAsync(() => BoundedAsync(token => _machine.Capture.CaptureAsync(area, monitors, token), deadline,
                 "Screen capture", cancellationToken)).ConfigureAwait(false);
-            ShowFlash(region, captured);
             Stage("screenshot_capture");
             originalSize = new PixelSize(image.Width, image.Height);
             scale = SnapshotSettings.ImageScale(_machine.Environment(SnapshotSettings.ScreenshotScaleVariable), image.Width, image.Height);
@@ -231,6 +230,8 @@ public sealed class SnapshotService : IDesktopSnapshots
             png = await WithRuntimeAsync(() => BoundedAsync(token => _machine.Renderer.RenderPngAsync(image, options, token), RenderTimeout,
                 "Image rendering", cancellationToken)).ConfigureAwait(false);
             Stage("screenshot_render");
+            // After the render, not between capture and render: the flash's art takes the same graphics slot (GpuGate).
+            ShowFlash(region, captured);
         }
 
         var snapshot = new DesktopSnapshot
@@ -255,7 +256,7 @@ public sealed class SnapshotService : IDesktopSnapshots
         return snapshot;
     }
 
-    // upstream desktop/service.py:1382: the flash follows the capture (and is excluded from the next one). A region gets
+    // upstream desktop/service.py:1382: the flash follows a successful screenshot (and is excluded from the next one). A region gets
     // outward strips; a display selection or a full capture gets inward strips inside each captured monitor (Decisions 27,
     // so not the region-style halo around a display union). It returns at once; nothing it does may fail the capture.
     private void ShowFlash(ScreenRect? region, ScreenRect[] captured)

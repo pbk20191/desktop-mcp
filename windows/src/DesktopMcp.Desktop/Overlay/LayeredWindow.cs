@@ -19,6 +19,9 @@ internal interface IOverlayLayer : IDisposable
 
     bool IsVisible { get; }
 
+    /// <summary>Whether <c>WDA_EXCLUDEFROMCAPTURE</c> took effect, so no capture can see the layer.</summary>
+    bool ExcludedFromCapture { get; }
+
     /// <summary>Replaces the layer's premultiplied BGRA content; the layer takes the bitmap's size.</summary>
     void SetContent(OverlayBitmap bitmap);
 
@@ -39,10 +42,10 @@ internal interface IOverlayLayerFactory
     IOverlayLayer Create(ScreenRect bounds, string name);
 }
 
-/// <summary>Task 1's verdict: <see cref="LayeredWindow"/>s.</summary>
-internal sealed class LayeredWindowFactory(DesktopLog? log = null) : IOverlayLayerFactory
+/// <summary>Task 1's verdict: <see cref="LayeredWindow"/>s; <paramref name="overlay"/> names the overlay in warnings and errors.</summary>
+internal sealed class LayeredWindowFactory(DesktopLog? log = null, string overlay = LayeredWindow.IndicatorOverlay) : IOverlayLayerFactory
 {
-    public IOverlayLayer Create(ScreenRect bounds, string name) => LayeredWindow.Create(bounds, name, log);
+    public IOverlayLayer Create(ScreenRect bounds, string name) => LayeredWindow.Create(bounds, name, log, overlay);
 }
 
 /// <summary>
@@ -64,19 +67,24 @@ internal sealed unsafe class LayeredWindow : IOverlayLayer
     /// <summary>The window class of every overlay layer is this prefix and the layer's name.</summary>
     internal const string ClassPrefix = "DesktopMcp.Overlay.";
 
+    internal const string IndicatorOverlay = "AI control indicator";
+    internal const string FlashOverlay = "capture flash";
+
     internal const WINDOW_EX_STYLE ExStyle = WINDOW_EX_STYLE.WS_EX_LAYERED | WINDOW_EX_STYLE.WS_EX_TRANSPARENT |
         WINDOW_EX_STYLE.WS_EX_TOPMOST | WINDOW_EX_STYLE.WS_EX_TOOLWINDOW | WINDOW_EX_STYLE.WS_EX_NOACTIVATE;
 
     private const int ErrorClassAlreadyExists = 1410;
 
     private readonly string _className;
+    private readonly string _overlay;
     private HWND _window;
     private byte _opacity = 255;
     private bool _hasContent;
 
-    private LayeredWindow(string className, ScreenRect bounds)
+    private LayeredWindow(string className, ScreenRect bounds, string overlay)
     {
         _className = className;
+        _overlay = overlay;
         Bounds = bounds;
     }
 
@@ -87,19 +95,23 @@ internal sealed unsafe class LayeredWindow : IOverlayLayer
 
     public bool IsVisible => !_window.IsNull && PInvoke.IsWindowVisible(_window);
 
+    public bool ExcludedFromCapture { get; private set; }
+
     private static HINSTANCE Instance => new(PInvoke.GetModuleHandle((PCWSTR)null).Value);
 
     /// <summary>
     /// Registers the class <c>DesktopMcp.Overlay.&lt;name&gt;</c> (or reuses it while another layer of the same name, such as
     /// the one a rebuild replaces, still has it) and creates the hidden window. A failed <c>SetWindowDisplayAffinity</c> is
-    /// logged at warning level and the layer is used anyway (Decisions 10, <c>control_overlay.py:71-74</c>).
+    /// logged at warning level and reported by <see cref="ExcludedFromCapture"/>: the indicator uses the layer anyway (Decisions
+    /// 10, <c>control_overlay.py:71-74</c>), the capture flash never shows it.
     /// </summary>
-    public static LayeredWindow Create(ScreenRect bounds, string name, DesktopLog? log)
+    public static LayeredWindow Create(ScreenRect bounds, string name, DesktopLog? log, string overlay = IndicatorOverlay)
     {
+        ArgumentException.ThrowIfNullOrEmpty(overlay);
         ArgumentException.ThrowIfNullOrEmpty(name);
         if (bounds.Width <= 0 || bounds.Height <= 0)
             throw new ArgumentException($"A {bounds.Width}x{bounds.Height} overlay layer has no pixels.", nameof(bounds));
-        var layer = new LayeredWindow(ClassPrefix + name, bounds);
+        var layer = new LayeredWindow(ClassPrefix + name, bounds, overlay);
         var previous = EnterPhysicalPixels();
         try
         {
@@ -109,13 +121,14 @@ internal sealed unsafe class LayeredWindow : IOverlayLayer
         {
             Leave(previous);
         }
-        if (!PInvoke.SetWindowDisplayAffinity(layer._window, WINDOW_DISPLAY_AFFINITY.WDA_EXCLUDEFROMCAPTURE))
+        layer.ExcludedFromCapture = PInvoke.SetWindowDisplayAffinity(layer._window, WINDOW_DISPLAY_AFFINITY.WDA_EXCLUDEFROMCAPTURE);
+        if (!layer.ExcludedFromCapture)
         {
             var error = Marshal.GetLastPInvokeError();
             try
             {
                 log?.Invoke(DesktopLogLevel.Warning,
-                    $"display affinity unavailable for AI control indicator (SetWindowDisplayAffinity failed, Win32 error {error})", null);
+                    $"display affinity unavailable for {overlay} (SetWindowDisplayAffinity failed, Win32 error {error})", null);
             }
             catch (Exception)
             {
@@ -247,7 +260,7 @@ internal sealed unsafe class LayeredWindow : IOverlayLayer
             PInvoke.ShowWindow(_window, SHOW_WINDOW_CMD.SW_SHOWNA);
             if (!PInvoke.SetWindowPos(_window, HWND.HWND_TOPMOST, 0, 0, 0, 0, SET_WINDOW_POS_FLAGS.SWP_NOSIZE | SET_WINDOW_POS_FLAGS.SWP_NOMOVE |
                     SET_WINDOW_POS_FLAGS.SWP_NOACTIVATE | SET_WINDOW_POS_FLAGS.SWP_SHOWWINDOW) || !PInvoke.IsWindowVisible(_window))
-                throw new InvalidOperationException("AI control indicator window could not be shown");
+                throw new InvalidOperationException($"{_overlay} window could not be shown");
         }
         finally
         {
@@ -260,7 +273,7 @@ internal sealed unsafe class LayeredWindow : IOverlayLayer
     {
         ThrowIfDisposed();
         PInvoke.ShowWindow(_window, SHOW_WINDOW_CMD.SW_HIDE);
-        if (PInvoke.IsWindowVisible(_window)) throw new InvalidOperationException("AI control indicator window could not be hidden");
+        if (PInvoke.IsWindowVisible(_window)) throw new InvalidOperationException($"{_overlay} window could not be hidden");
     }
 
     /// <summary>Destroys the window and unregisters its class (which fails harmlessly while another layer of the name lives).</summary>

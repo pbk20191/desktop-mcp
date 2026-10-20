@@ -37,7 +37,7 @@ public class CaptureFlashDesktopTests
         var log = new List<Exception?>();
         try
         {
-            var flash = new CaptureFlash(host, new LayeredWindowFactory(), OverlayArt.Shared, new Win32Displays().GetVirtualScreen,
+            var flash = new CaptureFlash(host, new LayeredWindowFactory(null, LayeredWindow.FlashOverlay), OverlayArt.Shared, new Win32Displays().GetVirtualScreen,
                 _ => null, TimeProvider.System, (_, _, error) => { lock (log) log.Add(error); });
             await test(flash);
             lock (log) Assert.Empty(log);

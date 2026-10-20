@@ -40,14 +40,24 @@ public sealed class DesktopMachine
     /// The real machine. Cheap: it starts no thread and touches no COM, UIA, desktop or Windows App SDK (the UIA worker
     /// starts its thread on the first job).
     /// </summary>
-    public static DesktopMachine CreateDefault() => CreateDefault(CaptureFlash.CreateDefault());
+    public static DesktopMachine CreateDefault() => Create(displays => CaptureFlash.CreateDefault(displays.GetVirtualScreen));
 
     /// <summary>The real machine with <paramref name="flash"/> in place of the real capture flash (tests).</summary>
-    internal static DesktopMachine CreateDefault(ICaptureFlash flash) => new(
-        new UiaWorker<UiaSession>(UiaSession.Create),
-        new HangBlockList(TimeProvider.System, HangBlockList.DefaultDuration),
-        new Win32WindowSystem(),
-        new VirtualDesktopService(),
-        new Win32Displays(),
-        flash ?? throw new ArgumentNullException(nameof(flash)));
+    internal static DesktopMachine CreateDefault(ICaptureFlash flash)
+    {
+        ArgumentNullException.ThrowIfNull(flash);
+        return Create(_ => flash);
+    }
+
+    private static DesktopMachine Create(Func<IDisplayProvider, ICaptureFlash> flash)
+    {
+        var displays = new Win32Displays();
+        return new(
+            new UiaWorker<UiaSession>(UiaSession.Create),
+            new HangBlockList(TimeProvider.System, HangBlockList.DefaultDuration),
+            new Win32WindowSystem(),
+            new VirtualDesktopService(),
+            displays,
+            flash(displays));
+    }
 }

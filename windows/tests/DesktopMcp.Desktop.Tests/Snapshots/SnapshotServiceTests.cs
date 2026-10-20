@@ -173,7 +173,13 @@ public class SnapshotServiceTests
     private sealed class FakeFlash : ICaptureFlash
     {
         public List<(ScreenRect? Region, ScreenRect[] Monitors)> Shows { get; } = [];
-        public void Show(ScreenRect? region, IReadOnlyList<ScreenRect> capturedMonitors) => Shows.Add((region, capturedMonitors.ToArray()));
+        public Func<bool> Probe { get; set; } = () => true;
+        public List<bool> Probed { get; } = [];
+        public void Show(ScreenRect? region, IReadOnlyList<ScreenRect> capturedMonitors)
+        {
+            Probed.Add(Probe());
+            Shows.Add((region, capturedMonitors.ToArray()));
+        }
     }
 
     private sealed class ThrowingFlash : ICaptureFlash
@@ -467,6 +473,23 @@ public class SnapshotServiceTests
     public async Task ACaptureFailureShowsNoFlash()
     {
         var service = new SnapshotService(Dependencies() with { Capture = new ThrowingCapture(new DesktopException("capture failed")) });
+        await Assert.ThrowsAsync<DesktopException>(() => service.CaptureAsync(new SnapshotRequest { UseVision = true }, default));
+        Assert.Empty(_flash.Shows);
+    }
+
+    [Fact]
+    public async Task TheFlashFollowsTheScreenshotsRender()
+    {
+        // The flash renders under the same graphics gate: the screenshot's own render never queues behind it.
+        _flash.Probe = () => _renderer.Options is not null;
+        await Service().CaptureAsync(new SnapshotRequest { UseVision = true }, default);
+        Assert.Equal([true], _flash.Probed);
+    }
+
+    [Fact]
+    public async Task ARenderFailureShowsNoFlash()
+    {
+        var service = new SnapshotService(Dependencies() with { Renderer = new ThrowingRenderer(new DesktopException("render failed")) });
         await Assert.ThrowsAsync<DesktopException>(() => service.CaptureAsync(new SnapshotRequest { UseVision = true }, default));
         Assert.Empty(_flash.Shows);
     }

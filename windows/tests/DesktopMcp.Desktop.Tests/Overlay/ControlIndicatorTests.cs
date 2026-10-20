@@ -386,6 +386,9 @@ internal sealed class FakeLayerFactory : IOverlayLayerFactory
     /// <summary>Once this many layers exist, <see cref="Create"/> throws (as a failed CreateWindowEx).</summary>
     public int? FailCreateAfter { get; set; }
 
+    /// <summary>The layer created at this index reports a failed WDA_EXCLUDEFROMCAPTURE.</summary>
+    public int? NotExcludedAt { get; set; }
+
     public IReadOnlyList<FakeLayer> Created
     {
         get { lock (_created) return _created.ToArray(); }
@@ -396,7 +399,7 @@ internal sealed class FakeLayerFactory : IOverlayLayerFactory
         lock (_created)
         {
             if (_created.Count >= FailCreateAfter) throw new InvalidOperationException("overlay window could not be created");
-            var layer = new FakeLayer(this, bounds, name);
+            var layer = new FakeLayer(this, bounds, name) { ExcludedFromCapture = _created.Count != NotExcludedAt };
             _created.Add(layer);
             return layer;
         }
@@ -409,6 +412,8 @@ internal sealed class FakeLayer(FakeLayerFactory factory, ScreenRect bounds, str
     public ScreenRect Bounds { get; private set; } = bounds;
     public bool IsVisible { get; private set; }
     public bool Disposed { get; private set; }
+    public bool ExcludedFromCapture { get; init; } = true;
+    public bool EverShown { get; private set; }
     public byte? Opacity { get; private set; }
     public OverlayBitmap? Content { get; private set; }
     public ScreenPoint Position => new(Bounds.Left, Bounds.Top);
@@ -436,6 +441,7 @@ internal sealed class FakeLayer(FakeLayerFactory factory, ScreenRect bounds, str
         ObjectDisposedException.ThrowIf(Disposed, this);
         if (factory.FailShow) throw new InvalidOperationException("AI control indicator window could not be shown");
         IsVisible = true;
+        EverShown = true;
     }
 
     public void Hide()
@@ -460,12 +466,14 @@ internal sealed class FakeOverlayArt : IOverlayArt
     public Exception? Fail { get; set; }
     public TaskCompletionSource? Hold { get; set; }
     public int Renders => Volatile.Read(ref _renders);
+    public List<CancellationToken> Tokens { get; } = [];
 
     public PixelSize? NoticeSize(int screenWidth) => new PixelSize(400, 120);
 
     public async Task<OverlayBitmap> RenderAsync(LayerArt art, CancellationToken ct)
     {
         Interlocked.Increment(ref _renders);
+        lock (Tokens) Tokens.Add(ct);
         if (Hold is { } hold) await hold.Task.WaitAsync(ct).ConfigureAwait(false);
         if (Fail is { } fail) throw fail;
         return new OverlayBitmap(1, 1, new byte[4]);

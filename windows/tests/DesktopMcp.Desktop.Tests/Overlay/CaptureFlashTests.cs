@@ -1,5 +1,6 @@
 using DesktopMcp.Core.Snapshots;
 using DesktopMcp.Desktop.Dispatching;
+using DesktopMcp.Desktop.Imaging;
 using DesktopMcp.Desktop.Overlay;
 using DesktopMcp.Desktop.Tests.Dispatching;
 
@@ -137,6 +138,64 @@ public class CaptureFlashTests
     }
 
     [Fact]
+    public async Task AReplacedFlashNeverCancelsItsRender()
+    {
+        var rig = new FlashRig();
+        rig.Art.Hold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        rig.Flash.Show(new ScreenRect(200, 200, 600, 500), [Monitor]);
+        var first = rig.Flash.Pending;
+        rig.Flash.Show(null, [Monitor]);
+        rig.Art.Hold.SetResult();
+        await first.WaitAsync(TimeSpan.FromSeconds(10));
+        await rig.Settled();
+        lock (rig.Art.Tokens) Assert.All(rig.Art.Tokens, ct => Assert.False(ct.CanBeCanceled));
+        Assert.Empty(rig.Log);
+        Assert.Equal(4, rig.Layers.Count);                                  // the stale render is dropped, not shown
+        Assert.All(rig.Layers, l => Assert.StartsWith("flash_0_", l.Name, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ANewerShowWhileTheArtRendersDoesNotAbandonTheSharedGate()
+    {
+        var gate = new GpuGate();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var hold = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var art = new OverlayArt(() => { }, gate, async _ =>
+        {
+            entered.TrySetResult();
+            await hold.Task;
+            return new OverlayBitmap(1, 1, new byte[4]);
+        });
+        var rig = new FlashRig(art: art);
+        rig.Flash.Show(new ScreenRect(200, 200, 600, 500), [Monitor]);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        rig.Flash.Show(null, [Monitor]);
+        await Task.Delay(200);                                              // time for a (wrong) cancellation to abandon the gate
+        var screenshotRender = gate.EnterAsync("Image rendering", TimeSpan.FromSeconds(10), default);
+        hold.SetResult();
+        using (await screenshotRender.WaitAsync(TimeSpan.FromSeconds(10)))
+        {
+        }
+        await rig.Settled();
+        Assert.Empty(rig.Log);
+    }
+
+    [Fact]
+    public async Task ALayerNotExcludedFromCaptureIsNeverShown()
+    {
+        var rig = new FlashRig();
+        rig.Factory.NotExcludedAt = 2;
+        rig.Flash.Show(null, [Monitor]);
+        await rig.Settled();
+        rig.Advance(0.5);
+        Assert.Equal(4, rig.Layers.Count);
+        Assert.All(rig.Layers, l => Assert.True(l.Disposed));
+        Assert.DoesNotContain(rig.Layers, l => l.EverShown);
+        Assert.Equal(DesktopLogLevel.Debug, Assert.Single(rig.Log).Level);
+        Assert.DoesNotContain(rig.Dispatcher.Timers, t => !t.Stopped);
+    }
+
+    [Fact]
     public async Task ARenderFailureIsLoggedAndCreatesNothing()
     {
         var rig = new FlashRig();
@@ -195,7 +254,7 @@ public class CaptureFlashTests
     public void TheDefaultFlashIsCheap()
     {
         // Creating the real flash starts no dispatcher and loads no graphics; nothing to observe but that it does not throw.
-        Assert.IsType<CaptureFlash>(CaptureFlash.CreateDefault());
+        Assert.IsType<CaptureFlash>(CaptureFlash.CreateDefault(() => new ScreenRect(0, 0, 1920, 1080)));
     }
 
     [Fact]
@@ -207,11 +266,11 @@ internal sealed class FlashRig
     private readonly StopwatchClock _clock = new();
 
     public FlashRig(string? env = null, bool failCreate = false, ScreenRect? virtualScreen = null, bool virtualScreenFails = false,
-        bool environmentFails = false)
+        bool environmentFails = false, IOverlayArt? art = null)
     {
         Factory = new FakeLayerFactory { FailCreateAfter = failCreate ? 1 : null };
         var screen = virtualScreen ?? new ScreenRect(0, 0, 1920, 1080);
-        Flash = new CaptureFlash(new DispatcherHost(() => Dispatcher), Factory, Art,
+        Flash = new CaptureFlash(new DispatcherHost(() => Dispatcher), Factory, art ?? Art,
             () => virtualScreenFails ? throw new InvalidOperationException("GetSystemMetrics failed") : screen,
             name => environmentFails
                 ? throw new InvalidOperationException("environment unavailable")

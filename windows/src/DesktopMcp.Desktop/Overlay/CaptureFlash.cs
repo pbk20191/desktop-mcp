@@ -1,7 +1,6 @@
 using System.Collections.Concurrent;
 using DesktopMcp.Core.Snapshots;
 using DesktopMcp.Desktop.Dispatching;
-using DesktopMcp.Desktop.Displays;
 
 namespace DesktopMcp.Desktop.Overlay;
 
@@ -42,7 +41,9 @@ internal sealed class CaptureFlash : ICaptureFlash
 {
     internal const string DisableVariable = "DESKTOP_MCP_DISABLE_FLASH";
 
-    private const int CacheLimit = 32;
+    // A region strip's art depends on the region (its blur sees the far edges of small regions), so region flashes rarely
+    // reuse art: the cache holds about two flashes' strips (a few MB at most), enough for repeated full-screen flashes.
+    private const int CacheLimit = 8;
     private const string Failed = "capture flash failed";
 
     private readonly DispatcherHost _host;
@@ -54,9 +55,9 @@ internal sealed class CaptureFlash : ICaptureFlash
     private readonly DesktopLog? _log;
     private readonly ConcurrentDictionary<LayerArt, OverlayBitmap> _cache = new();
 
-    // Any thread.
+    // Any thread; _requested and _pending change together under _gate.
+    private readonly Lock _gate = new();
     private long _requested;
-    private CancellationTokenSource? _rendering;
     private Task _pending = Task.CompletedTask;
 
     // Dispatcher thread only.
@@ -81,22 +82,23 @@ internal sealed class CaptureFlash : ICaptureFlash
     }
 
     /// <summary>
-    /// The real flash: layered windows on <see cref="DispatcherHost.Shared"/>, <see cref="OverlayArt.Shared"/>, the real
-    /// virtual screen, environment and clock. Cheap: it starts no thread and loads nothing until the first flash.
+    /// The real flash: layered windows on <see cref="DispatcherHost.Shared"/>, <see cref="OverlayArt.Shared"/>, the machine's
+    /// <paramref name="virtualScreen"/>, the process environment and the system clock. Cheap: it starts no thread and loads
+    /// nothing until the first flash.
     /// </summary>
-    public static ICaptureFlash CreateDefault(DesktopLog? log = null)
-    {
-        var displays = new Win32Displays();
-        return new CaptureFlash(DispatcherHost.Shared, new LayeredWindowFactory(log), OverlayArt.Shared, displays.GetVirtualScreen,
+    public static ICaptureFlash CreateDefault(Func<ScreenRect> virtualScreen, DesktopLog? log = null) =>
+        new CaptureFlash(DispatcherHost.Shared, new LayeredWindowFactory(log, LayeredWindow.FlashOverlay), OverlayArt.Shared, virtualScreen,
             Environment.GetEnvironmentVariable, TimeProvider.System, log);
-    }
 
     /// <summary>upstream <c>_flash_disabled</c>: 1, true, yes or on, trimmed, in any case.</summary>
     internal static bool Disabled(string? value) =>
         value?.Trim().ToLowerInvariant() is "1" or "true" or "yes" or "on";
 
     /// <summary>The last <see cref="Show"/>'s render and dispatcher step (it never faults), for tests.</summary>
-    internal Task Pending => Volatile.Read(ref _pending);
+    internal Task Pending
+    {
+        get { lock (_gate) return _pending; }
+    }
 
     public void Show(ScreenRect? region, IReadOnlyList<ScreenRect> capturedMonitors)
     {
@@ -104,14 +106,12 @@ internal sealed class CaptureFlash : ICaptureFlash
         {
             if (Disabled(_environment(DisableVariable))) return;
             var monitors = capturedMonitors.ToArray();
-            var request = Interlocked.Increment(ref _requested);
-            // A newer flash replaces this one: a render still waiting for the graphics slot gives way, and a flash that does
-            // not render within its own duration is not worth showing.
-            // The sources are not disposed (their 3.5 s timer releases itself), so this cancel never races a disposal; it runs
-            // the replaced render's callbacks on the thread pool, not on the capturing thread.
-            var rendering = new CancellationTokenSource(OverlayLayout.FlashDuration, _time);
-            _ = Interlocked.Exchange(ref _rendering, rendering)?.CancelAsync();
-            Volatile.Write(ref _pending, Task.Run(() => RunAsync(request, region, monitors, rendering)));
+            var requestedAt = _time.GetTimestamp();
+            lock (_gate)
+            {
+                var request = ++_requested;
+                _pending = Task.Run(() => RunAsync(request, region, monitors, requestedAt));
+            }
         }
         catch (Exception e)
         {
@@ -121,43 +121,40 @@ internal sealed class CaptureFlash : ICaptureFlash
 
     // ---- thread pool ----
 
-    private async Task RunAsync(long request, ScreenRect? region, ScreenRect[] monitors, CancellationTokenSource rendering)
+    // The render is never cancelled: a cancelled Win2D render abandons the graphics slot it shares with the screenshots
+    // (GpuGate), which would fail the next capture. A replaced or late flash renders to the end and is dropped afterwards.
+    private async Task RunAsync(long request, ScreenRect? region, ScreenRect[] monitors, long requestedAt)
     {
         try
         {
             var specs = OverlayLayout.Flash(region, monitors, _virtualScreen());
             if (specs.Count == 0) return;
-            var ct = rendering.Token;
-            var bitmaps = await Task.WhenAll(specs.Select(spec => RenderAsync(spec.Art, ct))).ConfigureAwait(false);
-            if (!Current(request)) return;
-            var dispatcher = await _host.GetAsync(ct).ConfigureAwait(false);
+            var bitmaps = await Task.WhenAll(specs.Select(spec => RenderAsync(spec.Art))).ConfigureAwait(false);
+            // A newer flash replaces this one; a flash that waited for the graphics slot longer than it lasts is not shown.
+            if (!Current(request) || _time.GetElapsedTime(requestedAt) >= OverlayLayout.FlashDuration) return;
+            var dispatcher = await _host.GetAsync(CancellationToken.None).ConfigureAwait(false);
             await dispatcher.InvokeAsync(() => Start(dispatcher, request, specs, bitmaps, fullScreen: region is null)).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (rendering.IsCancellationRequested && !Current(request))
-        {
-            // Replaced by a newer flash.
         }
         catch (Exception e)
         {
             Log(e);
         }
-        finally
-        {
-            Interlocked.CompareExchange(ref _rendering, null, rendering);
-        }
     }
 
-    private async Task<OverlayBitmap> RenderAsync(LayerArt art, CancellationToken ct)
+    private async Task<OverlayBitmap> RenderAsync(LayerArt art)
     {
         if (_cache.TryGetValue(art, out var cached)) return cached;
-        var bitmap = await _art.RenderAsync(art, ct).ConfigureAwait(false);
+        var bitmap = await _art.RenderAsync(art, CancellationToken.None).ConfigureAwait(false);
         // Region flashes come in every size: the cache keeps the most recent strips only.
         if (_cache.Count >= CacheLimit) _cache.Clear();
         _cache[art] = bitmap;
         return bitmap;
     }
 
-    private bool Current(long request) => Volatile.Read(ref _requested) == request;
+    private bool Current(long request)
+    {
+        lock (_gate) return _requested == request;
+    }
 
     // ---- dispatcher thread ----
 
@@ -189,6 +186,15 @@ internal sealed class CaptureFlash : ICaptureFlash
         {
             foreach (var layer in created) DisposeQuietly(layer);
             throw;
+        }
+
+        // Unlike the indicator (Decisions 10), a flash layer a capture could see is never shown: it would appear in the next
+        // screenshot.
+        if (created.Any(layer => !layer.ExcludedFromCapture))
+        {
+            foreach (var layer in created) DisposeQuietly(layer);
+            Log(new InvalidOperationException("capture flash window could not be excluded from capture; the flash is not shown"));
+            return;
         }
 
         var running = new Running([.. created], _time.GetTimestamp(), fullScreen);

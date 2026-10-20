@@ -36,6 +36,18 @@ public class OverlayArtSeamTests
         Assert.Equal(1, calls);
     }
 
+    [Theory]
+    [InlineData("FlashEdge", "Capture flash failed: ")]
+    [InlineData("Notice", "Control indicator failed: ")]
+    public async Task AGateErrorNamesTheOverlay(string kindName, string prefix)
+    {
+        var gate = new GpuGate();
+        using var held = await gate.EnterAsync("Screen capture", TimeSpan.FromSeconds(5), default);
+        var art = new OverlayArt(() => { }, gate, _ => Task.FromResult(One)) { GateWait = TimeSpan.FromMilliseconds(20) };
+        var error = await Assert.ThrowsAsync<DesktopException>(() => art.RenderAsync(new LayerArt(Enum.Parse<ArtKind>(kindName), 10, 10, Blue), default));
+        Assert.StartsWith(prefix, error.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task ACancelledCallerStopsWaitingForTheGateAndRendersNothing()
     {
