@@ -94,3 +94,15 @@ ProcessIdToSessionId
 OpenInputDesktop
 GetUserObjectInformation
 CloseDesktop
+// Input injection (SendInput only) and the integrity-level check behind the UIPI diagnosis
+SendInput
+INPUT
+MapVirtualKey
+OpenProcessToken
+GetTokenInformation
+TOKEN_MANDATORY_LABEL
+TOKEN_ELEVATION
+GetSidSubAuthority
+GetSidSubAuthorityCount
+GetCurrentProcess
+WindowFromPoint
