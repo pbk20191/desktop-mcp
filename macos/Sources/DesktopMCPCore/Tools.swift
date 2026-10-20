@@ -447,6 +447,7 @@ public enum DesktopMCP {
             OpenTool.tool(workspace: SystemWorkspace()),
             ClipboardTool.tool(),
             RunShortcutTool.tool(),
+            SpotlightTool.tool(),
         ]
     }
 }

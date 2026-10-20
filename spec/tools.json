@@ -557,6 +557,58 @@
         "type": "object"
       },
       "name": "RunShortcut"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true,
+        "title": "Spotlight"
+      },
+      "description": "Searches the Spotlight index for files. By default 'query' is words that must each appear in the file name or text; raw=true passes 'query' as a Spotlight query (e.g. kMDItemContentModificationDate > $time.today(-7)). 'scope' is a list of folders (default: home). 'kind' narrows the type. Returns up to 'limit' (max 200) lines '<path>\\t<kind>\\t<modified>\\t<size>', newest first; content=true adds the start of each file's indexed text.",
+      "inputSchema": {
+        "properties": {
+          "content": {
+            "default": false,
+            "type": "boolean"
+          },
+          "kind": {
+            "default": "any",
+            "enum": [
+              "any",
+              "document",
+              "pdf",
+              "image",
+              "folder",
+              "application"
+            ],
+            "type": "string"
+          },
+          "limit": {
+            "default": 20,
+            "type": "integer"
+          },
+          "query": {
+            "type": "string"
+          },
+          "raw": {
+            "default": false,
+            "type": "boolean"
+          },
+          "scope": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "Spotlight"
     }
   ]
 }
