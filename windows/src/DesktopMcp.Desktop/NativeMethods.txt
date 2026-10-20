@@ -109,3 +109,15 @@ WindowFromPoint
 // Desktop input: the double-click time and the non-text clipboard check (Type pastes only over text or nothing)
 GetDoubleClickTime
 CountClipboardFormats
+// Foreground and window placement (Decisions 7 and 32): ShowWindowAsync and SWP_ASYNCWINDOWPOS, never a synchronous cross-process call
+SetForegroundWindow
+BringWindowToTop
+AttachThreadInput
+AllowSetForegroundWindow
+ASFW_ANY
+ShowWindowAsync
+SetWindowPos
+GetCurrentThreadId
+GetWindowRect
+GetWindowText
+GetWindowTextLength

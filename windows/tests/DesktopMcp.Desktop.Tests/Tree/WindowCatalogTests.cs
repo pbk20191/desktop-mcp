@@ -30,6 +30,11 @@ internal sealed class FakeWindowSystem : IWindowSystem
     public long GetForegroundWindow() => Foreground.Count > 0 ? Foreground.Dequeue() : 0;
     public long GetRoot(long window) => Roots.GetValueOrDefault(window, window);
     public string? GetProcessName(int processId) => ProcessNames.GetValueOrDefault(processId);
+    public uint GetThreadId(long window) => 0;
+    public ScreenRect GetBounds(long window) => default;
+    public long WindowFromPoint(ScreenPoint point) => 0;
+    public string GetTitle(long window) => "";
+    public WindowResponse CheckResponding(long window) => WindowResponse.Responding;
 }
 
 public class WindowCatalogTests

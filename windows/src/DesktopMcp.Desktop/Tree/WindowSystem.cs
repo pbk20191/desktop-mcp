@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using DesktopMcp.Core.Snapshots;
 using Windows.Win32;
 using Windows.Win32.Foundation;
 using Windows.Win32.System.Threading;
@@ -33,6 +34,21 @@ internal interface IWindowSystem
 
     /// <summary>The executable's file name ("chrome.exe"), or null.</summary>
     string? GetProcessName(int processId);
+
+    /// <summary>The window's GUI thread (GetWindowThreadProcessId), or 0 when it cannot be read.</summary>
+    uint GetThreadId(long window);
+
+    /// <summary>The window rectangle (GetWindowRect), or an empty rectangle when it cannot be read.</summary>
+    ScreenRect GetBounds(long window);
+
+    /// <summary>The top-level window (GA_ROOT) under the point, or 0.</summary>
+    long WindowFromPoint(ScreenPoint point);
+
+    /// <summary>The window's title (GetWindowText, which reads the stored caption without messaging another process), or "".</summary>
+    string GetTitle(long window);
+
+    /// <summary>Whether the window's UI thread answers the WM_NULL check (Decisions 38).</summary>
+    WindowResponse CheckResponding(long window);
 }
 
 internal sealed unsafe class Win32WindowSystem : IWindowSystem
@@ -71,6 +87,32 @@ internal sealed unsafe class Win32WindowSystem : IWindowSystem
         var error = (WIN32_ERROR)Marshal.GetLastPInvokeError();
         if (PInvoke.IsHungAppWindow(Hwnd(window))) return WindowResponse.Hung;
         return error == WIN32_ERROR.ERROR_TIMEOUT ? WindowResponse.NotResponding : WindowResponse.Responding;
+    }
+
+    // The static CheckResponding has the same signature, so the interface member is implemented explicitly (preflight F4).
+    WindowResponse IWindowSystem.CheckResponding(long window) => CheckResponding(window);
+
+    public uint GetThreadId(long window) => PInvoke.GetWindowThreadProcessId(Hwnd(window), null);
+
+    public ScreenRect GetBounds(long window) =>
+        PInvoke.GetWindowRect(Hwnd(window), out var rect) ? new ScreenRect(rect.left, rect.top, rect.right, rect.bottom) : default;
+
+    public long WindowFromPoint(ScreenPoint point)
+    {
+        var window = PInvoke.WindowFromPoint(new System.Drawing.Point(point.X, point.Y));
+        return window.IsNull ? 0 : GetRoot((nint)window);
+    }
+
+    public string GetTitle(long window)
+    {
+        var length = PInvoke.GetWindowTextLength(Hwnd(window));
+        if (length <= 0) return "";
+        var buffer = new char[length + 1];
+        fixed (char* text = buffer)
+        {
+            var copied = PInvoke.GetWindowText(Hwnd(window), text, buffer.Length);
+            return copied > 0 ? new string(text, 0, Math.Min(copied, length)) : "";
+        }
     }
 
     public bool IsWindow(long window) => PInvoke.IsWindow(Hwnd(window));
