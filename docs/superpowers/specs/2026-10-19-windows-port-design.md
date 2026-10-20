@@ -240,8 +240,9 @@ is a mutable list, reversed and pruned after the walk.
 - **Classification**: upstream's `tree/config.py` constants and rules are ported into
   `TreeConfig.cs` (interactive, scrollable and informative types, roles, browser special cases,
   Word nodes from TextPattern, modal-dialog reset, window-name fixes such as Progman to "Desktop").
-- **Limits**: `DESKTOP_MCP_MAX_TREE_ELEMENTS` (default 500) with upstream's truncation note; a
-  RuntimeId cycle guard; three retries per window with 0.5/1/2 s backoff; 300 children per parent.
+- **Limits**: `DESKTOP_MCP_MAX_TREE_ELEMENTS` (default 500) with upstream's truncation note
+  (pointing to a browser automation MCP server instead of `use_dom`, Decisions 39); a RuntimeId
+  cycle guard; three retries per window with 0.5/1/2 s backoff; 300 children per parent.
 - **Target protection** (P2 plan, Decisions 36 and 38; §12): no TextPattern word read on content whose
   FrameworkId is `Chrome` (Chrome, Edge, WebView2, Electron; upstream skips it only inside a
   browser's RootWebArea), and before the window is read and before every children or word read the
@@ -538,20 +539,21 @@ which backs the lazy-initialisation claim in §10. The kill-on-close check faile
 processes the server starts after it joins its job are not placed in that job on that host. The
 P4 follow-up "Kill-on-close job inheritance" tracks this.
 
-P2 results (2026-10-20, Windows build 10.0.26220.9739): default suite 1158 tests passed (Core 844,
-Server 87, Desktop non-desktop 227); Desktop suite by hand: 33 run, 32 passed, and
+P2 results (2026-10-20, Windows build 10.0.26220.9739; the default suite and build-release reran on
+the final branch after Tasks 20-22 and the final-review fixes): default suite 1197 tests passed
+(Core 861, Server 88, Desktop non-desktop 248); Desktop suite by hand: 33 run, 32 passed, and
 `ClipboardTests.SystemClipboardRoundTripsThroughWinRt` failed twice (the WinRT read after a WinRT
 write returned null; the clipboard code is unchanged since P1, and Windows Sandbox and Chrome Remote
 Desktop were open, both of which can sync the clipboard; not investigated). Three Desktop tests that
 read or walk the user's real windows were not run, so that nothing could reach VS Code (§12):
 `SnapshotServiceDesktopTests`, `WindowCatalogDesktopTests.ListsTheTestWindowAsANormalApplicationWindow`
 and `UiaSessionTests.CachesTheTraversalPropertiesForTheRootsChildren`. build-release: win-x64
-18,015,744 bytes, win-arm64 19,213,824 bytes, each dist folder holding only the exe and its pdb, no
+18,023,936 bytes, win-arm64 19,221,504 bytes, each dist folder holding only the exe and its pdb, no
 publish warnings; stdio smoke OK under NativeAOT (adds DisplayInventory and Snapshot without vision
-before the graphics check, 59 modules, then Screenshot and Snapshot with vision; Code.exe excluded;
-1 display, active desktop "Desktop 1", 54 tree elements of which 33 labelled, a 1728x1080
-Screenshot PNG and the 200x120 region PNG; the server exited 23-25 ms after stdin closed on the
-five runs that recorded it); AOT activation and UIA checks OK; capture probe 2560x1600 in 174 ms, borderSuppressed=True,
+before the graphics check, 59 modules, then Screenshot and Snapshot with vision; Code.exe excluded,
+no Code process running; walk with Decisions 36-38; 1 display, active desktop "Desktop 1", 55 tree
+elements of which 33 labelled, a 1728x1080 Screenshot PNG and the 200x120 region PNG; the server
+exited 26 ms after stdin closed; earlier runs 23-25 ms); AOT activation and UIA checks OK; capture probe 2560x1600 in 174 ms, borderSuppressed=True,
 borderlessAccess=Allowed; capture border with the user watching: not checked (pending, see the
 follow-ups); DisplayArea evaluation: agrees on 1 monitor (2560x1600 at 144 DPI), multi-monitor and
 mixed DPI unproven; multi-monitor capture composition is tested with fakes only; Windows Sandbox
@@ -559,7 +561,7 @@ mixed DPI unproven; multi-monitor capture composition is tested with fakes only;
 tools/list comparison, the headless tools, DisplayInventory, Snapshot without vision (real UIA tree
 and virtual-desktop assertions) and the graphics-stack check passed, so the UIA path needs no
 runtime; Screenshot then failed as expected, without a crash, with `Error capturing screenshot: The Windows App SDK runtime (Microsoft.WindowsAppRuntime.2_8wekyb3d8bbwe, x64) is not installed: TryCreatePackageDependency failed with HRESULT 0x80670016. Install the Windows App SDK 2.5 runtime (2.5.1.0) or later from https://learn.microsoft.com/windows/apps/windows-app-sdk/downloads.. Please try again.`
-(the doubled period is a P2 leftover). The user's `-SkipCapture` rerun passed the whole first
+(the final review fixed the doubled period: the wrapper trims the message's trailing periods). The user's `-SkipCapture` rerun passed the whole first
 session (the server exited within 5 s of stdin closing) and then failed, as expected, at the
 kill-on-close check (`ping 6272 outlived the server: no kill-on-close job`; see the P4 follow-up
 "Kill-on-close job inheritance"), so the second session (the excluding config) did not run.
