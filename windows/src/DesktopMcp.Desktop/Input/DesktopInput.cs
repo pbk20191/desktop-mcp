@@ -1,9 +1,11 @@
+using DesktopMcp.Core.Control;
 using DesktopMcp.Core.Input;
 using DesktopMcp.Core.Snapshots;
 using DesktopMcp.Core.Text;
 using DesktopMcp.Desktop.ClipboardAccess;
 using DesktopMcp.Desktop.Displays;
 using DesktopMcp.Desktop.Snapshots;
+using DesktopMcp.Desktop.Tree;
 using Windows.Win32;
 
 namespace DesktopMcp.Desktop.Input;
@@ -144,9 +146,20 @@ public sealed class DesktopInput : IDesktopInput
     private readonly Func<bool> _clipboardHoldsOnlyNonText;
 
     public DesktopInput(InputLedger ledger, IClipboard clipboard, IActionCheckpoint checkpoint)
-        : this(ledger, clipboard, checkpoint, new SendInputInjector())
+        : this(ledger, clipboard, checkpoint, ProcessAllowlist.Everything)
     {
     }
+
+    /// <summary>control.process_allowlist: input is refused for windows of other processes (no decorator when the list is empty).</summary>
+    public DesktopInput(InputLedger ledger, IClipboard clipboard, IActionCheckpoint checkpoint, ProcessAllowlist allowlist)
+        : this(ledger, clipboard, checkpoint, Guarded(allowlist))
+    {
+    }
+
+    private static IInputInjector Guarded(ProcessAllowlist allowlist) =>
+        allowlist.AllowsAll
+            ? new SendInputInjector()
+            : new ProcessAllowlistInjector(new SendInputInjector(), allowlist, new Win32WindowSystem(), new Win32Displays().GetVirtualScreen, DesktopSession.CursorPosition);
 
     /// <summary>The real desktop through another injector (the desktop tests' guard).</summary>
     internal DesktopInput(InputLedger ledger, IClipboard clipboard, IActionCheckpoint checkpoint, IInputInjector injector)

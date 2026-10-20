@@ -119,4 +119,12 @@ public class ServePlanTests
     [Fact]
     public void TlsMakesTheSchemeHttps() =>
         Assert.Equal("https", Resolve(new ServeArguments { SslCertfile = "c.pem", SslKeyfile = "k.pem" }).Scheme);
+
+    [Fact]
+    public void ProcessAllowlistComesFromTheConfig()
+    {
+        var config = new DesktopMcpConfig();
+        config.Control.ProcessAllowlist = ["notepad.exe"];
+        Assert.Equal(["notepad.exe"], Resolve(new ServeArguments(), config).Control.ProcessAllowlist);
+    }
 }

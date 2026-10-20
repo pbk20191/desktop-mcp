@@ -147,4 +147,16 @@ public sealed class ConfigFileTests : IDisposable
         Assert.Equal(path, ConfigFile.Discover(null, _temp.Path));
         Assert.Equal("stdio", ConfigFile.Load(path).Server.Transport);
     }
+
+    [Fact]
+    public void ProcessAllowlistIsAListOfNames() =>
+        Assert.Equal(["notepad.exe", "code"], Load("[control]\nprocess_allowlist = [\"notepad.exe\", \"code\"]").Control.ProcessAllowlist);
+
+    [Fact]
+    public void ProcessAllowlistMustBeAList() =>
+        Assert.Equal("control.process_allowlist must be an array of strings", Error("[control]\nprocess_allowlist = \"notepad.exe\""));
+
+    [Fact]
+    public void ProcessAllowlistRejectsPaths() =>
+        Assert.Equal(DesktopMcp.Core.Control.ProcessAllowlist.InvalidEntry, Error("[control]\nprocess_allowlist = [\"tools/x.exe\"]"));
 }

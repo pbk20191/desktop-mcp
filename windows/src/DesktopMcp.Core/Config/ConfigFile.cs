@@ -1,4 +1,5 @@
 using System.Text;
+using DesktopMcp.Core.Control;
 using DesktopMcp.Core.Text;
 using Tomlyn;
 using Tomlyn.Model;
@@ -100,6 +101,12 @@ public static class ConfigFile
         }
         if (control.TryGetValue("enabled", out var enabled)) config.Control.Enabled = StrictBool(enabled, "control.enabled");
         if (control.TryGetValue("idle_timeout_seconds", out var idle)) config.Control.IdleTimeoutSeconds = IdleTimeout.Validate(idle);
+        if (control.TryGetValue("process_allowlist", out var processes))
+        {
+            config.Control.ProcessAllowlist = ListOfStrings(processes, "control.process_allowlist");
+            try { _ = new ProcessAllowlist(config.Control.ProcessAllowlist); }
+            catch (ArgumentException e) { throw new ConfigException(e.Message); }
+        }
         if (control.TryGetValue("mouse_takeover_units", out var units)) config.Control.MouseTakeoverUnits = TakeoverDistance(units, "control.mouse_takeover_units");
         if (control.TryGetValue("mouse_takeover_pixels", out var pixels)) config.Control.MouseTakeoverPixels = TakeoverDistance(pixels, "control.mouse_takeover_pixels");
         return config;

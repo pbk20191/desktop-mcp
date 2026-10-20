@@ -42,4 +42,5 @@ public sealed class ControlConfig
     public bool Enabled { get; set; } = true;
     public double IdleTimeoutSeconds { get; set; } = 10.0;
     public string Policy { get; set; } = "relaxed";
+    public List<string> ProcessAllowlist { get; set; } = [];
 }

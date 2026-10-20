@@ -2,7 +2,11 @@ using DesktopMcp.Core.Net;
 
 namespace DesktopMcp.Core.Config;
 
-public sealed record ControlSettings(bool Enabled, string Policy, double IdleTimeoutSeconds, long MouseTakeoverUnits, long MouseTakeoverPixels);
+public sealed record ControlSettings(bool Enabled, string Policy, double IdleTimeoutSeconds, long MouseTakeoverUnits, long MouseTakeoverPixels)
+{
+    /// <summary>[control] process_allowlist; empty allows everything. Set only when non-empty so record equality of the default holds.</summary>
+    public IReadOnlyList<string> ProcessAllowlist { get; init; } = [];
+}
 
 /// <summary>The validated settings serve runs with (spec §8; upstream serve, __main__.py:722-834).</summary>
 public sealed record ServePlan
@@ -109,7 +113,10 @@ public sealed record ServePlan
                 arguments.ControlPolicy ?? config.Control.Policy,
                 arguments.ControlIdleTimeout ?? config.Control.IdleTimeoutSeconds,
                 config.Control.MouseTakeoverUnits,
-                config.Control.MouseTakeoverPixels),
+                config.Control.MouseTakeoverPixels)
+            {
+                ProcessAllowlist = config.Control.ProcessAllowlist.Count == 0 ? [] : config.Control.ProcessAllowlist.ToArray(),
+            },
             Debug = arguments.Debug,
             Warnings = warnings,
         };

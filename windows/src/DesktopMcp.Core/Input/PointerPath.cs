@@ -77,6 +77,11 @@ public static class MouseCoordinates
         (int)PyText.RoundToInteger((double)(point.X - virtualScreen.Left) * 65535 / Math.Max(virtualScreen.Width - 1, 1)),
         (int)PyText.RoundToInteger((double)(point.Y - virtualScreen.Top) * 65535 / Math.Max(virtualScreen.Height - 1, 1)));
 
+    /// <summary>The inverse of <see cref="Normalize"/>: left + round(x * (width - 1) / 65535), half to even.</summary>
+    public static ScreenPoint Denormalize((int X, int Y) normalized, ScreenRect virtualScreen) => new(
+        virtualScreen.Left + (int)PyText.RoundToInteger((double)normalized.X * Math.Max(virtualScreen.Width - 1, 1) / 65535),
+        virtualScreen.Top + (int)PyText.RoundToInteger((double)normalized.Y * Math.Max(virtualScreen.Height - 1, 1) / 65535));
+
     /// <summary>Upstream's out-of-bounds text, or null when the point is on the desktop.</summary>
     public static string? OutsideMessage(ScreenPoint point, ScreenRect virtualScreen)
     {

@@ -78,4 +78,12 @@ public class PointerPathTests
     [Fact]
     public void InsidePointsHaveNoMessage() =>
         Assert.Null(MouseCoordinates.OutsideMessage(new(2559, 1599), new ScreenRect(-1920, 0, 2560, 1600)));
+
+    [Fact]
+    public void DenormaliseInvertsNormaliseOnANegativeOrigin()
+    {
+        var screen = new ScreenRect(-1920, 0, 2560, 1600);
+        foreach (var point in new ScreenPoint[] { new(-1920, 0), new(2559, 0), new(-1920, 1599), new(2559, 1599), new(0, 0) })
+            Assert.Equal(point, MouseCoordinates.Denormalize(MouseCoordinates.Normalize(point, screen), screen));
+    }
 }
