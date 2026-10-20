@@ -16,12 +16,18 @@ internal sealed class AllowlistRig
     public List<InjectedInput> Sent { get; } = [];
     public ProcessAllowlistInjector Injector { get; }
 
-    public AllowlistRig(string[] allowed, Func<ScreenPoint, string> windowAt, string foreground, ScreenPoint cursor = default)
+    public AllowlistRig(string[] allowed, Func<ScreenPoint, string?> windowAt, string? foreground, ScreenPoint cursor = default)
     {
         var system = new FakeWindowSystem();
         var handles = new Dictionary<string, long>();
-        long Handle(string name)
+        long Handle(string? name)
         {
+            if (name == "") return 0;
+            if (name is null)
+            {
+                system.Processes[999] = 999;
+                return 999;
+            }
             if (handles.TryGetValue(name, out var existing)) return existing;
             var handle = 1000 + handles.Count;
             handles[name] = handle;
@@ -70,6 +76,45 @@ public class ProcessAllowlistInjectorTests
     {
         var rig = new AllowlistRig(["notepad.exe"], p => p == new ScreenPoint(5, 5) ? "notepad.exe" : "code.exe", "code.exe", new(5, 5));
         rig.Injector.Send([InjectedInput.Wheel(120)]);
+        Assert.Single(rig.Sent);
+    }
+
+    [Fact]
+    public void ABatchWithOnlyItsSecondWindowDisallowedSendsNothing()
+    {
+        var rig = new AllowlistRig(["notepad.exe"], p => p.X == 10 ? "notepad.exe" : "code.exe", "notepad.exe");
+        var down = MouseFlags.AbsoluteMove | MouseFlags.LeftDown;
+        Assert.Throws<InputBlockedException>(() => rig.Injector.Send([
+            InjectedInput.MouseAt(down, MouseCoordinates.Normalize(new(10, 10), Screen)),
+            InjectedInput.MouseAt(down, MouseCoordinates.Normalize(new(500, 10), Screen))]));
+        Assert.Empty(rig.Sent);
+    }
+
+    [Fact]
+    public void NoWindowOrAnUnknownProcessIsBlocked()
+    {
+        var none = new AllowlistRig(["notepad.exe"], _ => "", "");
+        Assert.Equal(ProcessAllowlist.BlockedText(null), Assert.Throws<InputBlockedException>(() => none.Injector.Send([InjectedInput.Keyboard(new(0x41, '\0', false))])).Message);
+        var unknown = new AllowlistRig(["notepad.exe"], _ => null, null);
+        Assert.Equal(ProcessAllowlist.BlockedText(null), Assert.Throws<InputBlockedException>(() => unknown.Injector.Send([InjectedInput.Keyboard(new(0x41, '\0', false))])).Message);
+        Assert.Empty(none.Sent);
+        Assert.Empty(unknown.Sent);
+    }
+
+    [Fact]
+    public void ADownWithAnUpToADisallowedWindowSendsNothingNotEvenTheUp()
+    {
+        var rig = new AllowlistRig(["notepad.exe"], _ => "code.exe", "code.exe");
+        Assert.Throws<InputBlockedException>(() => rig.Injector.Send([
+            InjectedInput.Keyboard(new(0x41, '\0', false)), InjectedInput.Keyboard(new(0x41, '\0', true))]));
+        Assert.Empty(rig.Sent);
+    }
+
+    [Fact]
+    public void AKeyUpOnlyBatchPassesWithAnUnrelatedForeground()
+    {
+        var rig = new AllowlistRig(["notepad.exe"], _ => "code.exe", "code.exe");
+        rig.Injector.Send([InjectedInput.Keyboard(new(0x41, '\0', true))]);
         Assert.Single(rig.Sent);
     }
 }
