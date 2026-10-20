@@ -1,6 +1,7 @@
 using DesktopMcp.Core.Input;
 using DesktopMcp.Core.Snapshots;
 using DesktopMcp.Desktop.Actions;
+using DesktopMcp.Desktop.Apps;
 using DesktopMcp.Desktop.Errors;
 using DesktopMcp.Desktop.Input;
 using DesktopMcp.Desktop.WindowControl;
@@ -87,6 +88,23 @@ internal sealed class FakeDesktop
     private int _readBackCalls;
     private readonly List<string> _foregroundChecks = [];
 
+    /// <summary>What every <see cref="IAppService"/> call returns.</summary>
+    public AppResult AppResult { get; set; } = new("ok", false);
+
+    /// <summary>
+    /// Each App service call as <c>Launch name</c>, <c>Switch name</c>, <c>Resize name (x, y)|none (w, h)|none</c> or
+    /// <c>LaunchExecutable executable [args] cwd</c>.
+    /// </summary>
+    public IReadOnlyList<string> AppCalls
+    {
+        get
+        {
+            lock (_appCalls) return [.. _appCalls];
+        }
+    }
+
+    private readonly List<string> _appCalls = [];
+
     public FakeInput Input { get; }
 
     public FakeTargets Targets { get; }
@@ -101,6 +119,7 @@ internal sealed class FakeDesktop
         Targets = Targets,
         Foreground = new FakeForeground(this),
         ReadBack = new FakeReadBack(this),
+        Apps = new FakeApps(this),
         Ledger = new InputLedger(),
         InputLock = new DesktopInputLock(),
     };
@@ -250,6 +269,25 @@ internal sealed class FakeDesktop
             lock (desktop._foregroundChecks) desktop._foregroundChecks.Add($"{window} {windowName}");
             return desktop.ForegroundFails is { } error && (desktop.ForegroundFailsFor is null || desktop.ForegroundFailsFor == window)
                 ? Task.FromException(new DesktopException(error)) : Task.CompletedTask;
+        }
+    }
+
+    internal sealed class FakeApps(FakeDesktop desktop) : IAppService
+    {
+        public Task<AppResult> SwitchAsync(string name, CancellationToken ct) => Record($"Switch {name}");
+
+        public Task<AppResult> ResizeAsync(string? name, (int X, int Y)? loc, (int W, int H)? size, CancellationToken ct) =>
+            Record($"Resize {name} {loc?.ToString() ?? "none"} {size?.ToString() ?? "none"}");
+
+        public Task<AppResult> LaunchAsync(string name, CancellationToken ct) => Record($"Launch {name}");
+
+        public Task<AppResult> LaunchExecutableAsync(string executable, IReadOnlyList<string> args, string? cwd, CancellationToken ct) =>
+            Record($"LaunchExecutable {executable} [{string.Join(", ", args)}] {cwd}");
+
+        private Task<AppResult> Record(string call)
+        {
+            lock (desktop._appCalls) desktop._appCalls.Add(call);
+            return Task.FromResult(desktop.AppResult);
         }
     }
 

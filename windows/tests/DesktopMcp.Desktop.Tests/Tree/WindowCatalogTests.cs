@@ -166,6 +166,31 @@ public class WindowCatalogTests
     }
 
     [Fact]
+    public async Task ScanActiveDescribesOnlyTheForegroundWindowsRoot()
+    {
+        _system.TopLevel.AddRange([1, 2]);
+        _probe.Windows[1] = () => App("Notepad");
+        _probe.Windows[2] = () => App("Paint");
+        _system.Minimized.Add(2);
+        _system.Roots[55] = 2;
+        _system.Foreground.Enqueue(55);
+        var active = await Catalog().ScanActiveAsync(default);
+        Assert.Equal(new WindowInfo("Paint", 0, WindowStatus.Minimized, new ScreenRect(0, 0, 800, 600), 2, 100, false), active);
+        Assert.Equal([2L], _probe.Probed);
+    }
+
+    [Fact]
+    public async Task ScanActiveSkipsABlockedForegroundWindow()
+    {
+        _system.TopLevel.Add(1);
+        _probe.Windows[1] = () => App("Notepad");
+        _blocks.Block(1, 100);
+        _system.Foreground.Enqueue(1);
+        Assert.Null(await Catalog().ScanActiveAsync(default));
+        Assert.Empty(_probe.Probed);
+    }
+
+    [Fact]
     public async Task AFocusedWindowOutsideTheListIsDescribedWithDepthZero()
     {
         _system.TopLevel.Add(1);

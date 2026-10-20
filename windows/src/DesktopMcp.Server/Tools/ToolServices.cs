@@ -5,6 +5,7 @@ using DesktopMcp.Core.Scrape;
 using DesktopMcp.Core.WindowsRegistry;
 using DesktopMcp.Desktop;
 using DesktopMcp.Desktop.Actions;
+using DesktopMcp.Desktop.Apps;
 using DesktopMcp.Desktop.ClipboardAccess;
 using DesktopMcp.Desktop.Displays;
 using DesktopMcp.Desktop.Input;
@@ -39,6 +40,9 @@ public sealed record ToolServices
     /// <summary>Type's and MultiEdit's read-back of the focused element's value (P3 Decisions 4).</summary>
     public required ITypeReadBack ReadBack { get; init; }
 
+    /// <summary>The App tool's modes (switch, resize, launch, launch_executable).</summary>
+    public required IAppService Apps { get; init; }
+
     /// <summary>
     /// Every key or button the input holds; the server releases it on shutdown (Decisions 19). It must be the ledger
     /// <see cref="Input"/> presses through, or the shutdown release misses what the input holds: replace both together.
@@ -53,6 +57,7 @@ public sealed record ToolServices
         var snapshots = new SnapshotService(machine);
         var clipboard = new SystemClipboard();
         var ledger = new InputLedger();
+        var foreground = new ForegroundService();
         return new()
         {
             PowerShell = new PowerShellRunner(),
@@ -67,8 +72,9 @@ public sealed record ToolServices
             Machine = machine,
             Input = new DesktopInput(ledger, clipboard, NoCheckpoint.Instance),
             Targets = new ActionTargets(machine, snapshots.State),
-            Foreground = new ForegroundService(),
+            Foreground = foreground,
             ReadBack = new UiaTypeReadBack(machine),
+            Apps = new AppService(machine, foreground),
             Ledger = ledger,
             InputLock = new DesktopInputLock(),
             Time = TimeProvider.System,

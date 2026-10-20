@@ -33,6 +33,7 @@ public static class ToolRegistry
         "Shortcut" => new ShortcutTool(protocolTool, services),
         "MultiSelect" => new MultiSelectTool(protocolTool, services),
         "MultiEdit" => new MultiEditTool(protocolTool, services),
+        "App" => new AppTool(protocolTool, services),
         _ => new PendingTool(protocolTool),
     };
 }

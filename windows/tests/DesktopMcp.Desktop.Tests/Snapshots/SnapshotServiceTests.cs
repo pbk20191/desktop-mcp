@@ -38,6 +38,8 @@ public class SnapshotServiceTests
             Scans++;
             return Task.FromResult(scan);
         }
+
+        public Task<WindowInfo?> ScanActiveAsync(CancellationToken cancellationToken) => Task.FromResult(scan.Active);
     }
 
     private sealed class FakeTree : ITreeCapture

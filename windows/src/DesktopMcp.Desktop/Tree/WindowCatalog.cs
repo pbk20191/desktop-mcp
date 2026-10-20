@@ -14,6 +14,12 @@ internal sealed record WindowScan(IReadOnlyList<long> Candidates, IReadOnlyList<
 internal interface IWindowScanner
 {
     Task<WindowScan> ScanAsync(CancellationToken cancellationToken);
+
+    /// <summary>
+    /// The focused window as <see cref="ScanAsync"/> reports it (blocked windows skipped, the same retries), without
+    /// probing the other windows (P3 Decisions 24: App resize without a name, WaitFor's active_window).
+    /// </summary>
+    Task<WindowInfo?> ScanActiveAsync(CancellationToken cancellationToken);
 }
 
 /// <summary>Reads a top-level window's UIA properties; may throw, and times out through the hang breaker.</summary>
@@ -63,6 +69,10 @@ internal sealed class WindowCatalog(
         var active = await ActiveAsync(list, cancellationToken).ConfigureAwait(false);
         return new WindowScan(candidates, list, active);
     }
+
+    // Depth is 0: the z-order index would need the whole candidate list, and nothing that reads the active window alone
+    // uses it.
+    public Task<WindowInfo?> ScanActiveAsync(CancellationToken cancellationToken) => ActiveAsync([], cancellationToken);
 
     // upstream desktop/service.py:1068-1105: visible windows on this virtual desktop that this server does not own, then
     // the desktop and taskbar windows.
