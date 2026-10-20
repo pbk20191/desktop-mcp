@@ -40,6 +40,37 @@ public enum AX {
         return result
     }
 
+    /// `attributes`, or nil when the app does not answer (`kAXErrorCannotComplete`, which a
+    /// messaging timeout also gives), for the call or for any one attribute.
+    static func attributesIfAnswering(_ element: AXUIElement, _ names: [String]) -> [String: AnyObject]? {
+        var values: CFArray?
+        let err = AXUIElementCopyMultipleAttributeValues(
+            element, names as CFArray, AXCopyMultipleAttributeOptions(rawValue: 0), &values)
+        if err == .cannotComplete { return nil }
+        guard err == .success, let array = values as? [AnyObject] else { return [:] }
+        var result: [String: AnyObject] = [:]
+        for (name, value) in zip(names, array) {
+            if notAnswering(value) { return nil }
+            if !isError(value) && !(value is NSNull) { result[name] = value }
+        }
+        return result
+    }
+
+    /// The elements of a list attribute (children, windows), or nil when the app does not answer.
+    static func elementsIfAnswering(_ element: AXUIElement, _ name: String) -> [AXUIElement]? {
+        var value: CFTypeRef?
+        let err = AXUIElementCopyAttributeValue(element, name as CFString, &value)
+        if err == .cannotComplete { return nil }
+        return err == .success ? elements(value) : []
+    }
+
+    /// Whether a value from a multiple-attribute read is the error `kAXErrorCannotComplete`.
+    private static func notAnswering(_ value: AnyObject) -> Bool {
+        guard isError(value) else { return false }
+        var error = AXError.success
+        return AXValueGetValue(value as! AXValue, .axError, &error) && error == .cannotComplete
+    }
+
     public static func parameterized(_ element: AXUIElement, _ name: String, _ parameter: CFTypeRef) -> AnyObject? {
         var value: CFTypeRef?
         guard AXUIElementCopyParameterizedAttributeValue(element, name as CFString, parameter, &value) == .success,

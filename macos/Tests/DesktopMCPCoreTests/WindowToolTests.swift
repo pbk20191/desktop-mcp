@@ -38,7 +38,17 @@ actor FakeWindowSource: WindowSource {
 
     func set(_ list: [WindowInfo]) { self.list = Self.reindexed(list) }
 
+    /// False while the apps are busy: `reading` then has no windows and is incomplete.
+    private(set) var answering = true
+    func setAnswering(_ on: Bool) { answering = on }
+
+    func reading(app: String?) async -> WindowReading {
+        WindowReading(windows: await windows(app: app), complete: answering)
+    }
+
     func windows(app: String?) async -> [WindowInfo] {
+        // As `App.windows`: an app that does not answer lists no windows.
+        guard answering else { return [] }
         guard let app else { return list }
         return list.filter { $0.app.lowercased() == app.lowercased() }
     }

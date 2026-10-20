@@ -60,25 +60,8 @@ struct AXElementNode: ElementNode {
     static let names = [kAXRoleAttribute, kAXSubroleAttribute, kAXTitleAttribute, kAXDescriptionAttribute,
                         kAXPositionAttribute, kAXSizeAttribute]
 
-    private static func notAnswering(_ value: AnyObject) -> Bool {
-        guard CFGetTypeID(value) == AXValueGetTypeID(), AXValueGetType(value as! AXValue) == .axError else { return false }
-        var error = AXError.success
-        return AXValueGetValue(value as! AXValue, .axError, &error) && error == .cannotComplete
-    }
-
     func attributes() throws -> ElementAttributes {
-        var values: CFArray?
-        let err = AXUIElementCopyMultipleAttributeValues(
-            element, Self.names as CFArray, AXCopyMultipleAttributeOptions(rawValue: 0), &values)
-        if err == .cannotComplete { throw ElementNotAnswering() }
-        guard err == .success, let array = values as? [AnyObject] else {
-            return ElementAttributes(role: "", subrole: nil, title: "", description: "", frame: nil)
-        }
-        var raw: [String: AnyObject] = [:]
-        for (name, value) in zip(Self.names, array) {
-            if Self.notAnswering(value) { throw ElementNotAnswering() }
-            if !AX.isError(value) && !(value is NSNull) { raw[name] = value }
-        }
+        guard let raw = AX.attributesIfAnswering(element, Self.names) else { throw ElementNotAnswering() }
         let frame = AX.point(raw[kAXPositionAttribute]).flatMap { origin in
             AX.size(raw[kAXSizeAttribute]).map { CGRect(origin: origin, size: $0) }
         }
@@ -90,11 +73,8 @@ struct AXElementNode: ElementNode {
     func value() -> String { AX.string(AX.attribute(element, kAXValueAttribute)) }
 
     private static func list(_ element: AXUIElement, _ name: String) throws -> [AXElementNode] {
-        var value: CFTypeRef?
-        let err = AXUIElementCopyAttributeValue(element, name as CFString, &value)
-        if err == .cannotComplete { throw ElementNotAnswering() }
-        guard err == .success else { return [] }
-        return AX.elements(value).map(AXElementNode.init)
+        guard let elements = AX.elementsIfAnswering(element, name) else { throw ElementNotAnswering() }
+        return elements.map(AXElementNode.init)
     }
 
     func children() throws -> [AXElementNode] { try Self.list(element, kAXChildrenAttribute) }
@@ -325,10 +305,12 @@ enum WaitTool {
                     try Permissions.requireAccessibility()
                     let wantGone = until == "window_gone"
                     check = { _ in
-                        let matching = await windows.windows(app: app).filter { w in
+                        let reading = await windows.reading(app: app)
+                        let matching = reading.windows.filter { w in
                             title.map { w.title.range(of: $0, options: .caseInsensitive) != nil } ?? true
                         }
-                        if wantGone { return matching.isEmpty ? "No window matches any more." : nil }
+                        // An app that did not answer may still have the window: not gone yet.
+                        if wantGone { return matching.isEmpty && reading.complete ? "No window matches any more." : nil }
                         return matching.isEmpty ? nil : WindowTool.format(matching)
                     }
                 default:

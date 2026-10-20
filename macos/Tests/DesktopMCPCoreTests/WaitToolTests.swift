@@ -185,6 +185,31 @@ final class WaitToolTests: XCTestCase {
         XCTAssertEqual(text, "No window matches any more.")
     }
 
+    func testWindowGoneWaitsWhileTheAppDoesNotAnswer() async throws {
+        // A busy app reads as no windows; that is not the window closing.
+        let busy = FakeWindowSource([window()])
+        await busy.setAnswering(false)
+        let start = Date()
+        let timedOut = await error(windows: busy, ["until": "window_gone", "app": "Preview", "timeout": 1])
+        XCTAssertEqual(timedOut, "Timed out after 1s waiting for window in Preview to close.")
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(start), 1)
+
+        // It answers again, the window gone.
+        let source = FakeWindowSource([window()])
+        await source.setAnswering(false)
+        Task {
+            try await Task.sleep(for: .milliseconds(150))
+            await source.set([])
+            await source.setAnswering(true)
+        }
+        let text = try await run(windows: source, ["until": "window_gone", "app": "Preview"])
+        XCTAssertEqual(text, "No window matches any more.")
+
+        // 'window' finds nothing in an app that does not answer.
+        let window = await error(windows: busy, ["until": "window", "app": "Preview", "timeout": 0])
+        XCTAssertEqual(window, "Timed out after 0s waiting for window in Preview.")
+    }
+
     func testElementFoundReturnsCentre() async throws {
         let finder = FakeElementFinder([
             FoundElement(role: "AXButton", title: "Save", center: CGPoint(x: 119.6, y: 340.2)),

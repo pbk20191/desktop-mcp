@@ -58,11 +58,25 @@ public enum FrameResult: Sendable, Equatable {
     case failed
 }
 
+/// What `Wait` sees of the windows: those read, and whether every app asked answered.
+public struct WindowReading: Sendable, Equatable {
+    public var windows: [WindowInfo]
+    /// False when an app did not answer (busy), so its windows are unknown rather than none.
+    public var complete: Bool
+
+    public init(windows: [WindowInfo], complete: Bool) {
+        self.windows = windows
+        self.complete = complete
+    }
+}
+
 /// The windows of running apps and the actions on one of them.
 public protocol WindowSource: Sendable {
     /// Windows of regular apps, all of them or those of `app` (localized name, case-insensitive,
-    /// or exact bundle id).
+    /// or exact bundle id). An app that does not answer has none.
     func windows(app: String?) async -> [WindowInfo]
+    /// `windows(app:)`, telling an app that did not answer apart from one without windows.
+    func reading(app: String?) async -> WindowReading
     func windows(pid: pid_t) async -> [WindowInfo]
     /// Whether a regular app matching `app` is running.
     func appExists(_ app: String) async -> Bool
@@ -80,6 +94,12 @@ public protocol WindowSource: Sendable {
     func setFullScreen(_ w: WindowInfo, _ on: Bool) async -> Bool
     /// The displays, top-left origin, in `Displays.all()` order.
     func displays() async -> [DisplayFrame]
+}
+
+extension WindowSource {
+    public func reading(app: String?) async -> WindowReading {
+        WindowReading(windows: await windows(app: app), complete: true)
+    }
 }
 
 /// Windows through the Accessibility API. Every AX call runs inside `offload`, and actions find
@@ -128,9 +148,15 @@ struct AXWindowSource: WindowSource {
         }
     }
 
+    private static let infoNames = [kAXTitleAttribute, kAXPositionAttribute, kAXSizeAttribute,
+                                    kAXMinimizedAttribute, AXName.fullScreen]
+
     private static func info(_ app: App, index: Int, _ element: AXUIElement, focusedWindow: AXUIElement?) -> WindowInfo {
-        let raw = AX.attributes(element, [kAXTitleAttribute, kAXPositionAttribute, kAXSizeAttribute,
-                                          kAXMinimizedAttribute, AXName.fullScreen])
+        info(app, index: index, element, raw: AX.attributes(element, infoNames), focusedWindow: focusedWindow)
+    }
+
+    private static func info(_ app: App, index: Int, _ element: AXUIElement, raw: [String: AnyObject],
+                             focusedWindow: AXUIElement?) -> WindowInfo {
         let origin = AX.point(raw[kAXPositionAttribute]) ?? .zero
         let size = AX.size(raw[kAXSizeAttribute]) ?? .zero
         return WindowInfo(
@@ -149,11 +175,31 @@ struct AXWindowSource: WindowSource {
         return axWindows(app).map { info(app, index: $0.index, $0.element, focusedWindow: focused) }
     }
 
+    /// `read`, or nil when the app does not answer: a busy app is not one without windows.
+    private static func readIfAnswering(_ app: App, frontmost: pid_t?) -> [WindowInfo]? {
+        guard let elements = AX.elementsIfAnswering(app.element, kAXWindowsAttribute) else { return nil }
+        let focused = app.pid == frontmost
+            ? AX.element(AX.attribute(app.element, kAXFocusedWindowAttribute)) : nil
+        var result: [WindowInfo] = []
+        for (index, element) in elements.enumerated() {
+            guard let raw = AX.attributesIfAnswering(element, [kAXRoleAttribute] + infoNames) else { return nil }
+            guard AX.string(raw[kAXRoleAttribute]) == kAXWindowRole else { continue }
+            result.append(info(app, index: index, element, raw: raw, focusedWindow: focused))
+        }
+        return result
+    }
+
     func windows(app: String?) async -> [WindowInfo] {
         let (pids, frontmost) = await offload { (Self.regularPIDs(matching: app), App.frontmost()?.pid) }
         // The first AX call to each process is expensive; they answer concurrently.
         let lists = await concurrentMap(pids) { pid in Self.read(Self.app(pid), frontmost: frontmost) }
         return lists.flatMap { $0 }
+    }
+
+    func reading(app: String?) async -> WindowReading {
+        let (pids, frontmost) = await offload { (Self.regularPIDs(matching: app), App.frontmost()?.pid) }
+        let lists = await concurrentMap(pids) { pid in Self.readIfAnswering(Self.app(pid), frontmost: frontmost) }
+        return WindowReading(windows: lists.flatMap { $0 ?? [] }, complete: !lists.contains { $0 == nil })
     }
 
     func windows(pid: pid_t) async -> [WindowInfo] {
