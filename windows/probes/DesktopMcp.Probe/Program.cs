@@ -49,7 +49,6 @@ static async Task<bool> ProbeDispatcherAsync()
 
 static async Task<bool> ProbeImagingAsync(string path)
 {
-    DesktopMcp.Desktop.AppRuntime.EnsureInitialized();
     const int width = 1920, height = 1080;
     var bgra = new byte[width * height * 4];
     for (var y = 0; y < height; y++)
@@ -62,7 +61,8 @@ static async Task<bool> ProbeImagingAsync(string path)
         .Select(n => new DesktopMcp.Desktop.Imaging.Annotation(new(40 + n % 8 * 230, 60 + n / 8 * 200, 200 + n % 8 * 230, 200 + n / 8 * 200), n.ToString()))
         .ToArray();
     var clock = Stopwatch.StartNew();
-    var png = await new DesktopMcp.Desktop.Imaging.Win2DRenderer().RenderPngAsync(new(width, height, bgra), 0.75, annotations);
+    var png = await new DesktopMcp.Desktop.Imaging.Win2DRenderer().RenderPngAsync(new(width, height, bgra),
+        new DesktopMcp.Desktop.Imaging.RenderOptions(0.75, annotations, new DesktopMcp.Desktop.Imaging.PixelPoint(960, 540), new DesktopMcp.Desktop.Imaging.GridLines(4, 3)));
     File.WriteAllBytes(path, png);
     Console.WriteLine($"imaging: {png.Length / 1024} KB PNG in {clock.ElapsedMilliseconds} ms -> {Path.GetFullPath(path)}");
     return png.Length > 0 && CheckWin2DLinkage("imaging");
@@ -75,7 +75,7 @@ static async Task<bool> ProbeCaptureAsync(string path)
     var clock = Stopwatch.StartNew();
     var image = await new DesktopMcp.Desktop.Capture.GraphicsCaptureService().CapturePrimaryMonitorAsync(CancellationToken.None);
     var captureMs = clock.ElapsedMilliseconds;
-    var png = await new DesktopMcp.Desktop.Imaging.Win2DRenderer().RenderPngAsync(image, 1.0, []);
+    var png = await new DesktopMcp.Desktop.Imaging.Win2DRenderer().RenderPngAsync(image, DesktopMcp.Desktop.Imaging.RenderOptions.Plain(1.0));
     File.WriteAllBytes(path, png);
     Console.WriteLine($"capture: borderSuppressed={DesktopMcp.Desktop.Capture.GraphicsCaptureService.LastBorderSuppressed}");
     Console.WriteLine($"capture: {image.Width}x{image.Height} in {captureMs} ms, png {png.Length / 1024} KB -> {Path.GetFullPath(path)}");
