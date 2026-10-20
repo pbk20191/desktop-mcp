@@ -58,7 +58,7 @@ Run `desktop-mcp permissions` to check the current state and trigger the system 
 | `Clipboard` | Reads the clipboard (text, file paths, image) or replaces it with text or files |
 | `RunShortcut` | Lists or runs the user's Shortcuts (the Shortcuts app), with optional text input |
 | `Spotlight` | Searches the Spotlight index by words or a raw query, newest first, optionally by kind and folder |
-| `Window` | Lists app windows with ids and frames; focuses, moves, resizes, minimizes, restores or closes one by id |
+| `Window` | Lists app windows with ids and frames; focuses, moves, resizes, minimizes, restores, maximizes (to its display minus the menu bar and Dock), enters or leaves full screen, moves to another display or closes one by id; `displays` lists the displays with their visible frames |
 | `Menu` | Lists an app's menu bar as a tree with shortcuts; selects a menu item by its path (`["File", "Export…"]`) |
 | `Permissions` | Reports which permissions desktop-mcp holds (Accessibility, Screen Recording, Automation of System Events) and which tools need them; never prompts |
 | `OCR` | Opt-in (`--include-tools OCR`): reads the text in a screen region (default the focused window) with on-device recognition, one line per text line with its centre in `Click` coordinates |

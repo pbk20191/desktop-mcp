@@ -13,10 +13,12 @@ actor FakeWindowSource: WindowSource {
     let apps: Set<String>
     /// Widths above this are clamped, as an app with a size limit would.
     var maxWidth: CGFloat?
+    let displayList: [DisplayFrame]
 
-    init(_ list: [WindowInfo], apps: Set<String> = [], maxWidth: CGFloat? = nil) {
+    init(_ list: [WindowInfo], apps: Set<String> = [], maxWidth: CGFloat? = nil, displays: [DisplayFrame] = []) {
         self.apps = apps
         self.maxWidth = maxWidth
+        self.displayList = displays
         self.list = Self.reindexed(list)
     }
 
@@ -77,6 +79,16 @@ actor FakeWindowSource: WindowSource {
     func close(_ w: WindowInfo) async -> Bool {
         act("close", w)
     }
+
+    func setFrame(_ w: WindowInfo, _ frame: CGRect) async -> Bool {
+        act("frame", w) { $0.frame = frame }
+    }
+
+    func setFullScreen(_ w: WindowInfo, _ on: Bool) async -> Bool {
+        act(on ? "fullscreen" : "exit_fullscreen", w) { $0.fullscreen = on }
+    }
+
+    func displays() async -> [DisplayFrame] { displayList }
 }
 
 final class WindowToolTests: XCTestCase {
@@ -329,11 +341,15 @@ final class WindowToolTests: XCTestCase {
             func move(_ w: WindowInfo, to: CGPoint) async -> Bool { false }
             func resize(_ w: WindowInfo, to: CGSize) async -> Bool { false }
             func close(_ w: WindowInfo) async -> Bool { false }
+            func setFrame(_ w: WindowInfo, _ frame: CGRect) async -> Bool { false }
+            func setFullScreen(_ w: WindowInfo, _ on: Bool) async -> Bool { false }
+            func displays() async -> [DisplayFrame] { WindowToolTests.displays }
         }
         let tool = WindowTool.tool(source: Refusing(window(number: 7)), cache: WindowCache())
         _ = try await tool.handler(ToolArguments([:]))
         let calls: [(String, [String: Value])] = [
             ("focus", [:]), ("minimize", [:]), ("close", [:]), ("move", ["loc": [1, 2]]), ("resize", ["size": [3, 4]]),
+            ("maximize", [:]), ("fullscreen", [:]),
         ]
         for (mode, extra) in calls {
             var arguments = extra
@@ -345,6 +361,20 @@ final class WindowToolTests: XCTestCase {
             } catch {
                 XCTAssertEqual("\(error)", "Could not \(mode) window 1:w7.")
             }
+        }
+        do {
+            _ = try await tool.handler(ToolArguments(["mode": "display", "id": "1:w7", "display": 1]))
+            XCTFail("expected an error for display")
+        } catch {
+            XCTAssertEqual("\(error)", "Could not move window 1:w7 to display 1.")
+        }
+        // Leaving full screen only calls the source for a window in full screen.
+        let fullscreen = WindowTool.tool(source: Refusing(window(fullscreen: true, number: 7)), cache: WindowCache())
+        do {
+            _ = try await fullscreen.handler(ToolArguments(["mode": "exit_fullscreen", "id": "1:w7"]))
+            XCTFail("expected an error for exit_fullscreen")
+        } catch {
+            XCTAssertEqual("\(error)", "Could not exit fullscreen window 1:w7.")
         }
     }
 
@@ -379,6 +409,134 @@ final class WindowToolTests: XCTestCase {
         await cache.remember([window(title: "Renamed")])
         let listed = await cache.listed("1:0")
         XCTAssertEqual(listed?.title, "Renamed")
+    }
+
+    // MARK: Maximize, full screen and displays
+
+    /// The main display (index 0) and one to its left (index 1), top-left origin, y down.
+    static let displays = [
+        DisplayFrame(index: 0, name: "Built-in", frame: CGRect(x: 0, y: 0, width: 1440, height: 900),
+                     visible: CGRect(x: 0, y: 25, width: 1440, height: 800), scale: 2, main: true),
+        DisplayFrame(index: 1, name: "Left", frame: CGRect(x: -1920, y: 0, width: 1920, height: 1080),
+                     visible: CGRect(x: -1920, y: 25, width: 1920, height: 1055), scale: 1, main: false),
+    ]
+
+    func testMaximizeUsesTheWindowsDisplay() async throws {
+        // Centre at x -500: on the left display, not the main one.
+        let frame = CGRect(x: -900, y: 100, width: 800, height: 600)
+        XCTAssertEqual(WindowTool.maximizedFrame(for: frame, displays: Self.displays),
+                       CGRect(x: -1920, y: 25, width: 1920, height: 1055))
+        XCTAssertEqual(WindowTool.maximizedFrame(for: CGRect(x: 100, y: 100, width: 400, height: 300), displays: Self.displays),
+                       CGRect(x: 0, y: 25, width: 1440, height: 800))
+
+        let source = FakeWindowSource([window(frame: frame, number: 10)], displays: Self.displays)
+        let maximized = try await run(source, WindowCache(), ["mode": "maximize", "id": "1:w10"])
+        XCTAssertEqual(maximized, "Maximized 1:w10.")
+        let applied = await source.list.first?.frame
+        XCTAssertEqual(applied, CGRect(x: -1920, y: 25, width: 1920, height: 1055))
+        let actions = await source.actions
+        XCTAssertEqual(actions, ["frame 1:w10"])
+    }
+
+    func testMaximizeOffscreenWindowUsesNearestDisplay() {
+        XCTAssertEqual(WindowTool.maximizedFrame(for: CGRect(x: 5000, y: 100, width: 400, height: 300), displays: Self.displays),
+                       CGRect(x: 0, y: 25, width: 1440, height: 800))
+        XCTAssertEqual(WindowTool.maximizedFrame(for: CGRect(x: -4000, y: 2000, width: 400, height: 300), displays: Self.displays),
+                       CGRect(x: -1920, y: 25, width: 1920, height: 1055))
+        XCTAssertNil(WindowTool.maximizedFrame(for: .zero, displays: []))
+    }
+
+    func testMoveToDisplayKeepsOffsetAndClamps() async throws {
+        let main = Self.displays[0], left = Self.displays[1]
+        XCTAssertEqual(WindowTool.frame(CGRect(x: 100, y: 125, width: 800, height: 600), movedFrom: main, to: left),
+                       CGRect(x: -1820, y: 125, width: 800, height: 600))
+        XCTAssertEqual(WindowTool.frame(CGRect(x: 100, y: 125, width: 2500, height: 600), movedFrom: main, to: left),
+                       CGRect(x: -1920, y: 125, width: 1920, height: 600))
+        // Back to the smaller main display: the offset would push it past the bottom right.
+        XCTAssertEqual(WindowTool.frame(CGRect(x: -900, y: 500, width: 800, height: 600), movedFrom: left, to: main),
+                       CGRect(x: 640, y: 225, width: 800, height: 600))
+
+        let source = FakeWindowSource([window(frame: CGRect(x: 100, y: 125, width: 800, height: 600), number: 10)],
+                                      displays: Self.displays)
+        let moved = try await run(source, WindowCache(), ["mode": "display", "id": "1:w10", "display": 1])
+        XCTAssertEqual(moved, "Moved 1:w10 to display 1.")
+        let applied = await source.list.first?.frame
+        XCTAssertEqual(applied, CGRect(x: -1820, y: 125, width: 800, height: 600))
+    }
+
+    func testFormatDisplays() async throws {
+        XCTAssertEqual(WindowTool.formatDisplays(Self.displays), """
+        0\tBuilt-in\t[0,0,1440,900]\tvisible [0,25,1440,800]\tscale 2\tmain
+        1\tLeft\t[-1920,0,1920,1080]\tvisible [-1920,25,1920,1055]\tscale 1
+        """)
+        XCTAssertEqual(WindowTool.formatDisplays([
+            DisplayFrame(index: 0, name: "A\tB", frame: .zero, visible: .zero, scale: 1.5, main: false),
+        ]), "0\tA B\t[0,0,0,0]\tvisible [0,0,0,0]\tscale 1.5")
+        XCTAssertEqual(WindowTool.formatDisplays([]), "No displays.")
+
+        let source = FakeWindowSource([], displays: Self.displays)
+        let listed = try await run(source, WindowCache(), ["mode": "displays"])
+        XCTAssertEqual(listed, WindowTool.formatDisplays(Self.displays))
+    }
+
+    func testCocoaFramesFlipToTopLeft() {
+        // A 1920×1080 display left of a 1440×900 main one, bottom edges aligned; Dock on the main one.
+        let main = DisplayFrame.fromCocoa(index: 0, name: "Built-in", frame: CGRect(x: 0, y: 0, width: 1440, height: 900),
+                                          visible: CGRect(x: 0, y: 75, width: 1440, height: 800),
+                                          mainHeight: 900, scale: 2, main: true)
+        XCTAssertEqual(main.frame, CGRect(x: 0, y: 0, width: 1440, height: 900))
+        XCTAssertEqual(main.visible, CGRect(x: 0, y: 25, width: 1440, height: 800))
+        let left = DisplayFrame.fromCocoa(index: 1, name: "Left", frame: CGRect(x: -1920, y: 0, width: 1920, height: 1080),
+                                          visible: CGRect(x: -1920, y: 0, width: 1920, height: 1055),
+                                          mainHeight: 900, scale: 1, main: false)
+        XCTAssertEqual(left.frame, CGRect(x: -1920, y: -180, width: 1920, height: 1080))
+        XCTAssertEqual(left.visible, CGRect(x: -1920, y: -155, width: 1920, height: 1055))
+    }
+
+    func testFullscreenModesCallTheSource() async throws {
+        let source = FakeWindowSource([window(number: 10)])
+        let cache = WindowCache()
+        let entered = try await run(source, cache, ["mode": "fullscreen", "id": "1:w10"])
+        XCTAssertEqual(entered, "Full screen 1:w10.")
+        let again = try await run(source, cache, ["mode": "fullscreen", "id": "1:w10"])
+        XCTAssertEqual(again, "Full screen 1:w10.")
+        let left = try await run(source, cache, ["mode": "exit_fullscreen", "id": "1:w10"])
+        XCTAssertEqual(left, "Left full screen 1:w10.")
+        let leftAgain = try await run(source, cache, ["mode": "exit_fullscreen", "id": "1:w10"])
+        XCTAssertEqual(leftAgain, "Left full screen 1:w10.")
+        let actions = await source.actions
+        XCTAssertEqual(actions, ["fullscreen 1:w10", "exit_fullscreen 1:w10"])
+    }
+
+    func testDisplayModeNeedsAValidIndex() async {
+        let source = FakeWindowSource([window(number: 10)], displays: Self.displays)
+        let cache = WindowCache()
+        let missing = await error(source, cache, ["mode": "display", "id": "1:w10"])
+        XCTAssertEqual(missing, "display required for display mode.")
+        let unknown = await error(source, cache, ["mode": "display", "id": "1:w10", "display": 9])
+        XCTAssertEqual(unknown, "No display 9; see Window displays.")
+        for mode in ["maximize", "fullscreen", "exit_fullscreen", "display"] {
+            let message = await error(source, cache, ["mode": .string(mode)])
+            XCTAssertEqual(message, "id required for \(mode) mode.")
+        }
+        let actions = await source.actions
+        XCTAssertEqual(actions, [])
+    }
+
+    func testNewModesRefuseWithoutAccessibility() async {
+        withAccessibility(false)
+        let source = FakeWindowSource([window(number: 10)], displays: Self.displays)
+        let calls: [[String: Value]] = [
+            ["mode": "maximize", "id": "1:w10"], ["mode": "fullscreen", "id": "1:w10"],
+            ["mode": "exit_fullscreen", "id": "1:w10"], ["mode": "display", "id": "1:w10", "display": 1],
+            ["mode": "displays"],
+        ]
+        for arguments in calls {
+            let message = await error(source, WindowCache(), arguments)
+            XCTAssertEqual(message, Permissions.accessibilityMessage, "\(arguments)")
+        }
+        let actions = await source.actions
+        XCTAssertEqual(actions, [])
     }
 
     /// Whether the private symbol behind window numbers exists here; without it every id falls

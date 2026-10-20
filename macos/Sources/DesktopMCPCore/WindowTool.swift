@@ -35,9 +35,7 @@ public struct WindowInfo: Sendable, Equatable {
     }
 
     /// The frame as whole points `[x, y, w, h]`.
-    var roundedFrame: [Int] {
-        [frame.origin.x, frame.origin.y, frame.width, frame.height].map { Int($0.rounded()) }
-    }
+    var roundedFrame: [Int] { WindowTool.rounded(frame) }
 
     /// Whether `other` is still this window by appearance: same title and same frame to the
     /// point. Only used for index ids, which have nothing better.
@@ -66,6 +64,11 @@ public protocol WindowSource: Sendable {
     func move(_ w: WindowInfo, to: CGPoint) async -> Bool
     func resize(_ w: WindowInfo, to: CGSize) async -> Bool
     func close(_ w: WindowInfo) async -> Bool
+    /// Position, then size, then position again (an app may clamp the size against the old position).
+    func setFrame(_ w: WindowInfo, _ frame: CGRect) async -> Bool
+    func setFullScreen(_ w: WindowInfo, _ on: Bool) async -> Bool
+    /// The displays, top-left origin, in `Displays.all()` order.
+    func displays() async -> [DisplayFrame]
 }
 
 /// Windows through the Accessibility API. Every AX call runs inside `offload`, and actions find
@@ -202,6 +205,25 @@ struct AXWindowSource: WindowSource {
             return AX.perform(button, kAXPressAction)
         }
     }
+
+    func setFrame(_ w: WindowInfo, _ frame: CGRect) async -> Bool {
+        await acting(on: w) { _, window in
+            AX.setPosition(window, x: frame.origin.x, y: frame.origin.y)
+            let sized = AX.setSize(window, width: frame.width, height: frame.height)
+            let placed = AX.setPosition(window, x: frame.origin.x, y: frame.origin.y)
+            return sized && placed
+        }
+    }
+
+    func setFullScreen(_ w: WindowInfo, _ on: Bool) async -> Bool {
+        await acting(on: w) { _, window in
+            AX.set(window, AXName.fullScreen, on ? kCFBooleanTrue : kCFBooleanFalse)
+        }
+    }
+
+    func displays() async -> [DisplayFrame] {
+        await MainActor.run { Displays.frames() }
+    }
 }
 
 /// The windows seen by the last `capacity` listings, newest first on lookup.
@@ -224,7 +246,8 @@ actor WindowCache {
 }
 
 enum WindowTool {
-    static let modes = ["list", "focus", "move", "resize", "minimize", "restore", "close"]
+    static let modes = ["list", "focus", "move", "resize", "minimize", "restore", "close",
+                        "maximize", "fullscreen", "exit_fullscreen", "display", "displays"]
 
     enum WindowID: Equatable {
         case number(pid_t, CGWindowID)
@@ -248,17 +271,64 @@ enum WindowTool {
         s.components(separatedBy: .newlines).joined(separator: " ").replacingOccurrences(of: "\t", with: " ")
     }
 
+    /// A rect as whole points `[x, y, w, h]`.
+    static func rounded(_ r: CGRect) -> [Int] {
+        [r.origin.x, r.origin.y, r.width, r.height].map { Int($0.rounded()) }
+    }
+
+    /// `[x,y,w,h]` in whole points.
+    static func box(_ r: CGRect) -> String {
+        "[" + rounded(r).map(String.init).joined(separator: ",") + "]"
+    }
+
     /// One `<id>\t<app>\t"<title>"\t[x,y,w,h]\t<flags>` line per window; no flags, no last tab.
     static func format(_ windows: [WindowInfo]) -> String {
         guard !windows.isEmpty else { return "No windows." }
         return windows.map { w in
-            var fields = [w.id, flat(w.app), "\"\(flat(w.title))\"",
-                          "[" + w.roundedFrame.map(String.init).joined(separator: ",") + "]"]
+            var fields = [w.id, flat(w.app), "\"\(flat(w.title))\"", box(w.frame)]
             let flags = [(w.focused, "focused"), (w.minimized, "minimized"), (w.fullscreen, "fullscreen")]
                 .filter(\.0).map(\.1)
             if !flags.isEmpty { fields.append(flags.joined(separator: ",")) }
             return fields.joined(separator: "\t")
         }.joined(separator: "\n")
+    }
+
+    /// One `<index>\t<name>\t[x,y,w,h]\tvisible [x,y,w,h]\tscale <s>` line per display, `\tmain`
+    /// after the main one.
+    static func formatDisplays(_ displays: [DisplayFrame]) -> String {
+        guard !displays.isEmpty else { return "No displays." }
+        return displays.map { d in
+            let scale = d.scale == d.scale.rounded() ? String(Int(d.scale)) : String(d.scale)
+            var fields = [String(d.index), flat(d.name), box(d.frame), "visible " + box(d.visible), "scale \(scale)"]
+            if d.main { fields.append("main") }
+            return fields.joined(separator: "\t")
+        }.joined(separator: "\n")
+    }
+
+    /// The display containing the window's centre, else the one whose centre is nearest.
+    static func display(of window: CGRect, in displays: [DisplayFrame]) -> DisplayFrame? {
+        let centre = CGPoint(x: window.midX, y: window.midY)
+        if let containing = displays.first(where: { $0.frame.contains(centre) }) { return containing }
+        return displays.min { a, b in
+            hypot(a.frame.midX - centre.x, a.frame.midY - centre.y) < hypot(b.frame.midX - centre.x, b.frame.midY - centre.y)
+        }
+    }
+
+    /// The visible frame of the window's display (see `display(of:in:)`); nil without displays.
+    static func maximizedFrame(for window: CGRect, displays: [DisplayFrame]) -> CGRect? {
+        display(of: window, in: displays)?.visible
+    }
+
+    /// `window` at the same offset from `to`'s visible frame as from `movedFrom`'s, size kept,
+    /// then shrunk and shifted to lie inside `to`'s visible frame.
+    static func frame(_ window: CGRect, movedFrom: DisplayFrame, to: DisplayFrame) -> CGRect {
+        let target = to.visible
+        let width = min(window.width, target.width), height = min(window.height, target.height)
+        let x = target.minX + (window.minX - movedFrom.visible.minX)
+        let y = target.minY + (window.minY - movedFrom.visible.minY)
+        return CGRect(x: min(max(x, target.minX), target.maxX - width),
+                      y: min(max(y, target.minY), target.maxY - height),
+                      width: width, height: height)
     }
 
     /// The window `id` names now. A number id only needs the window to still exist; an index id
@@ -292,6 +362,13 @@ enum WindowTool {
         return list
     }
 
+    /// Reads `window` again after its frame changed; an index id needs the new frame cached.
+    private static func remember(_ window: WindowInfo, source: any WindowSource, cache: WindowCache) async {
+        guard window.number == nil,
+              let applied = await source.windows(pid: window.pid).first(where: window.names) else { return }
+        await cache.remember([applied])
+    }
+
     private static func failed(_ mode: String, _ id: String) -> ToolError {
         ToolError("Could not \(mode) window \(id).", telemetry: "Could not \(mode) window")
     }
@@ -299,13 +376,14 @@ enum WindowTool {
     static func tool(source: any WindowSource = AXWindowSource(), cache: WindowCache = WindowCache()) -> Tool {
         Tool(
             name: "Window",
-            description: "Lists and arranges application windows. 'list' (default) returns one line per window: '<id>\\t<app>\\t\"<title>\"\\t[x,y,w,h]\\t<flags>' (flags: focused, minimized, fullscreen), optionally only for 'app' (name or bundle id). The other modes act on the window 'id' from list: 'focus', 'move' (to 'loc' [x, y]), 'resize' (to 'size' [width, height]), 'minimize', 'restore', 'close' (presses its close button; the app may ask to save). A window that closed since it was listed is refused; list again.",
+            description: "Lists and arranges application windows. 'list' (default) returns one line per window: '<id>\\t<app>\\t\"<title>\"\\t[x,y,w,h]\\t<flags>' (flags: focused, minimized, fullscreen), optionally only for 'app' (name or bundle id). The other modes act on the window 'id' from list: 'focus', 'move' (to 'loc' [x, y]), 'resize' (to 'size' [width, height]), 'minimize', 'restore', 'close' (presses its close button; the app may ask to save), 'maximize' (fills its display minus the menu bar and Dock), 'fullscreen', 'exit_fullscreen', 'display' (moves it to display index 'display', same relative position, kept inside that display). 'displays' (no id) returns one line per display: '<index>\\t<name>\\t[x,y,w,h]\\tvisible [x,y,w,h]\\tscale <s>', then 'main' for the main one, in the same top-left coordinates as window frames. A window that closed since it was listed is refused; list again.",
             inputSchema: DesktopMCP.schema([
                 "mode": DesktopMCP.string(default: "list", enum: modes),
                 "app": DesktopMCP.nullableString(),
                 "id": DesktopMCP.nullableString(),
                 "loc": DesktopMCP.intPair(nullable: true),
                 "size": DesktopMCP.intPair(nullable: true),
+                "display": DesktopMCP.integer(),
             ]),
             annotations: ToolAnnotations(title: "Window", readOnly: false, destructive: true, idempotent: false, openWorld: false),
             handler: { args in
@@ -321,8 +399,17 @@ enum WindowTool {
                     return [.text(format(windows))]
                 }
 
+                if mode == "displays" {
+                    try Permissions.requireAccessibility()
+                    return [.text(formatDisplays(await source.displays()))]
+                }
+
                 guard let id = try args.string("id") else { throw ToolError("id required for \(mode) mode.") }
-                var loc: [Int] = [], size: [Int] = []
+                var loc: [Int] = [], size: [Int] = [], displayIndex = 0
+                if mode == "display" {
+                    guard let n = try args.int("display") else { throw ToolError("display required for display mode.") }
+                    displayIndex = n
+                }
                 if mode == "move" {
                     loc = try pair(args, "loc", mode: mode, message: "loc must be a list of 2 integers [x, y].")
                 }
@@ -358,6 +445,29 @@ enum WindowTool {
                     }
                     return [.text(mode == "move" ? "Moved \(id) to (\(frame[0]),\(frame[1]))."
                                                  : "Resized \(id) to \(frame[2])×\(frame[3]).")]
+                case "maximize":
+                    guard let target = maximizedFrame(for: window.frame, displays: await source.displays()),
+                          await source.setFrame(window, target) else { throw failed(mode, id) }
+                    await remember(window, source: source, cache: cache)
+                    return [.text("Maximized \(id).")]
+                case "fullscreen", "exit_fullscreen":
+                    let on = mode == "fullscreen"
+                    if window.fullscreen != on {
+                        guard await source.setFullScreen(window, on) else { throw failed(on ? mode : "exit fullscreen", id) }
+                    }
+                    return [.text(on ? "Full screen \(id)." : "Left full screen \(id).")]
+                case "display":
+                    let displays = await source.displays()
+                    guard let target = displays.first(where: { $0.index == displayIndex }) else {
+                        throw ToolError("No display \(displayIndex); see Window displays.", telemetry: "No such display")
+                    }
+                    guard let current = display(of: window.frame, in: displays),
+                          await source.setFrame(window, frame(window.frame, movedFrom: current, to: target)) else {
+                        throw ToolError("Could not move window \(id) to display \(displayIndex).",
+                                        telemetry: "Could not move window to display")
+                    }
+                    await remember(window, source: source, cache: cache)
+                    return [.text("Moved \(id) to display \(displayIndex).")]
                 default:
                     guard await source.close(window) else { throw failed(mode, id) }
                     return [.text("Close requested for \(id) (\"\(flat(window.title))\").")]

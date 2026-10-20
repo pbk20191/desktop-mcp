@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Foundation
 
@@ -96,7 +97,58 @@ public struct DisplayInfo: Sendable {
     }
 }
 
+/// One display as windows see it: points, origin top-left of the main display, y down (the
+/// Accessibility system, like `WindowInfo.frame`).
+public struct DisplayFrame: Sendable, Equatable {
+    /// Position in `Displays.all()` order (left to right).
+    public var index: Int
+    public var name: String
+    public var frame: CGRect
+    /// The frame without the menu bar and the Dock.
+    public var visible: CGRect
+    public var scale: Double
+    public var main: Bool
+
+    public init(index: Int, name: String, frame: CGRect, visible: CGRect, scale: Double, main: Bool) {
+        self.index = index
+        self.name = name
+        self.frame = frame
+        self.visible = visible
+        self.scale = scale
+        self.main = main
+    }
+
+    /// From `NSScreen` rects (origin bottom-left of the main display, y up); `mainHeight` is the
+    /// main display's height.
+    public static func fromCocoa(index: Int, name: String, frame: CGRect, visible: CGRect,
+                                 mainHeight: Double, scale: Double, main: Bool) -> DisplayFrame {
+        func flip(_ r: CGRect) -> CGRect {
+            CGRect(x: r.origin.x, y: mainHeight - (r.origin.y + r.height), width: r.width, height: r.height)
+        }
+        return DisplayFrame(index: index, name: name, frame: flip(frame), visible: flip(visible), scale: scale, main: main)
+    }
+}
+
 public enum Displays {
+    /// Every screen with its visible frame, in `all()` order. Reads `NSScreen`, so main actor.
+    @MainActor
+    public static func frames() -> [DisplayFrame] {
+        let screens = NSScreen.screens
+        // The first screen is the one with the menu bar, whose bottom-left is the Cocoa origin.
+        guard let mainHeight = screens.first?.frame.height else { return [] }
+        let key = NSDeviceDescriptionKey("NSScreenNumber")
+        let byID = Dictionary(screens.compactMap { screen in
+            (screen.deviceDescription[key] as? NSNumber).map { ($0.uint32Value, screen) }
+        }, uniquingKeysWith: { first, _ in first })
+        let mainID = CGMainDisplayID()
+        return all().enumerated().compactMap { index, display in
+            guard let screen = byID[display.id] else { return nil }
+            return .fromCocoa(index: index, name: screen.localizedName, frame: screen.frame,
+                              visible: screen.visibleFrame, mainHeight: mainHeight,
+                              scale: screen.backingScaleFactor, main: display.id == mainID)
+        }
+    }
+
     /// Active displays sorted left to right, with `pixelLeft` filled in for a left-to-right stitch.
     public static func all() -> [DisplayInfo] {
         var count: UInt32 = 0
