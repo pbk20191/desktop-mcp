@@ -113,6 +113,8 @@ Ideas from the terminator analysis (`mediar-ai/terminator` at 73a381c, MIT; its 
 
 ## P5 (HTTP)
 
+- Telemetry is opt-in (user decision, 2026-10-20; spec Telemetry): send only with `ANONYMIZED_TELEMETRY=true` and an explicit `POSTHOG_API_KEY`; no upstream key is built in. List this in spec §10 as a deliberate difference.
+
 - Scrape sampling: call SampleAsync with upstream's system prompt and max_tokens 2048, falling back to the raw content (tools/scrape.py:52-71).
 - IP allowlist: IPv4-mapped IPv6 client addresses need mapping in the matcher.
 - JSONL audit log written from the SDK call filter, so every tool call is recorded with its name, arguments (with secrets redacted), result status and duration.

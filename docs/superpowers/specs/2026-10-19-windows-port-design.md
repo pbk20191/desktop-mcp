@@ -496,9 +496,10 @@ uses System.Text.Json source generation.
 
 ### Telemetry
 
-PostHog over `HttpClient`, fire-and-forget, failures ignored. Off when
-`ANONYMIZED_TELEMETRY=false`; `POSTHOG_API_KEY` (default: upstream's project key) and
-`POSTHOG_HOST` (default `https://us.i.posthog.com`). `distinct_id` is a UUIDv7 stored in
+PostHog over `HttpClient`, fire-and-forget, failures ignored. **Off by default** (user decision,
+2026-10-20): nothing is sent unless `ANONYMIZED_TELEMETRY=true` **and** `POSTHOG_API_KEY` is set.
+There is no default key, so the server never reports to upstream's PostHog project on its own;
+`POSTHOG_HOST` defaults to `https://us.i.posthog.com`. Upstream's default is on, with its own key. `distinct_id` is a UUIDv7 stored in
 `~/.desktop-mcp/.desktop-mcp-user-id`; `session_id` is `mcp_{ms}_{pid}`. Events `tool_executed`
 and `exception` with upstream's properties (`tool_name`, `session_id`, `process_person_profile`,
 `duration_ms`, `success`, `client_name`, `client_version`, and for exceptions `exception` and
@@ -584,7 +585,7 @@ and restore the clipboard text, and the toast test leaves a notification.
   annotation colours are fixed per label; the `initialize` instructions have no leading or
   trailing newline.
 - **Bug fixes**: scrollable elements report their box centre (upstream picks a random point);
-  WaitFor `element_enabled` checks the enabled state; telemetry events are sent; `/health` exists;
+  WaitFor `element_enabled` checks the enabled state; telemetry events are sent when enabled (opt-in, see Telemetry); `/health` exists;
   Process CPU% is measured; the unreachable `takeover_pending` state is gone.
 - **Protocol**: the legacy SSE message endpoint is `/message` (clients follow the `endpoint`
   event); no FastMCP `_meta` on tools; JSON serialisation details are the MCP C# SDK's.
