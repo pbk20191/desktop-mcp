@@ -55,4 +55,29 @@ public class ElementBudgetTests
         Assert.True(budget.Visit());
         Assert.True(budget.Exhausted && budget.Truncated);
     }
+
+    [Fact]
+    public void ASliceGetsWhatIsLeftAndOnlyAnAbsorbedSliceCounts()
+    {
+        var budget = new ElementBudget(3, 10);
+        budget.TryConsume();
+        budget.Visit();
+        var slice = budget.Slice();
+        Assert.Equal((2, 9), (slice.Limit, slice.RemainingVisits));
+        slice.TryConsume();
+        slice.Visit();
+        Assert.Equal((1, 9), (budget.Count, budget.RemainingVisits));
+        budget.Absorb(slice);
+        Assert.Equal((2, 8, false), (budget.Count, budget.RemainingVisits, budget.Truncated));
+    }
+
+    [Fact]
+    public void ATruncatedSliceTruncatesTheBudget()
+    {
+        var budget = new ElementBudget(5, 3);
+        var slice = budget.Slice();
+        while (slice.Visit()) { }
+        budget.Absorb(slice);
+        Assert.True(budget.Truncated && budget.Exhausted);
+    }
 }

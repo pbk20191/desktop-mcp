@@ -17,9 +17,10 @@ internal sealed class FakeWindowSystem : IWindowSystem
     public Dictionary<long, string> Classes { get; } = [];
     public Dictionary<long, long> Roots { get; } = [];
     public Queue<long> Foreground { get; } = new();
+    public HashSet<long> Gone { get; } = [];
 
     public IReadOnlyList<long> EnumerateTopLevel() => TopLevel;
-    public bool IsWindow(long window) => true;
+    public bool IsWindow(long window) => !Gone.Contains(window);
     public bool IsVisible(long window) => !Hidden.Contains(window);
     public bool IsMinimized(long window) => Minimized.Contains(window);
     public bool IsMaximized(long window) => false;
@@ -164,6 +165,43 @@ public class WindowCatalogTests
         _system.Foreground.Enqueue(9);
         var active = (await Catalog().ScanAsync(default)).Active;
         Assert.Equal(("Tool", 0, 9L), (active!.Name, active.Depth, active.Handle));
+    }
+
+    [Fact]
+    public async Task AFailedReadOfTheFocusedWindowIsRetried()
+    {
+        var reads = 0;
+        _probe.Windows[9] = () => ++reads == 1 ? throw new InvalidOperationException("busy") : App("Tool");
+        _system.Foreground.Enqueue(9);
+        _system.Foreground.Enqueue(9);
+        var active = (await Catalog().ScanAsync(default)).Active;
+        Assert.Equal("Tool", active!.Name);
+        Assert.Equal([9L, 9L], _probe.Probed);
+        Assert.Equal([WindowCatalog.ActiveWindowRetryDelay], _delays);
+    }
+
+    [Theory]
+    [InlineData(false)] // the hang breaker's deadline: blocked
+    [InlineData(true)]  // UIA's own timeout
+    public async Task AFocusedWindowThatTimesOutIsNotRetried(bool comTimeout)
+    {
+        _probe.Windows[9] = () => throw (comTimeout ? new COMException("timeout", unchecked((int)0x80131505)) : new UiaTimeoutException("hung"));
+        _system.Foreground.Enqueue(9);
+        _system.Foreground.Enqueue(9);
+        Assert.Null((await Catalog().ScanAsync(default)).Active);
+        Assert.Equal([9L], _probe.Probed);
+        Assert.Empty(_delays);
+    }
+
+    [Fact]
+    public async Task ABlockedFocusedWindowIsNotRetried()
+    {
+        _blocks.Block(9, 100);
+        _system.Foreground.Enqueue(9);
+        _system.Foreground.Enqueue(9);
+        Assert.Null((await Catalog().ScanAsync(default)).Active);
+        Assert.Empty(_probe.Probed);
+        Assert.Empty(_delays);
     }
 
     [Fact]

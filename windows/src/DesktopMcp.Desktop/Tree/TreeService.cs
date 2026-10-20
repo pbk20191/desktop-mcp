@@ -41,10 +41,11 @@ internal sealed class UiaWindowWalker(UiaWorker<UiaSession> worker) : IWindowWal
 /// </summary>
 /// <remarks>
 /// Decisions 2: the hang breaker's deadline (<see cref="UiaTimeoutException"/>) blocks the window and its process and is
-/// not retried. UIA's own timeout and a dead element are not retried either (the window hangs or is gone) but block
-/// nothing; cancellation ends the capture and blocks nothing. A walk that failed or timed out contributes nothing: only
-/// a walk's returned result is assembled. Its thread may still be running after a timeout, so ids come from an atomic
-/// counter that keeps them unique.
+/// not retried; the block is checked before every attempt, so the process's other windows are not walked into the same
+/// hang. UIA's own timeout is not retried and blocks nothing; a dead element is retried only while the window still
+/// exists; cancellation ends the capture and blocks nothing. Each attempt walks under its own slice of the budget, merged
+/// only when it succeeds, so a walk that failed or timed out contributes nothing, and an abandoned walk still running on
+/// its thread never touches the capture's budget. Ids come from an atomic counter that keeps them unique across both.
 /// </remarks>
 internal sealed class TreeService(
     IWindowSystem windows, IWindowWalker walker, HangBlockList blocks, Func<string, string?> environment,
@@ -57,8 +58,11 @@ internal sealed class TreeService(
         var budget = new ElementBudget(SnapshotSettings.MaxTreeElements(environment(SnapshotSettings.MaxTreeElementsVariable)));
         var excluded = SnapshotSettings.ExcludedProcesses(environment(SnapshotSettings.ExcludeProcessesVariable));
         var targets = new List<(long Window, int ProcessId, bool IsBrowser)>();
+        var seen = new HashSet<long>();
         foreach (var window in active is { } first ? [first, .. others] : others)
         {
+            // The active window may also be among the others, and a window listed twice is walked once.
+            if (!seen.Add(window)) continue;
             var processId = windows.GetProcessId(window);
             var processName = windows.GetProcessName(processId);
             if (processName is not null && excluded.Contains(processName.ToLowerInvariant())) continue;
@@ -88,23 +92,34 @@ internal sealed class TreeService(
         {
             // A cancelled capture walks nothing more: the hang breaker would abandon its thread for a job that never ran.
             cancellationToken.ThrowIfCancellationRequested();
+            // Another window of this process may have timed out since the targets were listed (or during a retry delay).
+            if (blocks.IsBlocked(window, processId)) return null;
+            // Upstream counts a failed attempt's elements against the capture; this port does not, on purpose (see remarks).
+            var slice = budget.Slice();
             try
             {
-                return await walker.WalkAsync(window, isBrowser, screen, budget, nextId, cancellationToken).ConfigureAwait(false);
+                var walk = await walker.WalkAsync(window, isBrowser, screen, slice, nextId, cancellationToken).ConfigureAwait(false);
+                budget.Absorb(slice);
+                return walk;
             }
             catch (UiaTimeoutException)
             {
                 blocks.Block(window, processId);
                 return null;
             }
-            catch (Exception e) when (ComErrors.IsTimeout(e) || ComErrors.IsDeadElement(e))
+            catch (Exception e) when (ComErrors.IsTimeout(e))
             {
+                return null;
+            }
+            catch (Exception e) when (ComErrors.IsDeadElement(e) && !windows.IsWindow(window))
+            {
+                // The window is gone: retrying cannot bring it back.
                 return null;
             }
             catch (Exception e) when (e is not (OperationCanceledException or UiaUnavailableException or ObjectDisposedException))
             {
-                // Retried; after the last retry, or once a failed attempt has spent the budget, the window is left out.
-                if (attempt == RetryDelays.Length || budget.Exhausted) return null;
+                // Retried (a dead element too, while the window exists); after the last retry the window is left out.
+                if (attempt == RetryDelays.Length) return null;
             }
             await delay(RetryDelays[attempt], cancellationToken).ConfigureAwait(false);
         }

@@ -32,34 +32,14 @@ internal sealed class UiaWindowProbe(UiaWorker<UiaSession> worker) : IWindowProb
             Deadline, cancellationToken);
 }
 
-/// <summary>Runs the body of a UIA job so that no raw COM error leaves it, except the ones its callers classify.</summary>
-internal static class UiaJob
-{
-    /// <summary>
-    /// COM and WinRT failures become <see cref="DesktopException"/>s (<see cref="ComErrors.Translate"/>), except a dead
-    /// element and UIA's own timeout, which stay raw so <see cref="ComErrors.IsDeadElement"/> and
-    /// <see cref="ComErrors.IsTimeout"/> still see them; the window catalog and the tree service consume those.
-    /// </summary>
-    public static T Run<T>(string operation, Func<T> body)
-    {
-        try
-        {
-            return body();
-        }
-        catch (Exception e) when (!ComErrors.IsDeadElement(e) && !ComErrors.IsTimeout(e) && ComErrors.ShouldTranslate(e))
-        {
-            throw ComErrors.Translate(operation, e);
-        }
-    }
-}
-
 /// <summary>
 /// upstream desktop/service.py:1068-1245: get_controls_handles, get_windows and get_active_window. Windows are taken in
 /// z-order and Depth is the index in that order (Decisions 3); the focused window comes from Win32 (Decisions 25).
 /// </summary>
 /// <remarks>
 /// Only the hang breaker's deadline (<see cref="UiaTimeoutException"/>) blocks a window and its process; a dead element,
-/// UIA's own timeout and any other failure skip the window for this scan only, and cancellation ends the scan.
+/// UIA's own timeout and any other failure skip the window for this scan only (the focused window's read is retried, as
+/// upstream does), and cancellation ends the scan.
 /// </remarks>
 internal sealed class WindowCatalog(
     IWindowSystem windows, IWindowProbe probe, IVirtualDesktops desktops, HangBlockList blocks, int ownProcessId,
@@ -77,7 +57,7 @@ internal sealed class WindowCatalog(
         var list = new List<WindowInfo>();
         for (var depth = 0; depth < candidates.Count; depth++)
         {
-            if (await DescribeAsync(candidates[depth], depth, applicationOnly: true, cancellationToken).ConfigureAwait(false) is { } window)
+            if ((await DescribeAsync(candidates[depth], depth, applicationOnly: true, cancellationToken).ConfigureAwait(false)).Window is { } window)
                 list.Add(window);
         }
         var active = await ActiveAsync(list, cancellationToken).ConfigureAwait(false);
@@ -100,12 +80,18 @@ internal sealed class WindowCatalog(
         return result;
     }
 
+    /// <summary>
+    /// A described window, or none: <see cref="ProbeFailed"/> tells a transient probe failure (worth another attempt) from
+    /// a window that is blocked, timed out or filtered out.
+    /// </summary>
+    private readonly record struct Description(WindowInfo? Window, bool ProbeFailed);
+
     // upstream desktop/service.py:1054-1066 and 1192-1245. A window whose probe fails is skipped (upstream drops the
     // whole list on most errors).
-    private async Task<WindowInfo?> DescribeAsync(long window, int depth, bool applicationOnly, CancellationToken cancellationToken)
+    private async Task<Description> DescribeAsync(long window, int depth, bool applicationOnly, CancellationToken cancellationToken)
     {
         var processId = windows.GetProcessId(window);
-        if (blocks.IsBlocked(window, processId)) return null;
+        if (blocks.IsBlocked(window, processId)) return default;
         // A cancelled scan probes nothing more: the hang breaker would abandon its thread for a job that never ran.
         cancellationToken.ThrowIfCancellationRequested();
         WindowProbe described;
@@ -116,27 +102,33 @@ internal sealed class WindowCatalog(
         catch (UiaTimeoutException)
         {
             blocks.Block(window, processId);
-            return null;
+            return default;
+        }
+        catch (Exception e) when (ComErrors.IsTimeout(e))
+        {
+            // UIA's own timeout: not retried (Decisions 2), and only the hang breaker's deadline blocks.
+            return default;
         }
         catch (Exception e) when (e is not (OperationCanceledException or UiaUnavailableException or ObjectDisposedException))
         {
-            return null;
+            return new Description(null, ProbeFailed: true);
         }
         var status = Status(window);
         if (applicationOnly)
         {
             // upstream desktop/service.py:1054-1066 is_overlay_window.
             var name = described.Name.Trim();
-            if (name.Contains("Overlay", StringComparison.Ordinal) || (name.Length == 0 && !described.HasChildren)) return null;
-            if (described.ControlType is not (TreeConfig.Window or TreeConfig.Pane)) return null;
-            if (!described.HasWindowPattern || !(described.CanMinimize && described.CanMaximize)) return null;
-            if (described.Bounds.IsEmpty && status != WindowStatus.Minimized) return null;
+            if (name.Contains("Overlay", StringComparison.Ordinal) || (name.Length == 0 && !described.HasChildren)) return default;
+            if (described.ControlType is not (TreeConfig.Window or TreeConfig.Pane)) return default;
+            if (!described.HasWindowPattern || !(described.CanMinimize && described.CanMaximize)) return default;
+            if (described.Bounds.IsEmpty && status != WindowStatus.Minimized) return default;
         }
-        return new WindowInfo(described.Name, depth, status, described.Bounds, window, described.ProcessId,
-            TreeConfig.IsBrowser(windows.GetProcessName(described.ProcessId)));
+        return new Description(new WindowInfo(described.Name, depth, status, described.Bounds, window, described.ProcessId,
+            TreeConfig.IsBrowser(windows.GetProcessName(described.ProcessId))), ProbeFailed: false);
     }
 
-    // upstream desktop/service.py:1115-1172 get_active_window.
+    // upstream desktop/service.py:1115-1172 get_active_window: a null foreground window and a failed read of the focused
+    // window are both retried after 100 ms (1162-1168); a blocked or timed-out window is not.
     private async Task<WindowInfo?> ActiveAsync(List<WindowInfo> list, CancellationToken cancellationToken)
     {
         for (var attempt = 0; attempt < ActiveWindowAttempts; attempt++)
@@ -149,8 +141,10 @@ internal sealed class WindowCatalog(
             }
             var root = windows.GetRoot(foreground);
             if (windows.GetClassName(root) == "Progman") return null;
-            return list.FirstOrDefault(window => window.Handle == root)
-                ?? await DescribeAsync(root, depth: 0, applicationOnly: false, cancellationToken).ConfigureAwait(false);
+            if (list.FirstOrDefault(window => window.Handle == root) is { } listed) return listed;
+            var described = await DescribeAsync(root, depth: 0, applicationOnly: false, cancellationToken).ConfigureAwait(false);
+            if (!described.ProbeFailed) return described.Window;
+            await delay(ActiveWindowRetryDelay, cancellationToken).ConfigureAwait(false);
         }
         return null;
     }

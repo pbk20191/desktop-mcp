@@ -28,6 +28,24 @@ internal sealed class ElementBudget(int limit, int maxVisits)
 
     public int Remaining => Math.Max(0, Limit - Count);
 
+    /// <summary>Visits left before the visit cap.</summary>
+    public int RemainingVisits => Math.Max(0, _maxVisits - _visits);
+
+    /// <summary>
+    /// A budget for one walk attempt with what is left of this one (call it only when this one is not exhausted). It is
+    /// merged back with <see cref="Absorb"/> only when the attempt succeeds, so an abandoned or failed walk, which may
+    /// still be running on another thread, never touches this budget.
+    /// </summary>
+    public ElementBudget Slice() => new(Remaining, RemainingVisits);
+
+    /// <summary>Adds what a successful <see cref="Slice"/> consumed; its truncation carries over.</summary>
+    public void Absorb(ElementBudget slice)
+    {
+        Count = Math.Min(Limit, Count + slice.Count);
+        _visits = Math.Min(_maxVisits, _visits + slice._visits);
+        if (slice.Truncated || Count >= Limit) Truncated = true;
+    }
+
     /// <summary>upstream try_consume: false (and truncated) once the limit is reached; reaching it exactly also truncates.</summary>
     public bool TryConsume(int amount = 1)
     {

@@ -110,12 +110,10 @@ public class TreeServiceTests
         Assert.True(_blocks.IsBlocked(1, 100));
     }
 
-    [Theory]
-    [InlineData(0x80040201u)] // UIA_E_ELEMENTNOTAVAILABLE: the window closed; retrying will not bring it back
-    [InlineData(0x80131505u)] // UIA_E_TIMEOUT: a timeout is not retried, but only the hang breaker's deadline blocks
-    public async Task ADeadOrTimedOutWindowIsLeftOutWithoutRetryingOrBlocking(uint hresult)
+    [Fact]
+    public async Task AComTimeoutIsLeftOutWithoutRetryingOrBlocking()
     {
-        _walker.Failures[1] = new Queue<Exception>([new COMException("failed", unchecked((int)hresult))]);
+        _walker.Failures[1] = new Queue<Exception>([new COMException("timeout", unchecked((int)0x80131505))]); // UIA_E_TIMEOUT
         var tree = await Service().CaptureAsync(null, [1, 2], Screen, default);
         Assert.Equal([1L, 2L], _walker.Walked);
         Assert.Empty(_delays);
@@ -124,9 +122,52 @@ public class TreeServiceTests
     }
 
     [Fact]
+    public async Task ADeadElementIsRetriedWhileTheWindowExists()
+    {
+        _walker.Failures[1] = new Queue<Exception>([new COMException("gone", unchecked((int)0x80040201))]); // UIA_E_ELEMENTNOTAVAILABLE
+        var tree = await Service().CaptureAsync(null, [1], Screen, default);
+        Assert.Equal([1L, 1L], _walker.Walked);
+        Assert.Equal([TimeSpan.FromSeconds(0.5)], _delays);
+        Assert.Equal(["B1"], tree.Interactive.Select(e => e.Name));
+        Assert.Equal(0, _blocks.Count);
+    }
+
+    [Fact]
+    public async Task AClosedWindowIsDroppedWithoutWaiting()
+    {
+        _walker.Failures[1] = new Queue<Exception>([new COMException("gone", unchecked((int)0x80040201))]);
+        _system.Gone.Add(1);
+        var tree = await Service().CaptureAsync(null, [1, 2], Screen, default);
+        Assert.Equal([1L, 2L], _walker.Walked);
+        Assert.Empty(_delays);
+        Assert.Equal(0, _blocks.Count);
+        Assert.Equal(["B2"], tree.Interactive.Select(e => e.Name));
+    }
+
+    [Fact]
+    public async Task ATimeoutSkipsTheOtherWindowsOfTheSameProcess()
+    {
+        _system.Processes[1] = 500;
+        _system.Processes[2] = 500;
+        _walker.Failures[1] = new Queue<Exception>([new UiaTimeoutException("hung")]);
+        var tree = await Service().CaptureAsync(null, [1, 2, 3], Screen, default);
+        Assert.Equal([1L, 3L], _walker.Walked);
+        Assert.Equal(["B3"], tree.Interactive.Select(e => e.Name));
+    }
+
+    [Fact]
+    public async Task NoWindowIsWalkedTwice()
+    {
+        var tree = await Service().CaptureAsync(2, [1, 2, 3, 1], Screen, default);
+        Assert.Equal([2L, 1L, 3L], _walker.Walked);
+        Assert.Equal(["W2", "W1", "W3"], tree.Root!.Children.Select(c => c.Name));
+    }
+
+    [Fact]
     public async Task NothingFromAWalkThatTimedOutReachesTheTree()
     {
         _walker.Failures[1] = new Queue<Exception>([new UiaTimeoutException("hung")]);
+        _system.Processes[2] = 200; // another process: the timeout blocks process 100
         _walker.BeforeFailure = (budget, nextId) =>
         {
             budget.TryConsume();
@@ -141,6 +182,7 @@ public class TreeServiceTests
     public async Task IdsStayUniqueWhenAnAbandonedWalkStillTakesThem()
     {
         _walker.Failures[1] = new Queue<Exception>([new UiaTimeoutException("hung")]);
+        _system.Processes[2] = 200; // another process: the timeout blocks process 100
         // An abandoned walk keeps numbering on its own thread while the capture goes on: the counter must be atomic.
         _walker.BeforeFailure = (_, nextId) => Parallel.For(0, 10_000, _ => nextId());
         var tree = await Service().CaptureAsync(null, [1, 2], Screen, default);
@@ -178,14 +220,28 @@ public class TreeServiceTests
     }
 
     [Fact]
-    public async Task AFailedWalkThatSpentTheBudgetIsNotRetried()
+    public async Task ATimedOutWalkConsumesNothingFromTheCaptureBudget()
     {
-        _environment[SnapshotSettings.MaxTreeElementsVariable] = "1";
-        _walker.Failures[1] = new Queue<Exception>([new InvalidOperationException("busy")]);
-        _walker.BeforeFailure = (budget, _) => budget.TryConsume();
+        _environment[SnapshotSettings.MaxTreeElementsVariable] = "2";
+        _walker.Failures[1] = new Queue<Exception>([new UiaTimeoutException("hung")]);
+        _system.Processes[2] = 200; // another process: the timeout blocks process 100
+        _walker.BeforeFailure = (budget, _) => budget.TryConsume(2);
         var tree = await Service().CaptureAsync(null, [1, 2], Screen, default);
-        Assert.Equal([1L], _walker.Walked);
-        Assert.Empty(_delays);
+        Assert.Equal([1L, 2L], _walker.Walked);
+        Assert.Equal(["B2"], tree.Interactive.Select(e => e.Name));
+        Assert.False(tree.Truncated);
+    }
+
+    [Fact]
+    public async Task AFailedAttemptsElementsAreNotCountedButTheSuccessfulOnesAre()
+    {
+        _environment[SnapshotSettings.MaxTreeElementsVariable] = "2";
+        _walker.Failures[1] = new Queue<Exception>([new InvalidOperationException("busy")]);
+        _walker.BeforeFailure = (budget, _) => budget.TryConsume(2);
+        var tree = await Service().CaptureAsync(null, [1, 2, 3], Screen, default);
+        // The retry of window 1 and window 2 consume one element each: the capture stops before window 3.
+        Assert.Equal([1L, 1L, 2L], _walker.Walked);
+        Assert.Equal(["B1", "B2"], tree.Interactive.Select(e => e.Name));
         Assert.True(tree.Truncated);
     }
 
