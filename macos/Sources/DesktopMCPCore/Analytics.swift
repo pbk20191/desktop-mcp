@@ -3,7 +3,7 @@ import MCP
 import Security
 
 /// Anonymous usage telemetry sent to the original project's PostHog, as the Python server does.
-/// On unless `ANONYMIZED_TELEMETRY=false`. Events: `tool_executed` (name, duration, client) and
+/// Off unless `ANONYMIZED_TELEMETRY=true`. Events: `tool_executed` (name, duration, client) and
 /// `exception` (tool, error text). No arguments or tool output are ever sent.
 ///
 /// Delivery is structured: `run()` hosts a task group in which every queued event is sent as a
@@ -12,11 +12,11 @@ import Security
 public actor PostHogAnalytics: ToolCallObserver {
     public static let apiKey = "phc_uxdCItyVTjXNU0sMPr97dq3tcz39scQNt3qjTYw5vLV"
     public static let host = "https://us.i.posthog.com"
-    public static let optOutEnv = "ANONYMIZED_TELEMETRY"
+    public static let optInEnv = "ANONYMIZED_TELEMETRY"
 
-    /// Whether telemetry is on for this environment.
+    /// Whether telemetry is on for this environment: only when the user opts in.
     public static func isEnabled(_ environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
-        environment[optOutEnv]?.lowercased() != "false"
+        environment[optInEnv]?.lowercased() == "true"
     }
 
     let endpoint: URL

@@ -53,8 +53,8 @@ Tools split into two groups, which matters for headless use:
   process exits by returning, never by calling `exit()`.
 - System frameworks over hand-rolled parsers where the platform has them, and the official MCP Swift SDK
   for the MCP protocol itself.
-- Telemetry stays on by default with the upstream project key, and `ANONYMIZED_TELEMETRY=false`
-  turns it off, exactly as upstream.
+- Telemetry is off by default, unlike upstream: it would go to the upstream project's PostHog, not
+  ours. `ANONYMIZED_TELEMETRY=true` turns it on.
 
 ## License
 

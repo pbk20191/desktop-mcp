@@ -61,10 +61,11 @@ final class AnalyticsTests: XCTestCase {
         await delivery.value
     }
 
-    func testOptOut() {
-        XCTAssertTrue(PostHogAnalytics.isEnabled([:]))
-        XCTAssertTrue(PostHogAnalytics.isEnabled(["ANONYMIZED_TELEMETRY": "true"]))
-        XCTAssertFalse(PostHogAnalytics.isEnabled(["ANONYMIZED_TELEMETRY": "False"]))
+    func testOptIn() {
+        XCTAssertFalse(PostHogAnalytics.isEnabled([:]))
+        XCTAssertFalse(PostHogAnalytics.isEnabled(["ANONYMIZED_TELEMETRY": "false"]))
+        XCTAssertFalse(PostHogAnalytics.isEnabled(["ANONYMIZED_TELEMETRY": "1"]))
+        XCTAssertTrue(PostHogAnalytics.isEnabled(["ANONYMIZED_TELEMETRY": "True"]))
     }
 
     func testUUID7Shape() {
