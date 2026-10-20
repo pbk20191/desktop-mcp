@@ -57,8 +57,17 @@ public sealed class MultiEditTool(Tool protocolTool, ToolServices services) : Sp
                     throw PointerTools.Stopped(e, i, count);
                 }
 
-                var warning = await sequence.RunAsync(target, text, CaretPosition.Idle, clear: true, pressEnter: false,
-                    warningAt: target.Point, cancellationToken).ConfigureAwait(false);
+                string? warning;
+                try
+                {
+                    warning = await sequence.RunAsync(target, text, CaretPosition.Idle, clear: true, pressEnter: false,
+                        warningAt: target.Point, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception e) when (e is not OperationCanceledException && i > 0)
+                {
+                    // Earlier items were typed, so the item's "nothing was typed" needs the progress (Decisions 23).
+                    throw PointerTools.Stopped(e, i, count);
+                }
                 // Upstream's f-string puts the text raw inside the quotes.
                 items.Add(PointerTools.Text($"({target.Point.X},{target.Point.Y}) with text '") + text + "'");
                 if (warning is not null) warnings.Add(warning);

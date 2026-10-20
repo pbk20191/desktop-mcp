@@ -76,6 +76,21 @@ public class MultiToolTests
     }
 
     [Fact]
+    public async Task MultiEditForegroundFailureMidwayNamesTheProgress()
+    {
+        // Item 1 is a loc (window 2), item 2 a label (window 1), whose keyboard-target check fails.
+        var desktop = new FakeDesktop
+        {
+            Labels = { [0] = new ScreenPoint(7, 8) },
+            ForegroundFails = "Could not bring Window to the foreground; nothing was typed.",
+            ForegroundFailsFor = 1,
+        };
+        Assert.Equal("Error calling tool 'MultiEdit': Could not bring Window to the foreground; nothing was typed. Stopped after 1 of 2 items.",
+            ToolCalls.Text(await ToolCalls.CallAsync(ToolCalls.Create("MultiEdit", desktop.Services()), """{"locs": [[1, 2, "a"]], "labels": [[0, "b"]]}""")));
+        Assert.Equal(["Type (1,2) clear a", "Type (7,8) click-only"], desktop.Input.Calls);
+    }
+
+    [Fact]
     public async Task AFailureOnTheFirstItemHasNoProgressSuffix()
     {
         var desktop = new FakeDesktop { Labels = { [0] = new ScreenPoint(7, 8) }, StaleLabels = { 0 } };

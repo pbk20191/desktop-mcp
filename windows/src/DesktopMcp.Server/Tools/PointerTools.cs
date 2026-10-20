@@ -22,6 +22,7 @@ internal static class PointerTools
     {
         ArgumentNullException.ThrowIfNull(error);
         var message = Text($"{error.Message} Stopped after {done} of {total} items.");
+        // Only the message matters (SpecTool reports e.Message); non-ArgumentException types become DesktopException, so no caller may rely on the original type.
         return error is ArgumentException ? new ArgumentException(message, error) : new DesktopException(message, error);
     }
 

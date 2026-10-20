@@ -67,6 +67,9 @@ internal sealed class FakeDesktop
     /// <summary>When set, <see cref="IForeground.EnsureKeyboardTargetAsync"/> throws a <see cref="DesktopException"/> with this text.</summary>
     public string? ForegroundFails { get; set; }
 
+    /// <summary>When set, <see cref="ForegroundFails"/> applies only to this window.</summary>
+    public long? ForegroundFailsFor { get; set; }
+
     /// <summary>When set, <see cref="IActionTargets.CheckForegroundInput"/> throws a <see cref="DesktopException"/> with this text.</summary>
     public string? ForegroundInputError { get; set; }
 
@@ -245,7 +248,8 @@ internal sealed class FakeDesktop
         public Task EnsureKeyboardTargetAsync(long window, string windowName, CancellationToken ct)
         {
             lock (desktop._foregroundChecks) desktop._foregroundChecks.Add($"{window} {windowName}");
-            return desktop.ForegroundFails is { } error ? Task.FromException(new DesktopException(error)) : Task.CompletedTask;
+            return desktop.ForegroundFails is { } error && (desktop.ForegroundFailsFor is null || desktop.ForegroundFailsFor == window)
+                ? Task.FromException(new DesktopException(error)) : Task.CompletedTask;
         }
     }
 
