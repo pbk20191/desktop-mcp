@@ -70,6 +70,12 @@ public enum AX {
 
     // MARK: Writing
 
+    /// Whether the attribute can be written (false when that can't be determined).
+    public static func isSettable(_ element: AXUIElement, _ name: String) -> Bool {
+        var settable: DarwinBoolean = false
+        return AXUIElementIsAttributeSettable(element, name as CFString, &settable) == .success && settable.boolValue
+    }
+
     @discardableResult
     public static func set(_ element: AXUIElement, _ name: String, _ value: CFTypeRef) -> Bool {
         AXUIElementSetAttributeValue(element, name as CFString, value) == .success

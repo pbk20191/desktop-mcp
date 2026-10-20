@@ -618,7 +618,7 @@
         "readOnlyHint": false,
         "title": "Window"
       },
-      "description": "Lists and arranges application windows. 'list' (default) returns one line per window: '<id>\\t<app>\\t\"<title>\"\\t[x,y,w,h]\\t<flags>' (flags: focused, minimized, fullscreen), optionally only for 'app' (name or bundle id). The other modes act on the window 'id' from list: 'focus', 'move' (to 'loc' [x, y]), 'resize' (to 'size' [width, height]), 'minimize', 'restore', 'close' (presses its close button; the app may ask to save), 'maximize' (fills its display minus the menu bar and Dock), 'fullscreen', 'exit_fullscreen', 'display' (moves it to display index 'display', same relative position, kept inside that display). 'displays' (no id) returns one line per display: '<index>\\t<name>\\t[x,y,w,h]\\tvisible [x,y,w,h]\\tscale <s>', then 'main' for the main one, in the same top-left coordinates as window frames. A window that closed since it was listed is refused; list again.",
+      "description": "Lists and arranges application windows. 'list' (default) returns one line per window: '<id>\\t<app>\\t\"<title>\"\\t[x,y,w,h]\\t<flags>' (flags: focused, minimized, fullscreen), optionally only for 'app' (name or bundle id). The other modes act on the window 'id' from list: 'focus', 'move' (to 'loc' [x, y]), 'resize' (to 'size' [width, height]), 'minimize', 'restore', 'close' (presses its close button; the app may ask to save), 'maximize' (fills its display minus the menu bar and Dock), 'fullscreen', 'exit_fullscreen', 'display' (moves it to display index 'display', same relative position, kept inside that display). 'displays' (no id) returns one line per display: '<index>\\t<name>\\t[x,y,w,h]\\tvisible [x,y,w,h]\\tscale <s>', then 'main' for the main one, in the same top-left coordinates as window frames. 'maximize' and 'display' refuse a window in full screen. A window that closed since it was listed is refused; list again. An index id (no 'w') must also be listed again after 'fullscreen' or 'exit_fullscreen'.",
       "inputSchema": {
         "properties": {
           "app": {
@@ -629,7 +629,11 @@
             ]
           },
           "display": {
-            "type": "integer"
+            "default": null,
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "id": {
             "default": null,

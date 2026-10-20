@@ -50,6 +50,14 @@ public struct WindowInfo: Sendable, Equatable {
     }
 }
 
+/// What `WindowSource.setFrame` did.
+public enum FrameResult: Sendable, Equatable {
+    case done
+    /// The size had to change and the window can't be resized; nothing was changed.
+    case notResizable
+    case failed
+}
+
 /// The windows of running apps and the actions on one of them.
 public protocol WindowSource: Sendable {
     /// Windows of regular apps, all of them or those of `app` (localized name, case-insensitive,
@@ -64,8 +72,11 @@ public protocol WindowSource: Sendable {
     func move(_ w: WindowInfo, to: CGPoint) async -> Bool
     func resize(_ w: WindowInfo, to: CGSize) async -> Bool
     func close(_ w: WindowInfo) async -> Bool
-    /// Position, then size, then position again (an app may clamp the size against the old position).
-    func setFrame(_ w: WindowInfo, _ frame: CGRect) async -> Bool
+    /// Position, then size, then position again (an app may clamp the size against the old
+    /// position). The size is only set when it changes; a window whose size can't be set is
+    /// left untouched (`.notResizable`) unless only its position changes.
+    func setFrame(_ w: WindowInfo, _ frame: CGRect) async -> FrameResult
+    /// Changes nothing when the app does not let full screen be set.
     func setFullScreen(_ w: WindowInfo, _ on: Bool) async -> Bool
     /// The displays, top-left origin, in `Displays.all()` order.
     func displays() async -> [DisplayFrame]
@@ -157,6 +168,12 @@ struct AXWindowSource: WindowSource {
     /// Finds `w`'s element again (by number, or by index with the same title and frame) and
     /// runs `act` on that element; false when it is gone.
     private func acting(on w: WindowInfo, _ act: @escaping @Sendable (App, AXUIElement) -> Bool) async -> Bool {
+        await acting(on: w, gone: false, act)
+    }
+
+    /// `acting(on:_:)` with any result; `gone` when the window is gone.
+    private func acting<T: Sendable>(on w: WindowInfo, gone: T,
+                                     _ act: @escaping @Sendable (App, AXUIElement) -> T) async -> T {
         await offload {
             let app = Self.app(w.pid)
             let element: AXUIElement?
@@ -168,7 +185,7 @@ struct AXWindowSource: WindowSource {
             } else {
                 element = nil
             }
-            guard let element else { return false }
+            guard let element else { return gone }
             return act(app, element)
         }
     }
@@ -206,18 +223,27 @@ struct AXWindowSource: WindowSource {
         }
     }
 
-    func setFrame(_ w: WindowInfo, _ frame: CGRect) async -> Bool {
-        await acting(on: w) { _, window in
-            AX.setPosition(window, x: frame.origin.x, y: frame.origin.y)
-            let sized = AX.setSize(window, width: frame.width, height: frame.height)
-            let placed = AX.setPosition(window, x: frame.origin.x, y: frame.origin.y)
-            return sized && placed
+    func setFrame(_ w: WindowInfo, _ frame: CGRect) async -> FrameResult {
+        await acting(on: w, gone: .failed) { _, window in
+            // A fixed-size window refuses AXSize even for its own size: only set it when it changes.
+            let current = AX.size(AX.attribute(window, kAXSizeAttribute)) ?? .zero
+            let resize = WindowTool.rounded(CGRect(origin: .zero, size: current))
+                != WindowTool.rounded(CGRect(origin: .zero, size: frame.size))
+            if resize && !AX.isSettable(window, kAXSizeAttribute) { return .notResizable }
+            var done = true
+            if resize {
+                AX.setPosition(window, x: frame.origin.x, y: frame.origin.y)
+                done = AX.setSize(window, width: frame.width, height: frame.height)
+            }
+            done = AX.setPosition(window, x: frame.origin.x, y: frame.origin.y) && done
+            return done ? .done : .failed
         }
     }
 
     func setFullScreen(_ w: WindowInfo, _ on: Bool) async -> Bool {
         await acting(on: w) { _, window in
-            AX.set(window, AXName.fullScreen, on ? kCFBooleanTrue : kCFBooleanFalse)
+            AX.isSettable(window, AXName.fullScreen)
+                && AX.set(window, AXName.fullScreen, on ? kCFBooleanTrue : kCFBooleanFalse)
         }
     }
 
@@ -369,6 +395,10 @@ enum WindowTool {
         await cache.remember([applied])
     }
 
+    private static func inFullScreen(_ id: String) -> ToolError {
+        ToolError("Window \(id) is in full screen; use exit_fullscreen first.", telemetry: "Window is in full screen")
+    }
+
     private static func failed(_ mode: String, _ id: String) -> ToolError {
         ToolError("Could not \(mode) window \(id).", telemetry: "Could not \(mode) window")
     }
@@ -376,14 +406,14 @@ enum WindowTool {
     static func tool(source: any WindowSource = AXWindowSource(), cache: WindowCache = WindowCache()) -> Tool {
         Tool(
             name: "Window",
-            description: "Lists and arranges application windows. 'list' (default) returns one line per window: '<id>\\t<app>\\t\"<title>\"\\t[x,y,w,h]\\t<flags>' (flags: focused, minimized, fullscreen), optionally only for 'app' (name or bundle id). The other modes act on the window 'id' from list: 'focus', 'move' (to 'loc' [x, y]), 'resize' (to 'size' [width, height]), 'minimize', 'restore', 'close' (presses its close button; the app may ask to save), 'maximize' (fills its display minus the menu bar and Dock), 'fullscreen', 'exit_fullscreen', 'display' (moves it to display index 'display', same relative position, kept inside that display). 'displays' (no id) returns one line per display: '<index>\\t<name>\\t[x,y,w,h]\\tvisible [x,y,w,h]\\tscale <s>', then 'main' for the main one, in the same top-left coordinates as window frames. A window that closed since it was listed is refused; list again.",
+            description: "Lists and arranges application windows. 'list' (default) returns one line per window: '<id>\\t<app>\\t\"<title>\"\\t[x,y,w,h]\\t<flags>' (flags: focused, minimized, fullscreen), optionally only for 'app' (name or bundle id). The other modes act on the window 'id' from list: 'focus', 'move' (to 'loc' [x, y]), 'resize' (to 'size' [width, height]), 'minimize', 'restore', 'close' (presses its close button; the app may ask to save), 'maximize' (fills its display minus the menu bar and Dock), 'fullscreen', 'exit_fullscreen', 'display' (moves it to display index 'display', same relative position, kept inside that display). 'displays' (no id) returns one line per display: '<index>\\t<name>\\t[x,y,w,h]\\tvisible [x,y,w,h]\\tscale <s>', then 'main' for the main one, in the same top-left coordinates as window frames. 'maximize' and 'display' refuse a window in full screen. A window that closed since it was listed is refused; list again. An index id (no 'w') must also be listed again after 'fullscreen' or 'exit_fullscreen'.",
             inputSchema: DesktopMCP.schema([
                 "mode": DesktopMCP.string(default: "list", enum: modes),
                 "app": DesktopMCP.nullableString(),
                 "id": DesktopMCP.nullableString(),
                 "loc": DesktopMCP.intPair(nullable: true),
                 "size": DesktopMCP.intPair(nullable: true),
-                "display": DesktopMCP.integer(),
+                "display": ["type": ["integer", "null"], "default": nil],
             ]),
             annotations: ToolAnnotations(title: "Window", readOnly: false, destructive: true, idempotent: false, openWorld: false),
             handler: { args in
@@ -446,8 +476,17 @@ enum WindowTool {
                     return [.text(mode == "move" ? "Moved \(id) to (\(frame[0]),\(frame[1]))."
                                                  : "Resized \(id) to \(frame[2])×\(frame[3]).")]
                 case "maximize":
-                    guard let target = maximizedFrame(for: window.frame, displays: await source.displays()),
-                          await source.setFrame(window, target) else { throw failed(mode, id) }
+                    guard !window.fullscreen else { throw inFullScreen(id) }
+                    guard let target = maximizedFrame(for: window.frame, displays: await source.displays()) else {
+                        throw failed(mode, id)
+                    }
+                    switch await source.setFrame(window, target) {
+                    case .done: break
+                    case .notResizable:
+                        throw ToolError("Could not maximize window \(id): it cannot be resized.",
+                                        telemetry: "Could not maximize window: not resizable")
+                    case .failed: throw failed(mode, id)
+                    }
                     await remember(window, source: source, cache: cache)
                     return [.text("Maximized \(id).")]
                 case "fullscreen", "exit_fullscreen":
@@ -457,14 +496,22 @@ enum WindowTool {
                     }
                     return [.text(on ? "Full screen \(id)." : "Left full screen \(id).")]
                 case "display":
+                    guard !window.fullscreen else { throw inFullScreen(id) }
                     let displays = await source.displays()
                     guard let target = displays.first(where: { $0.index == displayIndex }) else {
                         throw ToolError("No display \(displayIndex); see Window displays.", telemetry: "No such display")
                     }
-                    guard let current = display(of: window.frame, in: displays),
-                          await source.setFrame(window, frame(window.frame, movedFrom: current, to: target)) else {
-                        throw ToolError("Could not move window \(id) to display \(displayIndex).",
-                                        telemetry: "Could not move window to display")
+                    let couldNot = "Could not move window \(id) to display \(displayIndex)"
+                    guard let current = display(of: window.frame, in: displays) else {
+                        throw ToolError(couldNot + ".", telemetry: "Could not move window to display")
+                    }
+                    switch await source.setFrame(window, frame(window.frame, movedFrom: current, to: target)) {
+                    case .done: break
+                    case .notResizable:
+                        throw ToolError(couldNot + ": it does not fit and cannot be resized.",
+                                        telemetry: "Could not move window to display: not resizable")
+                    case .failed:
+                        throw ToolError(couldNot + ".", telemetry: "Could not move window to display")
                     }
                     await remember(window, source: source, cache: cache)
                     return [.text("Moved \(id) to display \(displayIndex).")]
