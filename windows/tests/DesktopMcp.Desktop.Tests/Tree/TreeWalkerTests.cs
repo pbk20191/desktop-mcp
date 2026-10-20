@@ -20,6 +20,9 @@ public class TreeWalkerTests
         public int Released { get; private set; }
         public int Fetched { get; private set; }
 
+        /// <summary>Elements whose children were read, in visit order.</summary>
+        public List<UiaElementData> ChildrenRead { get; } = [];
+
         /// <summary>Runs before an element's children are read; it may throw to fail the read.</summary>
         public Action<UiaElementData>? BeforeChildren { get; set; }
 
@@ -28,6 +31,7 @@ public class TreeWalkerTests
 
         public IReadOnlyList<UiaElementData> GetChildren(UiaElementData parent)
         {
+            ChildrenRead.Add(parent);
             BeforeChildren?.Invoke(parent);
             var children = Children.GetValueOrDefault(parent, []);
             Fetched += children.Length;
@@ -195,7 +199,11 @@ public class TreeWalkerTests
             current = next;
         }
         Assert.Empty(Walk(source, root, maxDepth: 5).Walk.Interactive);
+        // Elements at the cap are visited but their children are not read: depths 0-4 only.
+        Assert.Equal(5, source.ChildrenRead.Count);
+        source.ChildrenRead.Clear();
         Assert.Single(Walk(source, root, maxDepth: 10).Walk.Interactive);
+        Assert.Equal(10, source.ChildrenRead.Count);
     }
 
     [Fact]
@@ -251,6 +259,9 @@ public class TreeWalkerTests
         new TreeWalker(source, budget, Counter()).Walk(root, App);
         Assert.True(budget.Truncated);
         Assert.True(budget.Exhausted);
+        // The window and nine panes, then the walk stops.
+        Assert.Equal(10, source.ChildrenRead.Count);
+        Assert.Equal(source.Fetched + 1, source.Released);
     }
 
     [Fact]
@@ -269,6 +280,48 @@ public class TreeWalkerTests
         Assert.ThrowsAny<OperationCanceledException>(() => walker.Walk(root, App, cancellation.Token));
         Assert.Equal(["App", "C"], visited);
         Assert.Equal(source.Fetched + 1, source.Released);
+    }
+
+    [Fact]
+    public void AWalkCancelledDuringAWordReadTouchesNeitherTheBudgetNorTheIds()
+    {
+        var source = new FakeSource();
+        var edit = Text("Body");
+        source.Words[edit] = [new WordBox("hello", new ScreenRect(5, 5, 40, 20))];
+        var root = source.Add(Window(), edit);
+        using var cancellation = new CancellationTokenSource();
+        source.BeforeWords = _ => cancellation.Cancel(); // the read is abandoned, then returns
+        var budget = new ElementBudget(500);
+        var ids = 0;
+        var walker = new TreeWalker(source, budget, () => Interlocked.Increment(ref ids));
+        Assert.ThrowsAny<OperationCanceledException>(() => walker.Walk(root, App, cancellation.Token));
+        Assert.Equal((0, 0), (budget.Count, ids));
+        Assert.Equal(source.Fetched + 1, source.Released);
+    }
+
+    [Fact]
+    public void AWalkCancelledDuringAChildrenReadStopsBeforeTheChildren()
+    {
+        var source = new FakeSource();
+        var root = source.Add(Window(), Button("A"));
+        using var cancellation = new CancellationTokenSource();
+        source.BeforeChildren = _ => cancellation.Cancel();
+        var budget = new ElementBudget(500);
+        var walker = new TreeWalker(source, budget, Counter());
+        Assert.ThrowsAny<OperationCanceledException>(() => walker.Walk(root, App, cancellation.Token));
+        Assert.Single(source.ChildrenRead);
+        Assert.Equal(0, budget.Count);
+    }
+
+    [Fact]
+    public void AnUnlimitedBudgetStillReadsWords()
+    {
+        // Remaining + 1 would wrap to int.MinValue in int arithmetic and read no words.
+        var source = new FakeSource();
+        var edit = Text("Body");
+        source.Words[edit] = [new WordBox("hello", new ScreenRect(5, 5, 40, 20))];
+        var (walk, _) = Walk(source, source.Add(Window(), edit), limit: int.MaxValue);
+        Assert.Equal(["Body", "hello"], walk.Interactive.Select(e => e.Name));
     }
 
     [Fact]

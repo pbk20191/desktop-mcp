@@ -71,7 +71,7 @@ internal sealed class TreeWalker(ITreeSource source, ElementBudget budget, Func<
                     // upstream tree/service.py:862-878: a modal dialog discards the window's elements found so far.
                     if (node.ControlType == TreeConfig.Window && !node.IsOffscreen && node.WindowIsModal == true) walk.Interactive.Clear();
                 }
-                Visit(node, frame, walk, context, path, stack);
+                Visit(node, frame, walk, context, path, stack, cancellationToken);
             }
         }
         catch
@@ -83,7 +83,9 @@ internal sealed class TreeWalker(ITreeSource source, ElementBudget budget, Func<
         return walk;
     }
 
-    private void Visit(UiaElementData node, Frame frame, WindowWalk walk, WindowContext context, HashSet<string> path, Stack<Frame> stack)
+    private void Visit(
+        UiaElementData node, Frame frame, WindowWalk walk, WindowContext context, HashSet<string> path, Stack<Frame> stack,
+        CancellationToken cancellationToken)
     {
         try
         {
@@ -93,7 +95,7 @@ internal sealed class TreeWalker(ITreeSource source, ElementBudget budget, Func<
 
             var typeName = TreeConfig.ControlTypeName(node.ControlType);
             var semanticAdded = AddScrollable(node, typeName, frame.Parent, walk, context);
-            semanticAdded |= AddInteractive(node, typeName, frame.Parent, walk, context);
+            semanticAdded |= AddInteractive(node, typeName, frame.Parent, walk, context, cancellationToken);
 
             // upstream tree/service.py:823-839: named structural containers become tree nodes.
             var semanticParent = frame.Parent;
@@ -104,6 +106,8 @@ internal sealed class TreeWalker(ITreeSource source, ElementBudget budget, Func<
                 frame.Parent.Children.Add(semanticParent);
             }
 
+            // Children of an element at the cap would not be visited; do not read them over COM.
+            if (frame.Depth >= maxDepth) return;
             IReadOnlyList<UiaElementData> children;
             try
             {
@@ -113,6 +117,8 @@ internal sealed class TreeWalker(ITreeSource source, ElementBudget budget, Func<
             {
                 return; // upstream tree/service.py:902-905: skip the dead subtree, keep what was found
             }
+            // A read can hang past the job's deadline; once abandoned, the walk must not push more work when it resumes.
+            cancellationToken.ThrowIfCancellationRequested();
             if (node.RuntimeId is { } key && path.Add(key)) stack.Push(new Frame(null, null, 0, key));
             foreach (var child in children) stack.Push(new Frame(child, semanticParent, frame.Depth + 1, null));
         }
@@ -151,7 +157,8 @@ internal sealed class TreeWalker(ITreeSource source, ElementBudget budget, Func<
     }
 
     // upstream tree/service.py:536-792.
-    private bool AddInteractive(UiaElementData node, string typeName, SemanticNode? parent, WindowWalk walk, WindowContext context)
+    private bool AddInteractive(
+        UiaElementData node, string typeName, SemanticNode? parent, WindowWalk walk, WindowContext context, CancellationToken cancellationToken)
     {
         var area = (long)node.Bounds.Width * node.Bounds.Height;
         var visible = area > 0
@@ -161,7 +168,7 @@ internal sealed class TreeWalker(ITreeSource source, ElementBudget budget, Func<
         var focusable = TreeConfig.FocusableControlTypes.Contains(typeName) || node.IsKeyboardFocusable;
         if (!IsInteractive(node, typeName, focusable, context.IsBrowser)) return false;
 
-        var (metadata, words) = Metadata(node, typeName);
+        var (metadata, words) = Metadata(node, typeName, cancellationToken);
         var box = ClipToWindow(context, node.Bounds);
         var added = false;
         var name = node.Name.Trim();
@@ -218,7 +225,7 @@ internal sealed class TreeWalker(ITreeSource source, ElementBudget budget, Func<
     }
 
     // upstream tree/service.py:617-750. Only the metadata the tree text renders is read (Decisions 6).
-    private (UiMetadata Metadata, IReadOnlyList<WordBox> Words) Metadata(UiaElementData node, string typeName)
+    private (UiMetadata Metadata, IReadOnlyList<WordBox> Words) Metadata(UiaElementData node, string typeName, CancellationToken cancellationToken)
     {
         var metadata = new UiMetadata
         {
@@ -231,7 +238,7 @@ internal sealed class TreeWalker(ITreeSource source, ElementBudget budget, Func<
         if (typeName is "EditControl" or "DocumentControl" or "ImageControl")
         {
             metadata = metadata with { IsPassword = node.IsPassword, Value = LegacyValue(node) };
-            if (!node.IsPassword) words = Words(node);
+            if (!node.IsPassword) words = Words(node, cancellationToken);
         }
         if (typeName == "ComboBoxControl")
         {
@@ -259,16 +266,21 @@ internal sealed class TreeWalker(ITreeSource source, ElementBudget budget, Func<
         return (metadata, words);
     }
 
-    private IReadOnlyList<WordBox> Words(UiaElementData node)
+    private IReadOnlyList<WordBox> Words(UiaElementData node, CancellationToken cancellationToken)
     {
+        IReadOnlyList<WordBox> words;
         try
         {
-            return source.GetWords(node, budget.Remaining + 1);
+            // In long: Remaining is int.MaxValue for an unlimited budget.
+            words = source.GetWords(node, (int)Math.Min(int.MaxValue, (long)budget.Remaining + 1));
         }
         catch (Exception e) when (e is not OperationCanceledException && !ComErrors.IsTimeout(e))
         {
-            return []; // upstream tree/service.py:654-663 ignores any failure here, a dead element included
+            words = []; // upstream tree/service.py:654-663 ignores any failure here, a dead element included
         }
+        // An abandoned walk resuming after a hung read must not consume the budget or ids.
+        cancellationToken.ThrowIfCancellationRequested();
+        return words;
     }
 
     private static string LegacyValue(UiaElementData node) =>

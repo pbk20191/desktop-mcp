@@ -46,4 +46,13 @@ public class ElementBudgetTests
         Assert.False(budget.Exhausted || budget.Truncated);
         Assert.Equal(int.MaxValue, budget.Remaining + budget.Count);
     }
+
+    [Fact]
+    public void TheVisitCapIsAtLeastOne()
+    {
+        var budget = new ElementBudget(limit: 5, maxVisits: 0);
+        Assert.False(budget.Exhausted);
+        Assert.True(budget.Visit());
+        Assert.True(budget.Exhausted && budget.Truncated);
+    }
 }

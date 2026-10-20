@@ -2,13 +2,14 @@ namespace DesktopMcp.Desktop.Tree;
 
 /// <summary>
 /// upstream tree/budget.py:55-91 TreeElementBudget: how many output elements one capture may collect. This port also
-/// counts visited elements (Decisions 9): a tree of output-free containers stops after <c>maxVisits</c>, marked truncated.
+/// counts visited elements (Decisions 9): a tree of output-free containers stops after <c>maxVisits</c> (at least 1), marked truncated.
 /// </summary>
 internal sealed class ElementBudget(int limit, int maxVisits)
 {
     /// <summary>Visited elements allowed per output element.</summary>
     public const int VisitsPerElement = 50;
 
+    private readonly int _maxVisits = Math.Max(1, maxVisits);
     private int _visits;
 
     /// <summary>
@@ -23,7 +24,7 @@ internal sealed class ElementBudget(int limit, int maxVisits)
     public int Count { get; private set; }
     public bool Truncated { get; private set; }
 
-    public bool Exhausted => Count >= Limit || _visits >= maxVisits;
+    public bool Exhausted => Count >= Limit || _visits >= _maxVisits;
 
     public int Remaining => Math.Max(0, Limit - Count);
 
@@ -50,12 +51,12 @@ internal sealed class ElementBudget(int limit, int maxVisits)
     /// <summary>Counts one visited element; reaching the visit cap marks the capture truncated, like reaching the limit.</summary>
     public bool Visit()
     {
-        if (_visits >= maxVisits)
+        if (_visits >= _maxVisits)
         {
             Truncated = true;
             return false;
         }
-        if (++_visits >= maxVisits) Truncated = true;
+        if (++_visits >= _maxVisits) Truncated = true;
         return true;
     }
 }
