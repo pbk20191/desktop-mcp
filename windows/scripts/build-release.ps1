@@ -1,5 +1,5 @@
 #Requires -Version 7
-# Publishes desktop-mcp.exe with NativeAOT for each runtime and smoke-tests the x64 build.
+# Publishes desktop-mcp.exe with NativeAOT for each runtime and smoke-tests the x64 build over stdio and HTTP.
 # Each dist/<rid> folder must hold exactly desktop-mcp.exe and desktop-mcp.pdb.
 param([string[]]$Runtimes = @('win-x64', 'win-arm64'))
 $ErrorActionPreference = 'Stop'
@@ -24,6 +24,8 @@ foreach ($rid in $Runtimes) {
 
 if ($Runtimes -contains 'win-x64') {
     & (Join-Path $PSScriptRoot 'smoke-stdio.ps1') -Exe (Join-Path $root 'dist/win-x64/desktop-mcp.exe')
+    # Streamable HTTP and SSE over TLS on 127.0.0.1 port 0, control disabled (P5 plan, Task 10).
+    & (Join-Path $PSScriptRoot 'smoke-http.ps1') -Exe (Join-Path $root 'dist/win-x64/desktop-mcp.exe')
 }
 
 # NativeAOT activation check. xUnit runs under the JIT, so only an AOT run proves that the statically linked Win2D

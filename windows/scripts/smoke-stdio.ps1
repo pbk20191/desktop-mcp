@@ -50,23 +50,7 @@ function Receive([int]$ExpectedId, [int]$TimeoutSeconds = 15) {
         return $message
     }
 }
-# tools/list must equal the contract file, less the excluded tool if any, as JSON values; the MCP SDK owns the
-# serialisation, so not as bytes.
-function Assert-ToolsMatchSpec([string]$ResponseLine, [string]$Excluded = '') {
-    $actual = @{}
-    foreach ($tool in [System.Text.Json.Nodes.JsonNode]::Parse($ResponseLine)['result']['tools'].AsArray()) { $actual[$tool['name'].ToString()] = $tool }
-    $expected = @([System.Text.Json.Nodes.JsonNode]::Parse([IO.File]::ReadAllText((Resolve-Path $Spec).Path))['tools'].AsArray() |
-        Where-Object { $_['name'].ToString() -cne $Excluded })
-    if ($Excluded -and $actual.ContainsKey($Excluded)) { throw "tools/list has $Excluded, which the config file excludes" }
-    if ($actual.Count -ne $expected.Count) { throw "tools/list has $($actual.Count) tools; spec/windows/tools.json$(if ($Excluded) { " less $Excluded" }) has $($expected.Count)" }
-    foreach ($tool in $expected) {
-        $name = $tool['name'].ToString()
-        if (-not $actual.ContainsKey($name)) { throw "tools/list lacks $name" }
-        if (-not [System.Text.Json.Nodes.JsonNode]::DeepEquals($tool, $actual[$name])) {
-            throw "$name differs from spec/windows/tools.json`nspec:   $($tool.ToJsonString())`nserver: $($actual[$name].ToJsonString())"
-        }
-    }
-}
+. (Join-Path $PSScriptRoot 'smoke-common.ps1')
 # Snapshot and Screenshot walk every window and capture each monitor, so they get 60 s (TimeoutSeconds).
 function Invoke-Tool([int]$Id, [string]$Name, [hashtable]$Arguments, [int]$TimeoutSeconds = 15) {
     Send @{ jsonrpc = '2.0'; id = $Id; method = 'tools/call'; params = @{ name = $Name; arguments = $Arguments } }
@@ -118,11 +102,6 @@ function Invoke-Session([string]$ConfigPath, [scriptblock]$Body, [int]$ExitSecon
         if ($script:exitMilliseconds -gt 5000) { Write-Warning "server took $($script:exitMilliseconds) ms to exit after stdin closed" }
     }
     if ($script:exitFailure) { $failure = $script:exitFailure; $script:exitFailure = $null; throw $failure }
-}
-# The modules of the graphics stack the server has loaded (none may load before something renders).
-function Get-GraphicsModules {
-    $script:process.Refresh()
-    return @($script:process.Modules | Where-Object { $_.ModuleName -in 'd2d1.dll', 'd3d11.dll', 'dwrite.dll', 'd3dcompiler_47.dll' } | ForEach-Object ModuleName)
 }
 # ControlStatus: never an error; its text and structuredContent are the same status object.
 function Get-ControlStatus([int]$Id) {
@@ -186,8 +165,7 @@ try {
 
         # Control is off in this session, checked before any other tool call: the calls below run unprotected and take no control.
         $control = Get-ControlStatus 5
-        $expectedStatus = '{"state":"disabled","generation":0,"wait_seconds":0.0,"enabled":false,"policy":"relaxed","idle_timeout_seconds":10.0}'
-        if ($control.Text -cne $expectedStatus) { throw "unexpected ControlStatus with control disabled: $($control.Text)" }
+        if ($control.Text -cne $DisabledControlStatus) { throw "unexpected ControlStatus with control disabled: $($control.Text)" }
 
         Send @{ jsonrpc = '2.0'; id = 3; method = 'tools/call'; params = @{ name = 'Wait'; arguments = @{ duration = 0 } } }
         $call = Receive 3
@@ -272,7 +250,7 @@ try {
         $script:pingId = [int]$Matches[1]
 
         # The graphics stack is delay-loaded (Win2DStatic.targets): a run that never renders must not load it.
-        $graphics = Get-GraphicsModules
+        $graphics = Get-GraphicsModules $script:process
         if ($graphics.Count -gt 0) { throw "headless run loaded the graphics stack: $($graphics -join ', ')" }
         $script:full = "$($init.result.serverInfo.name) $($init.result.serverInfo.version), $($list.result.tools.Count) tools match spec/windows/tools.json, Wait, ControlStatus (disabled) and $($cases.Count) headless tools OK, $script:desktopRead, $script:actChecks, graphics stack not loaded ($($script:process.Modules.Count) modules)"
 
@@ -307,7 +285,7 @@ try {
         if ($wait.isError -or $wait.content[0].text -cne 'Waited for 0 seconds.') { throw "ungated Wait failed with control on: $($wait | ConvertTo-Json -Depth 5)" }
         $second = (Get-ControlStatus 5).Status
         if ($second.enabled -ne $first.enabled) { throw "ControlStatus enabled changed: $($second | ConvertTo-Json -Compress)" }
-        $graphics = Get-GraphicsModules
+        $graphics = Get-GraphicsModules $script:process
         if ($graphics.Count -gt 0) { throw "the control session (hooks and dispatcher) loaded the graphics stack: $($graphics -join ', ')" }
         $script:controlState = $first.state
     }

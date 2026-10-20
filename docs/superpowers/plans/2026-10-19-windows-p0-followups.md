@@ -176,14 +176,32 @@ Minor review findings deferred from the P4 tasks, one line per task (from the SD
 
 ## P5 (HTTP)
 
-- Telemetry is opt-in (user decision, 2026-10-20; spec Telemetry): send only with `ANONYMIZED_TELEMETRY=true` and an explicit `POSTHOG_API_KEY`; no upstream key is built in. List this in spec §10 as a deliberate difference.
+All P5 items are done (see docs/superpowers/plans/2026-10-21-windows-p5-http.md), except:
 
-- Scrape sampling: call SampleAsync with upstream's system prompt and max_tokens 2048, falling back to the raw content (tools/scrape.py:52-71).
-- IP allowlist: IPv4-mapped IPv6 client addresses need mapping in the matcher.
-- JSONL audit log written from the SDK call filter, so every tool call is recorded with its name, arguments (with secrets redacted), result status and duration.
+- Telemetry: not implemented in the Windows port (user decision, 2026-10-21); the variables are ignored.
+- Run `pwsh windows/scripts/build-release.ps1` in an interactive session. P5 did not run it because the user was working on the machine: the win-x64 and win-arm64 publishes and `smoke-http.ps1` ran (spec §9, P5 results), but the stdio smoke with its control session and the AOT activation, UIA and overlay checks are unverified since P4.
+
+By-hand checks for the user (none are required for P5 to pass; they need another machine or a client the default suite does not have):
+
+- From another machine on the LAN: `desktop-mcp serve --transport streamable-http --host 0.0.0.0 --auth-key <key>` [Windows Firewall asks once; with no auth key the server refuses to start with upstream's message]; an MCP client with the bearer header lists 21 tools; without it, 401.
+- MCP Inspector over Streamable HTTP and over SSE (`npx @modelcontextprotocol/inspector`, URL `http://localhost:8000/mcp` or `/sse`) [connects; `ControlStatus` works; the `desktop-mcp.control` notifications appear under Server Notifications].
+- A client that supports sampling (for example Claude Desktop through a bridge, or the Inspector's sampling tab): `Scrape {url: 'https://example.com'}` [the client asks to approve a sampling request; the result is the summary].
+- OAuth with a real client configured with `--oauth-client-id/--oauth-client-secret` [the code flow completes on a loopback redirect].
+
+## P5 leftovers
+
+- Hosting (Task 1): an `IOException` thrown by a hosted service while the host starts is reported as `Could not listen on ...`; a failed `BackgroundService` does not make the process exit non-zero; one test swaps the process-wide `Console.Error` and environment.
+- Notification tests (Task 2, `HttpSessionTests`): the 500 ms settle windows could let a late duplicate pass unnoticed (duplicates are sent back to back) and, very unlikely, a late notification from the earlier phase could fail the count; if it ever flakes, compare the generation in `data`.
+- OAuth (Task 6): the token body cap for a request without a length is tested with a `MemoryStream`, not through Kestrel's chunked decoder (one real-Kestrel row would prove the 400 and the connection's clean handling); with a DNS host that resolves to several addresses and port 0, the issuer names the first listener's port, which the other listeners do not share.
+- Sampling (Task 8): when the call is cancelled before the sampling request is written, the `notifications/cancelled` notice names an id the client never saw (harmless: receivers ignore unknown ids); the whole scraped Markdown, up to the scraper's 8 MiB cap, goes into the sampling request as upstream, so a large page can exceed the client's context (the call then falls back to the raw text); a cap on the sampled text is possible.
+- TLS (Task 7): a crash while serving HTTPS leaves the temporary key file under `%APPDATA%\Microsoft\Crypto\Keys` (DPAPI-protected, same user; spec §8 TLS). `smoke-http.ps1` stops its TLS server with Ctrl+C for this reason.
+- OAuth access tokens are not capped in number: each needs a live code and the client secret, and expired ones are pruned whenever a token is issued (controller ruling, Task 5).
 
 ## P6 (release)
 
+- JSONL audit log written from the SDK call filter, so every tool call is recorded with its name, arguments (with secrets redacted), result status and duration (moved from P5: P5 plan, Open question 2).
+- `auth`: it prints `/mcp/` URLs (still served: P5 plan, Decisions 4), and the printed client URL should not default to `0.0.0.0`, which no client can connect to (upstream bug).
+- The macOS port's `connect` stdio-to-HTTP bridge, as a possible addition.
 - Win2D static cache (`windows/build/Win2DStatic.targets`):
   - Make concurrent cold-cache publishes safe (publishing the solution can race on the download; the scripts publish one project at a time).
   - `LinkNative` re-runs on every publish (about 0.8 s), because `NativeLibrary` items such as `d2d1.lib` are not files, so the target's inputs are never up to date. `SdkNativeLibrary` would avoid it but is less documented.

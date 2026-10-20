@@ -10,7 +10,8 @@ Upstream baseline: [CursorTouch/Windows-MCP](https://github.com/CursorTouch/Wind
 Ship `windows/`, a port of CursorTouch/Windows-MCP that reaches full parity with upstream: all 21
 tools, the `serve`/`install`/`uninstall`/`auth` CLI, the `config.toml` format, the stdio,
 Streamable HTTP and legacy HTTP+SSE transports, bearer auth, IP allowlist, CORS, TLS, OAuth 2.0 +
-PKCE, the desktop-control feature and telemetry. It ships as a NativeAOT `desktop-mcp.exe` per
+PKCE and the desktop-control feature. Telemetry is not implemented (user decision, 2026-10-21).
+It ships as a NativeAOT `desktop-mcp.exe` per
 architecture (win-x64, win-arm64). Each ships as one file: the exe runs alone in an empty folder. It
 needs Windows 11 22H2 or later and the system Windows App SDK 2.5 runtime, but no Python, PowerShell
 5.1 or other external tools. The graphics DLLs that the static Win2D imports (d2d1, d3d11, dwrite,
@@ -22,7 +23,7 @@ lists a deliberate difference (§10): upstream bugs are fixed and the output tex
 
 Naming follows the macOS port: command `desktop-mcp`, config directory `~/.desktop-mcp`,
 environment variables `DESKTOP_MCP_*` in place of `WINDOWS_MCP_*`. `ANONYMIZED_TELEMETRY`,
-`POSTHOG_API_KEY` and `POSTHOG_HOST` keep their upstream names.
+`POSTHOG_API_KEY` and `POSTHOG_HOST` are ignored: the Windows port has no telemetry.
 
 ## 2. Decisions
 
@@ -69,7 +70,7 @@ desktop-mcp/
     src/
       DesktopMcp/             # the exe: composition root (Program.cs calls CliApp.RunAsync),
                               # app.manifest (PerMonitorV2 DPI)
-      DesktopMcp.Core/        # platform-light logic: Config, ServePlan, Security, OAuth, Analytics,
+      DesktopMcp.Core/        # platform-light logic: Config, ServePlan, Security (request guards, OAuth, TLS),
                               # Scrape + HtmlToMarkdown, PowerShellRunner, FileSystem, Registry,
                               # Processes, text formatting (tables, tree renderer); CsWin32 for
                               # kernel32/ntdll (Job Object, console control, final paths,
@@ -78,8 +79,9 @@ desktop-mcp/
                               # VirtualDesktops, Control, Overlay, Toast, Clipboard, Apps,
                               # Dispatcher, AppRuntime.cs (Windows App SDK startup)
       DesktopMcp.Server/      # MCP SDK wiring: 21 McpServerTool subclasses, control gate filter,
-                              # session registry, Kestrel pipeline, transports; Cli/ (the
-                              # System.CommandLine CLI, here so DesktopMcp.Server.Tests can test it)
+                              # session registry, transports; Http/ (Kestrel host, pipeline,
+                              # OAuth endpoints); Cli/ (the System.CommandLine CLI, here so
+                              # DesktopMcp.Server.Tests can test it)
     tests/
       DesktopMcp.Core.Tests/
       DesktopMcp.Server.Tests/
@@ -438,37 +440,78 @@ for stateless Streamable HTTP (as upstream).
 | Transport | Setup |
 |---|---|
 | stdio | Generic Host + `WithStdioServerTransport()`. Logs go to stderr only. |
-| streamable-http | `MapMcp("/mcp")`, stateful by default to match upstream (`Stateless = false`); `--stateless-http` switches to stateless. |
-| sse | `MapMcp` with `EnableLegacySse = true`: `GET /sse` and the SDK's `/message` endpoint, announced by the `endpoint` event. |
+| streamable-http | `MapMcp("/mcp")` with `SessionMode = HttpServerSessionMode.Stateful` by default, to match upstream; `--stateless-http` switches to `Stateless`. `/mcp/` reaches the same endpoint. |
+| sse | `MapMcp("")` with `SessionMode = Stateful` and legacy SSE enabled through the SDK's AppContext switch `ModelContextProtocol.AspNetCore.EnableLegacySse` (the `EnableLegacySse` property is obsolete, MCP9004; P5 plan, Decisions 4): `GET /sse` and `POST /message?sessionId=`, announced by the `endpoint` event. `--stateless-http` has no effect, as upstream. |
 
-Only the selected HTTP transport is mapped. Server name `desktop-mcp`; the `initialize`
-instructions are upstream's text without its leading and trailing newlines.
+Only the selected HTTP transport is mapped: for `sse`, the Streamable endpoints that `MapMcp("")`
+also maps answer 404; for `streamable-http`, `/sse` and `/message` do not exist. Server name
+`desktop-mcp`; the `initialize` instructions are upstream's text without its leading and trailing
+newlines.
+
+Once Kestrel has bound, the server writes one line to stderr whatever the log level, like uvicorn's
+`Uvicorn running on ...`: `desktop-mcp: serving <transport> on <scheme>://<host>:<port><path>`, with
+the actual port, `/mcp` or `/sse`, and an IPv6 host in brackets (P5 plan, Decisions 8). Bind targets
+(Decisions 7): `localhost` binds 127.0.0.1 and ::1 (with port 0, 127.0.0.1 only, because Kestrel
+cannot bind localhost on a dynamic port); an IP literal binds that address; `0.0.0.0` binds every
+IPv4 interface and `::` (or an empty host) binds dual-mode; any other name is resolved once at
+startup and every address it returns is bound. A failed bind prints `Error: Could not listen on
+<host>:<port>: <message>` and exits 1. The HTTP host stops on Ctrl+C, when its console closes, or on
+the CLI's cancellation, and releases held input as stdio does (Decisions 19).
 
 ### HTTP pipeline
 
-Kestrel middleware in upstream's order:
-1. OPTIONS: every OPTIONS request gets 200; CORS headers only for allowed origins.
+Kestrel middleware in upstream's order, with the Origin check added (P5 plan, Decisions 9-17):
+1. OPTIONS: every OPTIONS request gets 200 with an empty body; CORS headers only for listed origins.
 2. Trusted host: `localhost`, `127.0.0.1`, `[::1]` for loopback binds; the host itself for a
-   specific IP; no check for `0.0.0.0`/`::` or with `--allow-insecure-remote`.
-3. CORS: methods GET, POST, OPTIONS; headers `Content-Type`, `Authorization`, `Mcp-Session-Id`;
-   no credentials.
-4. IP allowlist: 403 `{"error":"Forbidden: <ip> is not in the IP allowlist"}`.
-5. Auth: bearer key and OAuth access tokens; 401 with upstream's JSON bodies and
-   `WWW-Authenticate: Bearer`. Public paths: `/health`, `/.well-known/oauth-authorization-server`,
+   specific IP; no check for `0.0.0.0`/`::` or with `--allow-insecure-remote`. The `Host` header's
+   host is compared case-insensitively with brackets stripped, so `[::1]:8000` passes (upstream's
+   `split(":")` rejects IPv6 loopback; Decisions 10). A missing or foreign host gets Starlette's 400
+   `Invalid host header` (`text/plain`).
+3. Origin: a request whose `Origin` header is present and is neither listed in `--cors-origins`
+   nor an `http`/`https` origin on a loopback host gets 403
+   `{"error":"Forbidden: origin '<origin>' is not allowed"}`; `Origin: null` is rejected (P5 plan,
+   Open question 1 and Decisions 9; the MCP specification's DNS-rebinding advice). A request without
+   `Origin` passes.
+4. CORS: for a listed origin, `Access-Control-Allow-Origin: <origin>` and `Vary: Origin`; the
+   OPTIONS answer adds methods `GET, POST, OPTIONS` and headers
+   `content-type, authorization, mcp-session-id` (sent in lower case, as upstream; header names are
+   case-insensitive); no credentials, no exposed headers (Decisions 16).
+5. IP allowlist: the client address as Kestrel saw it; `X-Forwarded-For` and `Forwarded` are never
+   read, and an IPv4-mapped IPv6 address is matched as IPv4 (Decisions 15). `/health` is exempt.
+   403 `{"error":"Forbidden: <ip> is not in the IP allowlist"}` (or `missing client address`).
+6. Auth: bearer key and OAuth access tokens; 401 with upstream's JSON bodies. Every 401, the
+   OAuth-only `{"error":"Unauthorized"}` too, carries `WWW-Authenticate: Bearer` (Decisions 13;
+   upstream omits it for OAuth-only). Public paths: `/health`, `/.well-known/oauth-authorization-server`,
    `/oauth/register`, `/oauth/authorize`, `/oauth/token`.
-6. MCP endpoints, plus `GET /health` returning `{"status":"ok"}`.
+7. MCP endpoints, plus `GET /health` returning `{"status":"ok"}` (Decisions 17).
+
+Every rejection is `application/json` with `X-Content-Type-Options: nosniff`, except the host
+check's plain text.
 
 **TLS**: the certificate and key are read with `X509Certificate2.CreateFromPemFile` and reloaded
-through PKCS#12 (`X509CertificateLoader.LoadPkcs12(cert.Export(Pkcs12), null)`), because Schannel
-cannot use an ephemeral key loaded straight from PEM. ALPN offers `h2` and `http/1.1`.
+through PKCS#12 (`X509CertificateLoader.LoadPkcs12(cert.Export(Pkcs12), null)`) with default
+flags, because Schannel cannot use an ephemeral key loaded straight from PEM (dotnet/runtime#23749).
+So a temporary key file lives under `%APPDATA%\Microsoft\Crypto` while the server runs and is
+removed on exit; a crash can leave it behind (DPAPI-protected, readable only by the same user). No
+certificate store is opened. A certificate whose Extended Key Usage leaves out Server Authentication,
+an encrypted key or a key that does not match is one `Error:` line and exit 1. TLS listeners offer
+ALPN `h2` and `http/1.1`; plain listeners speak HTTP/1.1 only, so there is no cleartext HTTP/2
+(h2c) (P5 plan, Decisions 11).
 
-**OAuth 2.0 + PKCE** (in memory): metadata with issuer `{scheme}://{host}:{port}`, code flow, S256
-only, `client_secret_post`; `/oauth/register` returns 403 `registration_disabled`;
+**OAuth 2.0 + PKCE** (in memory): metadata with issuer `{scheme}://{host}:{port}` (the port
+Kestrel bound; on a wildcard bind, which no client can connect to, the request's `Host` header),
+code flow, S256 only, `client_secret_post`; `/oauth/register` returns 403 `registration_disabled`;
 `/oauth/authorize` requires `response_type=code`, an S256 `code_challenge`, a loopback http(s)
 `redirect_uri` without fragment and the configured `client_id`, and redirects with a code valid
 for 300 s; `/oauth/token` (form or JSON) validates grant, code, client, redirect URI, expiry, PKCE
 verifier and secret and returns `{access_token, token_type: "Bearer", expires_in: 3600}`. All JSON
-uses System.Text.Json source generation.
+uses System.Text.Json source generation. The metadata and token responses carry
+`Cache-Control: no-store` (on a wildcard bind the issuer depends on the request). Deviations from
+upstream (P5 plan, Decisions 12): secret, PKCE and bearer comparisons are constant time; a failed
+PKCE check burns the code; invalid JSON is 400 `invalid_request`, not 500; the token endpoint's
+content-type match ignores case; at most 1000 pending codes; a `redirect_uri` containing a control
+character, a space, a non-ASCII character or any `#` is refused with 400 rather than percent-encoded
+into the `Location`.
 
 ### Core tools
 
@@ -507,10 +550,11 @@ uses System.Text.Json source generation.
   stricter than upstream (P1 plan, Decisions 16); at most 5 requests (4 redirects), as upstream, with
   redirects followed manually and re-validated; 10 s timeout. HTML is converted by a C# port of the
   macOS port's `HTMLToMarkdown.swift`. `use_dom` would read DOM text nodes from the last snapshot; with no DOM mode (P2 plan, Decisions 39) it always returns upstream's "No DOM information found" text.
-  `use_sampling` calls the SDK's `SampleAsync` with upstream's system prompt and `max_tokens` 2048,
-  returning the raw content when the client cannot sample or sampling fails. P1 ships without
-  sampling and without DOM: use_dom returns upstream's "No DOM information found" text, and
-  sampling returns the raw content, as upstream does for a client that cannot sample.
+  `use_sampling` sends `sampling/createMessage` as raw JSON (MCP9005 marks the SDK's sampling API
+  obsolete) with upstream's system prompt and `maxTokens` 2048, and returns the raw content when the
+  client did not declare sampling, the transport is stateless Streamable HTTP, or sampling fails
+  (P5 plan, Decisions 5). When the tool call is cancelled before the client answers, the server
+  sends the client `notifications/cancelled` for the sampling request (best effort, 1 s).
 - **App**:
   - `launch` enumerates the Shell `AppsFolder` namespace once (`SHCreateItemFromParsingName` of
     `shell:AppsFolder`, `BHID_EnumItems`, display and parsing name per item, on an STA thread
@@ -551,14 +595,9 @@ uses System.Text.Json source generation.
 
 ### Telemetry
 
-PostHog over `HttpClient`, fire-and-forget, failures ignored. **Off by default** (user decision,
-2026-10-20): nothing is sent unless `ANONYMIZED_TELEMETRY=true` **and** `POSTHOG_API_KEY` is set.
-There is no default key, so the server never reports to upstream's PostHog project on its own;
-`POSTHOG_HOST` defaults to `https://us.i.posthog.com`. Upstream's default is on, with its own key. `distinct_id` is a UUIDv7 stored in
-`~/.desktop-mcp/.desktop-mcp-user-id`; `session_id` is `mcp_{ms}_{pid}`. Events `tool_executed`
-and `exception` with upstream's properties (`tool_name`, `session_id`, `process_person_profile`,
-`duration_ms`, `success`, `client_name`, `client_version`, and for exceptions `exception` and
-`traceback`). Unlike upstream, the events are actually sent.
+Not implemented in the Windows port (user decision, 2026-10-21; P5 plan, Decisions 1). There is no
+analytics code; `ANONYMIZED_TELEMETRY`, `POSTHOG_API_KEY` and `POSTHOG_HOST` are ignored. Upstream
+sends PostHog events by default with its own key.
 
 ### Diagnostics
 
@@ -571,9 +610,9 @@ logs focus changes at debug level.
 | Layer | Covers | Runs |
 |---|---|---|
 | Core unit | config precedence and strict TOML types; ServePlan validation messages; SSRF rules; HTML to Markdown; OAuth/PKCE flows; PowerShell runner against real pwsh (encoding, timeout, tree kill); FileSystem formats; Shortcut parsing; table formatter; Snapshot text rendering from synthetic `UiElement` records and `SemanticNode` trees; fuzzy matching; control state machine with a fake `TimeProvider` (takeover, idle return, lease, policy classification) | always |
-| Server | ContractTests (`tools/list` equals `spec/windows/tools.json` as JSON); in-memory Kestrel tests of middleware order, 401/403 bodies, CORS, OPTIONS, trusted host, `/health`; stdio initialize, tools/list and call | always |
+| Server | ContractTests (`tools/list` equals `spec/windows/tools.json` as JSON); Kestrel on 127.0.0.1 port 0 (P5 plan, Decisions 14): middleware order, 401/403 bodies, CORS, OPTIONS, trusted host, Origin, `/health`, OAuth, TLS and HTTP/2, both transports, notifications to HTTP sessions, sampling over in-memory stdio; stdio initialize, tools/list and call | always |
 | Desktop integration | the tests' own windows only (the P2 test window and, from P3, the WinForms target; never the user's windows, P3 Decisions 11): Snapshot reads, input through `GuardedInjector` (clicks, typing and paste, ToolStrip clicks, the signature), the label locator, Type's read-back, the foreground switch between test windows; capture and annotation; hooks, overlay, takeover and input-lock safety (heartbeat stops, input returns within 1 s; a stalled dispatcher cannot lock input), done in P4 (`InputMonitorDesktopTests`, `OverlayWindowDesktopTests`, `OverlayArtTests`, `CaptureFlashDesktopTests`; written, by-hand runs pending with the user). Notepad and App launch, switch and resize of real apps are by-hand checks (the follow-ups' P3 section), not automated tests | `Category=Desktop`, run by hand in an interactive session |
-| AOT smoke | `build-release.ps1` publishes win-x64 and win-arm64, launches the x64 exe and runs initialize, tools/list and the headless tools that leave the desktop alone over stdio, then DisplayInventory and Snapshot without vision (a named virtual desktop and at least one tree element; the graphics stack must still be unloaded), then Screenshot and Snapshot with vision (valid PNGs); `DESKTOP_MCP_EXCLUDE_PROCESSES` can keep processes out of the walk (§12). Before the graphics check it also calls the act tools (Click, Type, Shortcut, Move, MultiSelect, MultiEdit, App, WaitFor) with arguments that inject nothing and activate nothing: argument errors, an out-of-range label and point, a shortcut parse error, App lookups of an all-punctuation name (`#`), which fuzzy processing empties so it matches no app or window, and WaitFor timeouts (P3 plan, Decisions 12). Since P4 the first session runs with `[control] enabled = false` and `DESKTOP_MCP_DISABLE_FLASH=1` and checks ControlStatus's disabled text, and the second session keeps control on and reads only ControlStatus and an ungated Wait (it never takes control; its hooks pass every event through), then checks that the hooks and the dispatcher did not load the graphics stack. It then runs the probe's `imaging` step (the AOT activation check), `uia` step (the AOT UIA check) and `overlay` step (the AOT overlay check: the indicator and one flash rendered and pushed to hidden layer windows, never shown); any IL2xxx/IL3xxx warning fails the build. The desktop calls need an unlocked interactive session; `smoke-stdio.ps1 -SkipCapture` leaves out the two capture calls | every release build |
+| AOT smoke | `build-release.ps1` publishes win-x64 and win-arm64, launches the x64 exe and runs initialize, tools/list and the headless tools that leave the desktop alone over stdio, then DisplayInventory and Snapshot without vision (a named virtual desktop and at least one tree element; the graphics stack must still be unloaded), then Screenshot and Snapshot with vision (valid PNGs); `DESKTOP_MCP_EXCLUDE_PROCESSES` can keep processes out of the walk (§12). Before the graphics check it also calls the act tools (Click, Type, Shortcut, Move, MultiSelect, MultiEdit, App, WaitFor) with arguments that inject nothing and activate nothing: argument errors, an out-of-range label and point, a shortcut parse error, App lookups of an all-punctuation name (`#`), which fuzzy processing empties so it matches no app or window, and WaitFor timeouts (P3 plan, Decisions 12). Since P4 the first session runs with `[control] enabled = false` and `DESKTOP_MCP_DISABLE_FLASH=1` and checks ControlStatus's disabled text, and the second session keeps control on and reads only ControlStatus and an ungated Wait (it never takes control; its hooks pass every event through), then checks that the hooks and the dispatcher did not load the graphics stack. It then runs the probe's `imaging` step (the AOT activation check), `uia` step (the AOT UIA check) and `overlay` step (the AOT overlay check: the indicator and one flash rendered and pushed to hidden layer windows, never shown); any IL2xxx/IL3xxx warning fails the build. The desktop calls need an unlocked interactive session; `smoke-stdio.ps1 -SkipCapture` leaves out the two capture calls. Since P5, `smoke-http.ps1` follows the stdio smoke: Streamable HTTP with an auth key (`/health`, the 401 body and `WWW-Authenticate`, initialize and `Mcp-Session-Id`, tools/list equal to the contract, ControlStatus disabled and Wait, a foreign Origin 403 and Host 400, `DELETE /mcp` then 404, no graphics DLL loaded), then legacy SSE over TLS with a self-signed certificate made in the script (`/health` over HTTP/2 with the certificate pinned, the `endpoint` event, initialize through `/message` with the result on the stream); both bind 127.0.0.1 port 0 with control disabled and the flash off, and the TLS server is stopped with Ctrl+C so it removes its temporary key file | every release build |
 
 xUnit runs under the JIT, so AOT-only failures are caught by the smoke step.
 
@@ -640,6 +679,8 @@ into the tests' own windows.
 
 P4 results (2026-10-21, Windows build 10.0.26220.9739): default suite 2036 (Core 1033, Server 274, Desktop non-desktop 729); Desktop suite 0 by hand, all pending (`InputMonitorDesktopTests` 8, `OverlayWindowDesktopTests` 5, `CaptureFlashDesktopTests` 2, `OverlayArtTests` (run off-screen by the Task 8 implementer, 6 of 6), the P3 tests still pending, and `SnapshotServiceDesktopTests`, which now flash); build-release: win-x64 19,095,552 bytes, win-arm64 20,341,248 bytes, each dist folder holding only the exe and its pdb, no publish warnings; stdio smoke OK under NativeAOT with the control session (ready) and no control taken (first session with control disabled and the flash off: ControlStatus disabled, 13 act-tool checks with no input sent, 1 display, active desktop "Desktop 1", 187 tree elements of which 159 labelled, graphics stack not loaded with 86 modules, a 1728x1080 Screenshot PNG and the 200x120 region PNG, the PowerShell grandchild died with the server, which exited 31 ms after stdin closed; second session: the excluding config listed 20 tools, ControlStatus `ready`, Wait ungated, the hooks and the dispatcher loaded no graphics DLL, exit within 5 s); AOT activation and UIA checks OK; AOT overlay check OK (hidden): `overlay: 11 layers, 4406824 bytes rendered, hidden -> OK` (one monitor: four edges, the notice glow and notice, the cursor ring and four flash strips); by-hand control session: pending with the user (follow-ups, P4). After the notifier's per-session ordering fix (a116094), three consecutive default-suite runs were clean with these counts; before it, `ControlNotifierTests.TheReturnIsAnnouncedAsAiControlAvailable` failed in most full-suite runs (the two notifications reversed).
 
+P5 results (2026-10-21, Windows build 10.0.26220.9739): default suite 2268 (Core 1149, Server 383, Desktop non-desktop 736), clean in three consecutive runs (the HTTP tests bind real sockets on 127.0.0.1 port 0); publish with `build-release.ps1`'s arguments into a temp folder: win-x64 26,116,608 bytes (+7,021,056 over P4: Kestrel and the MCP SDK's ASP.NET Core package), win-arm64 27,545,600 bytes (+7,204,352), each folder holding only the exe and its pdb, no publish warnings; HTTP smoke OK under NativeAOT on win-x64 (Streamable HTTP with an auth key: `/health`, the 401 body with `WWW-Authenticate: Bearer`, a session, 21 tools matching the contract, ControlStatus disabled, Wait, Origin 403, Host 400, `DELETE /mcp` then 404, graphics stack not loaded with 46 modules; SSE over TLS: `/health` over HTTP/2 with the certificate pinned, the `endpoint` event, the initialize result on the stream; the TLS server exited 0 after Ctrl+C and left no key file under `%APPDATA%\Microsoft\Crypto\Keys`). `build-release.ps1` itself was not run in P5 because the user was working on the machine: its stdio smoke (with the control session) and the AOT activation, UIA and overlay checks are pending a user run (follow-ups, P5).
+
 ## 10. Differences from upstream (for the Windows README)
 
 - **Naming**: `desktop-mcp`, `~/.desktop-mcp`, `DESKTOP_MCP_*`. No Python, uv, PowerShell 5.1,
@@ -664,7 +705,9 @@ P4 results (2026-10-21, Windows build 10.0.26220.9739): default suite 2036 (Core
   value back and add one `Warning: ... does not contain the typed text; it reads '...'.` line on
   a mismatch.
 - **Bug fixes**: scrollable elements report their box centre (upstream picks a random point);
-  WaitFor `element_enabled` checks the enabled state; telemetry events are sent when enabled (opt-in, see Telemetry); `/health` exists;
+  WaitFor `element_enabled` checks the enabled state; `/health` exists and answers `{"status":"ok"}`;
+  the trusted-host check accepts `[::1]`; OAuth-only 401s carry `WWW-Authenticate`; invalid OAuth
+  JSON is 400, not 500; a failed PKCE check burns the code;
   Process CPU% is measured; the unreachable `takeover_pending` state is gone; label actions
   look the element up again and act at its ClickablePoint instead of the stored centre; WaitFor
   and App leave the label map alone, so labels keep resolving against the last Snapshot; points
@@ -674,8 +717,11 @@ P4 results (2026-10-21, Windows build 10.0.26220.9739): default suite 2036 (Core
   Japanese) can match in App; a key or button up inherits its down's verdict while control
   suppresses input, so no key or button stays down in the user's apps (upstream decides each event on
   its own, P4 plan, Decisions 29).
+- **Telemetry**: none (user decision, 2026-10-21); the upstream variables are ignored.
 - **Protocol**: the legacy SSE message endpoint is `/message` (clients follow the `endpoint`
-  event); no FastMCP `_meta` on tools; JSON serialisation details are the MCP C# SDK's.
+  event); no FastMCP `_meta` on tools; JSON serialisation details are the MCP C# SDK's; requests
+  with a foreign `Origin` are refused (403); no cleartext HTTP/2 (h2c); `X-Forwarded-For` is
+  ignored; the OAuth issuer uses the bound port and, on a wildcard bind, the request's host.
 - **Implementation**: capture uses Windows.Graphics.Capture, so `DESKTOP_MCP_SCREENSHOT_BACKEND`
   is ignored; Registry, Notification, the app list and `install` do not use PowerShell;
   `auth --with-tls` generates its own self-signed certificate. Desktop control (P4): input injected
@@ -710,6 +756,9 @@ P4 results (2026-10-21, Windows build 10.0.26220.9739): default suite 2036 (Core
   never stops the server, the arming rule, the up-inherits-down rule, the process allowlist, the
   flash geometry, the raw-JSON logging) are listed in the P4 plan's "Decisions on upstream ambiguities"
   (`docs/superpowers/plans/2026-10-20-windows-p4-desktop-control.md`).
+- **P5 decisions**: P5's departures from upstream for HTTP (Origin check, trusted-host parsing,
+  OAuth hardening, sampling as raw JSON, the PowerShell child's secrets, no telemetry) are listed in
+  the P5 plan's "Decisions on upstream ambiguities" (`docs/superpowers/plans/2026-10-21-windows-p5-http.md`).
 
 ## 11. Phases
 
@@ -724,7 +773,7 @@ work first.
 | P2 Desktop read | Dispatcher (fixed in P2, first started in P4: P2 plan, Decisions 21), UIA wrapper, Tree, Snapshot without DOM, capture, imaging, Screenshot, DisplayInventory, virtual desktops | The agent can see the screen (done except a rerun of the WinRT clipboard test and the three Desktop tests left out of the final run; results in §9) |
 | P3 Desktop act | Input, InputLedger, Click, Type, Scroll, Move, Shortcut, MultiSelect, MultiEdit, App, WaitFor | Upstream's core workflows (done except the Desktop suite and the by-hand act session, pending with the user; results in §9) |
 | P4 Desktop control | InputMonitor, state machine, overlay, capture flash, gate, notifier, ControlStatus | Protection against fighting the user (done except the Desktop suite and the by-hand control session, pending with the user; results in §9) |
-| P5 HTTP | Kestrel, Streamable HTTP and SSE, middleware, TLS, OAuth, `/health`, Scrape sampling, telemetry | Remote use |
+| P5 HTTP | Kestrel, Streamable HTTP and SSE, middleware, TLS, OAuth, `/health`, Scrape sampling (telemetry dropped: user decision, 2026-10-21) | Remote use (done; results in §9) |
 | P6 Finish | Install, uninstall, auth, release script for x64 and arm64 (started in P0b, which already trims the output to one exe), Windows README, root README update | `windows-v0.1.0` |
 
 ## 12. Risks
@@ -745,7 +794,7 @@ P0 probe results were measured on Windows build 10.0.26220 (Insider).
 | Concurrent cold-cache publishes (for example publishing the solution) can race on the Win2D download | The release script publishes one project at a time; making the fetch safe is a P6 follow-up. |
 | Each exe `.pdb` is about 115 MB, and the Win2D cache needs about 173 MB per platform | The `.pdb` is not shipped; the cache is git-ignored in `windows/.deps/`. |
 | The undocumented virtual-desktop interface changes in a new Windows build | Only desktop names depend on it; fall back to registry names, then `Desktop N` |
-| The MCP SDK's serialisation or legacy SSE support changes | Pin the SDK version; ContractTests and HTTP tests catch drift |
+| The MCP SDK's serialisation or legacy SSE support changes | Pin the SDK version (ModelContextProtocol and .AspNetCore 2.2.0); ContractTests and HTTP tests catch drift. 2.2.0 already marks legacy SSE (MCP9004), sampling and logging (MCP9005) and the stateful-session options (MCP9006) obsolete: the port enables legacy SSE through the documented AppContext switch `ModelContextProtocol.AspNetCore.EnableLegacySse`, sends sampling and logging as raw JSON, and leaves the MCP9006 options at their defaults, so a release that removes them needs no code change but one that removes the switch or legacy SSE would end the `sse` transport |
 | LL hooks swallow input and lock the user out | Heartbeat-renewed suppression deadline (1 s, renewed every 50 ms by the coordinator on the thread pool), `LowLevelHooksTimeout`, fail-open on a lapsed deadline, a hook exception, a lost desktop or a queue overflow; an up inherits its down's verdict, so nothing stays held. Measured in the default suite with fakes: `PastTheDeadlineTheHookPassesAndRequestsFailOpen` (Task 6), `AStoppedHeartbeatLetsTheDeadlineLapse` (Task 11). The real-hook Desktop tests (`InputMonitorDesktopTests`: `SuppressionLapsesWithinOneSecondWhenTheHeartbeatStops`, `AStalledDispatcherCannotLockInput` and six more) are written and compile but have not run: they swallow input on the user's live machine, so they are pending with the user (follow-ups, P4). The P4 release smoke installed the real hooks on the user's session in pass-through mode only (never `ai`). |
 | UIA calls into hung apps | IUIAutomation2 timeouts, per-job deadlines, a replaceable UIA worker and a 90 s block of hung windows (P2 plan, Decisions 2) |
 | Snapshot's UIA walk hangs a Chromium app (cause measured; mitigated by P2 Decisions 36-38) | Windows logged an AppHang for VS Code (Code.exe 1.142) twice on 2026-10-20, the second during the P2 smoke's Snapshot, and VS Code closed. P2 Task 21 measured the cause on Edge with a page of N sibling buttons: the walker's word read on the page's DocumentControl. `GetCurrentPattern(TextPattern)` plus `GetVisibleRanges` alone blocks the UI thread for 5.2 s at 1,000 buttons, about 46 s at 3,000, and more than 65 s at 10,000 (roughly quadratic). Neither the cache request size nor accessibility first-enable nor the window-list probe causes it. Mitigated in Task 22 (P2 Decisions 36-38): no word read on content whose FrameworkId is `Chrome`; children by sibling navigation, at most 300 per parent; and a WM_NULL check (250 ms) before the window is read and before each children or word read: a timeout leaves the window out of that Snapshot, and only a window Windows considers hung (`IsHungAppWindow`) is blocked with its process for 90 s; a cut child list adds its own note after the tree. Measured after the change (JIT probe, product walk): on a 10,000-button Edge page, 370 elements in 0.35 s with no failed ping; on a 1,000-button page, 0.35-0.37 s with no failed ping; on a fresh VS Code with a 50,000-line file, 0.15-0.23 s with no failed ping. The hang itself was never reproduced on VS Code. On 2026-10-20 the user ran the AOT smoke with no exclusion and their VS Code open (86 tree elements) and the three real-window Desktop tests: all passed, VS Code stayed responsive, and no AppHang was logged during the runs. So the smoke's Code.exe exclusion and `build-release.ps1`'s skip of the probe's `uia` step were removed. (One AppHang from `old_mscopilot_proxy.exe` 156.0.4314.29, an Edge Beta component, was logged at 14:35 that day, about 12 minutes after the final build-release run; its cause is unknown.) The guard cannot interrupt a call already inside a provider. |
