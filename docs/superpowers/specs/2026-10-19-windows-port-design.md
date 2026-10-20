@@ -424,7 +424,9 @@ uses System.Text.Json source generation.
   Same messages. Probe outcome under NativeAOT (P1, Task 12): WinRT works on an STA thread and
   Win32 works; a WinRT clipboard call on an MTA thread blocks instead of throwing, and after that
   WinRT can block on STA in the same process too, so the bounded fallback carries the call.
-  Known issue; the root cause is a P2 follow-up.
+  P2 measured: a live main STA does not help, because `GetContent` returns at once and the block
+  is the `GetTextAsync` operation, whose `Completed` handler never fires under NativeAOT (it fires
+  on an STA thread under the JIT), so the root cause stays open (P2 plan, Task 18).
 - **Notification**: CsWinRT `ToastNotificationManager.CreateToastNotifier(app_id).Show()` with
   ToastGeneric XML; never reads `notifier.Setting` (throws for unpackaged apps). It stays on
   `ToastNotificationManager` and not the Windows App SDK's `AppNotificationManager`, because `app_id`
@@ -577,4 +579,4 @@ P0 probe results were measured on Windows build 10.0.26220 (Insider).
 | LL hooks swallow input and lock the user out | Heartbeat-renewed suppression deadline, `LowLevelHooksTimeout`, integration tests |
 | UIA calls into hung apps | `IUIAutomation2` connection and transaction timeouts, serialised UIA access |
 | The Job Object kills every process the server started when the server exits, including apps started through the PowerShell tool (Start-Process) | Spec §5 behaviour, kept in P1; upstream has no job. Revisit if users report it; JOB_OBJECT_LIMIT_BREAKAWAY_OK plus CREATE_BREAKAWAY_FROM_JOB would let chosen launches escape. |
-| Under NativeAOT, a WinRT clipboard call on an MTA thread blocks instead of throwing, and WinRT can then block on STA in the same process | Known issue (measured in P1). `SystemClipboard` calls WinRT only on its STA thread, bounds it by 5 s and falls back to the Win32 clipboard, bounded by its own 5 s. Finding the root cause is a P2 follow-up. |
+| Under NativeAOT, a WinRT clipboard call on an MTA thread blocks instead of throwing, and WinRT can then block on STA in the same process | Known issue (measured in P1). `SystemClipboard` calls WinRT only on its STA thread, bounds it by 5 s and falls back to the Win32 clipboard, bounded by its own 5 s. P2 measured: a live main STA does not help; the block is the `GetTextAsync` operation, whose `Completed` handler never fires under NativeAOT, and the root cause stays open. |
