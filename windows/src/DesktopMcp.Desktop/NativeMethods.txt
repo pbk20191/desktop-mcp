@@ -81,3 +81,5 @@ GetAncestor
 OpenProcess
 QueryFullProcessImageName
 CloseHandle
+// Capture: the monitor behind a display rectangle
+MonitorFromRect

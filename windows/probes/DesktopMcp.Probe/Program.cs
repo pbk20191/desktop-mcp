@@ -70,14 +70,17 @@ static async Task<bool> ProbeImagingAsync(string path)
 
 static async Task<bool> ProbeCaptureAsync(string path)
 {
-    DesktopMcp.Desktop.AppRuntime.EnsureInitialized();
     Console.WriteLine($"capture: supported={DesktopMcp.Desktop.Capture.GraphicsCaptureService.IsSupported}");
+    var displays = new DesktopMcp.Desktop.Displays.Win32Displays();
+    var monitors = displays.GetDisplays().Select(d => d.Bounds).ToArray();
     var clock = Stopwatch.StartNew();
-    var image = await new DesktopMcp.Desktop.Capture.GraphicsCaptureService().CapturePrimaryMonitorAsync(CancellationToken.None);
+    // The whole virtual screen: every monitor, composited (the runtime is initialised by the capture itself).
+    var image = await new DesktopMcp.Desktop.Capture.GraphicsCaptureService().CaptureAsync(displays.GetVirtualScreen(), monitors, CancellationToken.None);
     var captureMs = clock.ElapsedMilliseconds;
     var png = await new DesktopMcp.Desktop.Imaging.Win2DRenderer().RenderPngAsync(image, DesktopMcp.Desktop.Imaging.RenderOptions.Plain(1.0));
     File.WriteAllBytes(path, png);
-    Console.WriteLine($"capture: borderSuppressed={DesktopMcp.Desktop.Capture.GraphicsCaptureService.LastBorderSuppressed}");
+    Console.WriteLine($"capture: {monitors.Length} monitor(s), borderSuppressed={DesktopMcp.Desktop.Capture.GraphicsCaptureService.LastBorderSuppressed}, " +
+        $"borderlessAccess={DesktopMcp.Desktop.Capture.GraphicsCaptureService.BorderlessAccess}");
     Console.WriteLine($"capture: {image.Width}x{image.Height} in {captureMs} ms, png {png.Length / 1024} KB -> {Path.GetFullPath(path)}");
     return image.Width > 0 && CheckWin2DLinkage("capture");
 }
