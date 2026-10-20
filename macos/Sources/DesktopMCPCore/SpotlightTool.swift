@@ -38,14 +38,49 @@ enum SpotlightTool {
         return escaped
     }
 
-    /// Each whitespace-separated word must appear in the display name or the text content.
-    static func wordsQuery(_ query: String) throws -> String {
+    /// The caller's whitespace-separated words, escaped; throws when there are none.
+    private static func escapedWords(_ query: String) throws -> [String] {
         let words = query.split(whereSeparator: \.isWhitespace)
         guard !words.isEmpty else { throw ToolError("query is required.") }
-        return words.map { word in
-            let w = escape(word)
-            return #"(kMDItemDisplayName == "*\#(w)*"cdw || kMDItemTextContent == "\#(w)"cdw)"#
+        return words.map(escape)
+    }
+
+    /// Each whitespace-separated word must appear in the display name or the text content.
+    static func wordsQuery(_ query: String) throws -> String {
+        try escapedWords(query).map { w in
+            #"(kMDItemDisplayName == "*\#(w)*"cdw || kMDItemTextContent == "\#(w)"cdw)"#
         }.joined(separator: " && ")
+    }
+
+    /// Each word must appear in the display name: the matches ranked first.
+    static func nameQuery(_ query: String) throws -> String {
+        try escapedWords(query).map { w in #"kMDItemDisplayName == "*\#(w)*"cdw"# }.joined(separator: " && ")
+    }
+
+    /// The words query minus the name matches: at least one word is missing from the name, so
+    /// this and `nameQuery` never return the same item.
+    static func contentOnlyQuery(_ query: String) throws -> String {
+        let notInName = try escapedWords(query).map { w in #"kMDItemDisplayName != "*\#(w)*"cdw"# }
+        return try wordsQuery(query) + " && (" + notInName.joined(separator: " || ") + ")"
+    }
+
+    /// The folders searched when the caller names none: the application folders (recursive, so
+    /// Utilities is included) for `application`, home otherwise. `~` is left unexpanded.
+    static func defaultScope(kind: String) -> [String] {
+        kind == "application" ? ["/Applications", "/System/Applications", "~/Applications"] : ["~"]
+    }
+
+    /// The caller's folders, or the default for `kind` when there are none, with `~` expanded.
+    static func scope(_ paths: [String], kind: String) -> [URL] {
+        (paths.isEmpty ? defaultScope(kind: kind) : paths)
+            .map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
+    }
+
+    /// The first query's items, then the second's, up to `limit`; never re-sorted across the two.
+    /// The total counts both, so "N more not shown" covers rows the second query was not read for.
+    static func merge(first: [Item], firstTotal: Int, second: [Item], secondTotal: Int,
+                      limit: Int) -> (items: [Item], total: Int) {
+        (Array((first + second).prefix(max(limit, 0))), firstTotal + secondTotal)
     }
 
     static func kindClause(_ kind: String) -> String? {
@@ -85,9 +120,9 @@ enum SpotlightTool {
         MDItemCopyAttribute(item, name)
     }
 
-    /// Runs `query` over `scope` sorted newest first and reads the first `limit` results. The
-    /// whole call, reads included, stops at `timeout` seconds. `content` adds a preview of
-    /// items that are text files. `check`, when given, is validated first, on the same thread.
+    /// Runs `query` over `scope` sorted newest first and reads the first `limit` results (none
+    /// for a limit of 0, which only counts). The whole call, reads included, stops at `timeout`
+    /// seconds. `content` adds a preview of items that are text files. `check`, when given, is validated first, on the same thread.
     static func search(_ query: String, scope: [URL], limit: Int, timeout: Double, content: Bool = false,
                        check: (query: String, shown: String)? = nil) async throws -> Found {
         try await offload { () throws -> Found in
@@ -144,20 +179,12 @@ enum SpotlightTool {
         }
     }
 
-    /// One `<path>\t<kind>\t<ISO-8601>\t<size>` line per item, newest first, then how many more
-    /// matched and whether the search was stopped.
+    /// One `<path>\t<kind>\t<ISO-8601>\t<size>` line per item, in the order given (the query
+    /// sorts), then how many more matched and whether the search was stopped.
     static func format(_ items: [Item], total: Int, content: Bool, stopped: Bool) -> String {
-        let sorted = items.sorted { a, b in
-            switch (a.modified, b.modified) {
-            case let (x?, y?) where x != y: return x > y
-            case (_?, nil): return true
-            case (nil, _?): return false
-            default: return a.path < b.path
-            }
-        }
         let dates = ISO8601DateFormatter()
         var lines: [String] = []
-        for item in sorted {
+        for item in items {
             lines.append([item.path, item.kind, item.modified.map(dates.string(from:)) ?? "-",
                           item.size.map(String.init) ?? "-"].joined(separator: "\t"))
             if content, let text = item.text { lines.append("  " + text) }
@@ -171,7 +198,7 @@ enum SpotlightTool {
     static func tool() -> Tool {
         Tool(
             name: "Spotlight",
-            description: "Searches the Spotlight index for files. By default 'query' is words that must each appear in the file name or text; raw=true passes 'query' as a Spotlight query (e.g. kMDItemContentModificationDate > $time.today(-7)). 'scope' is a list of folders (default: home). 'kind' narrows the type. Returns up to 'limit' (max 200) lines '<path>\\t<kind>\\t<modified>\\t<size>', newest first; content=true adds the first 300 characters of each plain-text file.",
+            description: "Searches the Spotlight index for files. By default 'query' is words that must each appear in the file name or text, name matches first, then content-only matches; raw=true passes 'query' as a Spotlight query (e.g. kMDItemContentModificationDate > $time.today(-7)). 'scope' is a list of folders (default: home; kind=application without scope searches the app folders /Applications, /System/Applications, ~/Applications). 'kind' narrows the type. Returns up to 'limit' (max 200) lines '<path>\\t<kind>\\t<modified>\\t<size>', newest first within each group; content=true adds the first 300 characters of each plain-text file.",
             inputSchema: DesktopMCP.schema([
                 "query": DesktopMCP.string(),
                 "raw": DesktopMCP.boolean(default: false),
@@ -187,25 +214,35 @@ enum SpotlightTool {
                 let kind = try args.choice("kind", in: kinds, default: "any")
                 let limit = min(max(try args.int("limit") ?? 20, 1), 200)
                 let content = try args.bool("content") ?? false
-                let paths = try args.stringList("scope") ?? []
-                let scope = (paths.isEmpty ? ["~"] : paths)
-                    .map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
+                let folders = scope(try args.stringList("scope") ?? [], kind: kind)
+                let clause = kindClause(kind)
+                func narrowed(_ query: String) -> String { clause.map { "(\(query)) && \($0)" } ?? query }
 
-                var query: String
                 if raw {
-                    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !trimmed.isEmpty else { throw ToolError("query is required.") }
-                    query = trimmed
-                } else {
-                    query = try wordsQuery(text)
+                    let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !query.isEmpty else { throw ToolError("query is required.") }
+                    // The user's query is validated alone, so the error quotes what they wrote.
+                    let found = try await search(narrowed(query), scope: folders, limit: limit, timeout: deadlineSeconds,
+                                                 content: content, check: (query, query))
+                    return [.text(format(found.items, total: found.total, content: content, stopped: found.stopped))]
                 }
-                // The user's query is validated alone, so the error quotes what they wrote.
-                let check = (query: query, shown: raw ? query : text)
-                if let clause = kindClause(kind) { query = "(\(query)) && \(clause)" }
 
-                let found = try await search(query, scope: scope, limit: limit, timeout: deadlineSeconds,
-                                             content: content, check: check)
-                return [.text(format(found.items, total: found.total, content: content, stopped: found.stopped))]
+                // Name matches first, then matches by content only; both share one deadline.
+                let start = Date()
+                let names = try nameQuery(text)
+                let first = try await search(narrowed(names), scope: folders, limit: limit, timeout: deadlineSeconds,
+                                             content: content, check: (names, text))
+                let remaining = deadlineSeconds - Date().timeIntervalSince(start)
+                guard !first.stopped, remaining > 0 else {
+                    return [.text(format(first.items, total: first.total, content: content, stopped: true))]
+                }
+                // When the name matches filled the limit, the second query only counts.
+                let contentOnly = try contentOnlyQuery(text)
+                let second = try await search(narrowed(contentOnly), scope: folders, limit: limit - first.items.count,
+                                              timeout: remaining, content: content, check: (contentOnly, text))
+                let merged = merge(first: first.items, firstTotal: first.total, second: second.items,
+                                   secondTotal: second.total, limit: limit)
+                return [.text(format(merged.items, total: merged.total, content: content, stopped: second.stopped))]
             })
     }
 }

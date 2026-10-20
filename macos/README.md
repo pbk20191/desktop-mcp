@@ -57,7 +57,7 @@ Run `desktop-mcp permissions` to check the current state and trigger the system 
 | `Open` | Opens a file or URL (optionally with an app), or reveals a path in Finder |
 | `Clipboard` | Reads the clipboard (text, file paths, image) or replaces it with text or files |
 | `RunShortcut` | Lists or runs the user's Shortcuts (the Shortcuts app), with optional text input |
-| `Spotlight` | Searches the Spotlight index by words or a raw query, newest first, optionally by kind and folder |
+| `Spotlight` | Searches the Spotlight index by words (file-name matches first, then content-only matches, each newest first) or a raw query, optionally by kind and folder; `kind: application` without a folder searches `/Applications`, `/System/Applications` and `~/Applications` |
 | `Window` | Lists app windows with ids and frames; focuses, moves, resizes, minimizes, restores, maximizes (to its display minus the menu bar and Dock), enters or leaves full screen, moves to another display or closes one by id; `displays` lists the displays with their visible frames |
 | `Menu` | Lists an app's menu bar as a tree with shortcuts; selects a menu item by its path (`["File", "Export…"]`) |
 | `Permissions` | Reports which permissions desktop-mcp holds (Accessibility, Screen Recording, Automation of System Events) and which tools need them; never prompts |

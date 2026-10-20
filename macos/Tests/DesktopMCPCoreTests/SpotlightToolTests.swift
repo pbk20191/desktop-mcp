@@ -26,6 +26,62 @@ final class SpotlightToolTests: XCTestCase {
         }
     }
 
+    func testNameQuery() throws {
+        XCTAssertEqual(try SpotlightTool.nameQuery("tax 2025"),
+                       #"kMDItemDisplayName == "*tax*"cdw && kMDItemDisplayName == "*2025*"cdw"#)
+        XCTAssertEqual(try SpotlightTool.nameQuery(#"a*b"#), #"kMDItemDisplayName == "*a\*b*"cdw"#)
+        XCTAssertThrowsError(try SpotlightTool.nameQuery("  ")) { error in
+            XCTAssertEqual(message(of: error), "query is required.")
+        }
+    }
+
+    func testContentOnlyQuery() throws {
+        XCTAssertEqual(
+            try SpotlightTool.contentOnlyQuery("tax 2025"),
+            try SpotlightTool.wordsQuery("tax 2025")
+                + #" && (kMDItemDisplayName != "*tax*"cdw || kMDItemDisplayName != "*2025*"cdw)"#)
+        XCTAssertEqual(
+            try SpotlightTool.contentOnlyQuery(#"a"b"#),
+            #"(kMDItemDisplayName == "*a\"b*"cdw || kMDItemTextContent == "a\"b"cdw) && (kMDItemDisplayName != "*a\"b*"cdw)"#)
+        XCTAssertThrowsError(try SpotlightTool.contentOnlyQuery("")) { error in
+            XCTAssertEqual(message(of: error), "query is required.")
+        }
+    }
+
+    func testDefaultScope() {
+        XCTAssertEqual(SpotlightTool.defaultScope(kind: "application"),
+                       ["/Applications", "/System/Applications", "~/Applications"])
+        XCTAssertEqual(SpotlightTool.defaultScope(kind: "any"), ["~"])
+        XCTAssertEqual(SpotlightTool.defaultScope(kind: "pdf"), ["~"])
+
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        XCTAssertEqual(SpotlightTool.scope([], kind: "application").map(\.path),
+                       ["/Applications", "/System/Applications", home + "/Applications"])
+        XCTAssertEqual(SpotlightTool.scope([], kind: "any").map(\.path), [home])
+        XCTAssertEqual(SpotlightTool.scope(["/tmp", "~/Documents"], kind: "application").map(\.path),
+                       ["/tmp", home + "/Documents"])
+    }
+
+    func testMergeNameMatchesFirst() {
+        let first = [item("/name-new", 20), item("/name-old", 10)]
+        let second = [item("/content-newest", 300), item("/content-newer", 200), item("/content-old", 100)]
+        let merged = SpotlightTool.merge(first: first, firstTotal: 2, second: second, secondTotal: 3, limit: 4)
+        XCTAssertEqual(merged.items.map(\.path), ["/name-new", "/name-old", "/content-newest", "/content-newer"])
+        XCTAssertEqual(merged.total, 5)
+    }
+
+    func testSecondQuerySkippedWhenFirstFills() {
+        let first = [item("/name-1", 2), item("/name-2", 1)]
+        let merged = SpotlightTool.merge(first: first, firstTotal: 7, second: [], secondTotal: 40, limit: 2)
+        XCTAssertEqual(merged.items, first)
+        XCTAssertEqual(merged.total, 47)
+        XCTAssertEqual(SpotlightTool.format(merged.items, total: merged.total, content: false, stopped: false)
+            .split(separator: "\n").last, "45 more not shown")
+        // Rows handed over anyway are never shown past the limit.
+        XCTAssertEqual(SpotlightTool.merge(first: first, firstTotal: 2, second: [item("/c", 9)], secondTotal: 1, limit: 2).items,
+                       first)
+    }
+
     func testKindClauses() {
         XCTAssertEqual(SpotlightTool.kindClause("pdf"), #"kMDItemContentTypeTree == "com.adobe.pdf""#)
         XCTAssertNil(SpotlightTool.kindClause("any"))
@@ -51,25 +107,26 @@ final class SpotlightToolTests: XCTestCase {
                            size: size, text: text)
     }
 
-    func testFormatSortsNewestFirstAndCountsTheRest() {
+    func testFormatKeepsInputOrderAndCountsTheRest() {
+        // Ordering belongs to the query (and to merge); format prints the items as given.
         let items = [
             item("/a.txt", 1_700_000_000),
             item("/b", 1_800_000_000, size: nil),
             item("/c.txt", 1_750_000_000, size: 2048),
         ]
         XCTAssertEqual(SpotlightTool.format(items, total: 4, content: false, stopped: false), """
+        /a.txt\tPlain Text\t2023-11-14T22:13:20Z\t10
         /b\tPlain Text\t2027-01-15T08:00:00Z\t-
         /c.txt\tPlain Text\t2025-06-15T15:06:40Z\t2048
-        /a.txt\tPlain Text\t2023-11-14T22:13:20Z\t10
         1 more not shown
         """)
     }
 
-    func testMissingDatePrintsDashAndSortsLast() {
+    func testMissingDatePrintsDash() {
         let items = [item("/undated", nil), item("/dated", 0)]
         XCTAssertEqual(SpotlightTool.format(items, total: 2, content: false, stopped: false), """
-        /dated\tPlain Text\t1970-01-01T00:00:00Z\t10
         /undated\tPlain Text\t-\t10
+        /dated\tPlain Text\t1970-01-01T00:00:00Z\t10
         """)
     }
 
@@ -138,6 +195,14 @@ final class SpotlightToolTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(found.total, found.items.count)
         let dates = found.items.compactMap(\.modified)
         XCTAssertEqual(dates, dates.sorted(by: >))
+    }
+
+    func testLiveAppSearchFindsSafari() async throws {
+        let result = try await SpotlightTool.tool().handler(ToolArguments(["query": "safari", "kind": "application"]))
+        guard case let .text(text, _, _)? = result.first else { return XCTFail("expected text") }
+        let rows = text.split(separator: "\n").map(String.init)
+        if rows == ["No matches."] { throw XCTSkip("Spotlight returned nothing (indexing disabled?)") }
+        XCTAssertTrue(rows.contains { $0.split(separator: "\t").first?.hasSuffix("/Safari.app") == true }, text)
     }
 
     func testLiveSearchStopsAtTheDeadline() async throws {
