@@ -50,5 +50,33 @@ public sealed class UiaSessionTests : IDisposable
         Assert.True(count > 0, "the desktop root has no top-level children");
     }
 
+    [Fact]
+    public async Task CreatesSessionsOnSeveralThreadsAtOnce()
+    {
+        // UIAutomationCore's first use in a process fails CreateCacheRequest with E_FAIL on all but one of several threads
+        // that start at once (measured in P2 Task 11). It only shows when this test is the process's first UIA use, as when
+        // it runs alone; other tests running in parallel (the desktop test classes) can hit it too.
+        const int count = 8;
+        using var start = new Barrier(count);
+        var results = Enumerable.Range(0, count).Select(_ => new TaskCompletionSource<UiaSession>()).ToArray();
+        for (var i = 0; i < count; i++)
+        {
+            var result = results[i];
+            var thread = new Thread(() =>
+            {
+                try
+                {
+                    start.SignalAndWait(TimeSpan.FromSeconds(10));
+                    result.SetResult(UiaSession.Create());
+                }
+                catch (Exception e) { result.SetException(e); }
+            }) { IsBackground = true };
+            thread.SetApartmentState(ApartmentState.MTA);
+            thread.Start();
+        }
+        var sessions = await Task.WhenAll(results.Select(r => r.Task)).WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.Equal(count, sessions.Length);
+    }
+
     private Task<T> OnWorker<T>(Func<UiaSession, T> work) => _worker.RunAsync((session, _) => work(session), TimeSpan.FromSeconds(30), default);
 }

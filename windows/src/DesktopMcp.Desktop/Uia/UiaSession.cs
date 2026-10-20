@@ -92,13 +92,21 @@ internal sealed class UiaSession
     public IUIAutomationCacheRequest ProbeRequest { get; }
     public IUIAutomationTreeWalker ControlView { get; }
 
+    // UIAutomationCore's first use in a process is not thread-safe: when several threads create clients at once, all but
+    // one fail their first CreateCacheRequest with E_FAIL (measured in P2 Task 11). Creation is in-process only (no call
+    // into another application), so serialising it cannot block on a hung window.
+    private static readonly Lock CreationLock = new();
+
     /// <summary>Creates the client with the IUIAutomation2 timeouts set (spec §5, §12 "UIA calls into hung apps").</summary>
     public static UiaSession Create()
     {
-        var automation = CUIAutomation8.CreateInstance<IUIAutomation6>();
-        automation.put_ConnectionTimeout(ConnectionTimeoutMs);
-        automation.put_TransactionTimeout(TransactionTimeoutMs);
-        return new UiaSession(automation);
+        lock (CreationLock)
+        {
+            var automation = CUIAutomation8.CreateInstance<IUIAutomation6>();
+            automation.put_ConnectionTimeout(ConnectionTimeoutMs);
+            automation.put_TransactionTimeout(TransactionTimeoutMs);
+            return new UiaSession(automation);
+        }
     }
 
     private static IUIAutomationCacheRequest CreateRequest(
