@@ -566,7 +566,7 @@
         "readOnlyHint": true,
         "title": "Spotlight"
       },
-      "description": "Searches the Spotlight index for files. By default 'query' is words that must each appear in the file name or text; raw=true passes 'query' as a Spotlight query (e.g. kMDItemContentModificationDate > $time.today(-7)). 'scope' is a list of folders (default: home). 'kind' narrows the type. Returns up to 'limit' (max 200) lines '<path>\\t<kind>\\t<modified>\\t<size>', newest first; content=true adds the start of each file's indexed text.",
+      "description": "Searches the Spotlight index for files. By default 'query' is words that must each appear in the file name or text; raw=true passes 'query' as a Spotlight query (e.g. kMDItemContentModificationDate > $time.today(-7)). 'scope' is a list of folders (default: home). 'kind' narrows the type. Returns up to 'limit' (max 200) lines '<path>\\t<kind>\\t<modified>\\t<size>', newest first; content=true adds the first 300 characters of each plain-text file.",
       "inputSchema": {
         "properties": {
           "content": {
