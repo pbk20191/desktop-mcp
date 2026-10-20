@@ -54,7 +54,7 @@ internal sealed class FakeDesktop
     };
 
     /// <summary>
-    /// Records each call as one string: <c>Click (x,y) Button n</c>, <c>Move (x,y)</c>, <c>Drag (x,y) (x,y) duration</c>,
+    /// Records each call as one string: <c>Click (x,y) Button n</c>, <c>Move (x,y)</c>, <c>Drag (x,y)|cursor (x,y) duration|none</c>,
     /// <c>Scroll (x,y)|cursor type direction n</c>, <c>Keys count intervalms waitms</c>,
     /// <c>Type (x,y) [clear ]text</c> (or <c>Type (x,y) click-only</c> when the after-click hook throws) and
     /// <c>MultiSelect ctrl=bool count</c>.
@@ -82,9 +82,8 @@ internal sealed class FakeDesktop
 
         public async Task<DragResult> DragAsync(ScreenPoint? from, ScreenPoint to, double? duration, CancellationToken ct)
         {
-            var start = from ?? desktop.Cursor;
-            await RecordAsync($"Drag {P(start)} {P(to)} {duration?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "none"}", ct);
-            return new DragResult(start, duration);
+            await RecordAsync($"Drag {(from is { } start ? P(start) : "cursor")} {P(to)} {duration?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "none"}", ct);
+            return new DragResult(from ?? desktop.Cursor, duration);
         }
 
         public async Task<string?> ScrollAsync(ScreenPoint? at, string type, string direction, long wheelTimes, CancellationToken ct)
@@ -137,15 +136,38 @@ internal sealed class FakeDesktop
         }
     }
 
+    /// <summary>Records each resolve as <c>Label n</c> or <c>Point (x,y)</c>.</summary>
     internal sealed class FakeTargets(FakeDesktop desktop) : IActionTargets
     {
-        public Task<ActionTarget> LabelAsync(long label, CancellationToken ct) =>
-            desktop.Labels.TryGetValue(label, out var point)
+        private readonly Lock _lock = new();
+        private readonly List<string> _calls = [];
+
+        public IReadOnlyList<string> Calls
+        {
+            get
+            {
+                lock (_lock) return [.. _calls];
+            }
+        }
+
+        public Task<ActionTarget> LabelAsync(long label, CancellationToken ct)
+        {
+            Record($"Label {label}");
+            return desktop.Labels.TryGetValue(label, out var point)
                 ? Task.FromResult(new ActionTarget(point, 1, "Window"))
                 : throw new ArgumentException(LabelErrors.NotFound(label));
+        }
 
-        public ActionTarget Point(ScreenPoint point) =>
-            desktop.PointError is { } error ? throw new ArgumentException(error) : new ActionTarget(point, 0, "");
+        public ActionTarget Point(ScreenPoint point)
+        {
+            Record($"Point ({point.X},{point.Y})");
+            return desktop.PointError is { } error ? throw new ArgumentException(error) : new ActionTarget(point, 0, "");
+        }
+
+        private void Record(string call)
+        {
+            lock (_lock) _calls.Add(call);
+        }
 
         public void CheckLabels(IReadOnlyList<long> labels, string wrapper)
         {

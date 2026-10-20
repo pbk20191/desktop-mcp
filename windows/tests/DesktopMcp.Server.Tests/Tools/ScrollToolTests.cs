@@ -11,6 +11,17 @@ public class ScrollToolTests
         Assert.Equal(["Scroll cursor vertical down 1"], desktop.Input.Calls);
     }
 
+    [Theory]
+    [InlineData("""{"loc": []}""")]
+    [InlineData("""{"loc": "[]"}""")]
+    public async Task AnEmptyLocationMeansTheCursor(string json)
+    {
+        var desktop = new FakeDesktop { Cursor = new(3, 4) };
+        Assert.Equal("Scrolled vertical down by 1 wheel times at current cursor position (3,4).",
+            ToolCalls.OkText(await ToolCalls.CallAsync(ToolCalls.Create("Scroll", desktop.Services()), json)));
+        Assert.Equal(["Scroll cursor vertical down 1"], desktop.Input.Calls);
+    }
+
     [Fact]
     public async Task WithALocation() =>
         Assert.Equal("Scrolled horizontal left by 3 wheel times at (5,6).",

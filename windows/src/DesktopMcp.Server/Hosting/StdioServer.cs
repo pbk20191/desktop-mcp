@@ -51,8 +51,9 @@ public static class StdioServer
         using var host = builder.Build();
         var logger = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("desktop-mcp");
         foreach (var warning in plan.Warnings) logger.LogWarning("{Warning}", warning);
-        // Decisions 19: whatever key or button the input still holds is released when the host stops.
-        using var releaseOnStop = host.Services.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping.Register(() =>
+        // Decisions 19: whatever key or button the input still holds is released when the host stops, and again after
+        // it returns in case the transport ended without ApplicationStopping (a second release finds nothing held).
+        void ReleaseHeldInput()
         {
             try
             {
@@ -62,12 +63,20 @@ public static class StdioServer
             {
                 logger.LogError(e, "Could not release held input on shutdown: {Message}", e.Message);
             }
-        });
+        }
+        using var releaseOnStop = host.Services.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping.Register(ReleaseHeldInput);
         logger.LogDebug("Starting desktop-mcp (transport={Transport}, tools={Tools}, exclude={Exclude})",
             plan.Transport,
             plan.ExplicitTools.Count > 0 ? string.Join(",", plan.ExplicitTools) : "all",
             plan.ExcludeTools.Count > 0 ? string.Join(",", plan.ExcludeTools) : "none");
-        await host.RunAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await host.RunAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            ReleaseHeldInput();
+        }
         return 0;
     }
 }

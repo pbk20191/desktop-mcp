@@ -36,7 +36,10 @@ public sealed record ToolServices
     public required IActionTargets Targets { get; init; }
     public required IForeground Foreground { get; init; }
 
-    /// <summary>Every key or button the input holds; the server releases it on shutdown (Decisions 19).</summary>
+    /// <summary>
+    /// Every key or button the input holds; the server releases it on shutdown (Decisions 19). It must be the ledger
+    /// <see cref="Input"/> presses through, or the shutdown release misses what the input holds: replace both together.
+    /// </summary>
     public required InputLedger Ledger { get; init; }
     public required DesktopInputLock InputLock { get; init; }
     public required TimeProvider Time { get; init; }

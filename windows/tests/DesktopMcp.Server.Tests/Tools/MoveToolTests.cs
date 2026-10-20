@@ -16,6 +16,8 @@ public class MoveToolTests
     [InlineData("""{"loc": [5, 6], "drag": true, "duration": 11}""", "duration must be between 0 and 10 seconds")]
     [InlineData("""{"loc": [5]}""", "loc must be a list of exactly 2 integers [x, y]")]
     [InlineData("""{"drag": true}""", "Either loc or label must be provided.")]
+    [InlineData("""{"loc": [5], "drag": "yes"}""", "drag must be true or false")]
+    [InlineData("""{"from_loc": [1]}""", "Either loc or label must be provided.")]
     public async Task MoveErrors(string json, string message) =>
         Assert.Equal($"Error calling tool 'Move': {message}", ToolCalls.Text(await ToolCalls.CallAsync(ToolCalls.Create("Move", new FakeDesktop().Services()), json)));
 
@@ -25,7 +27,9 @@ public class MoveToolTests
         var desktop = new FakeDesktop { Cursor = new(1, 2), Labels = { [3] = new(30, 40) } };
         Assert.Equal("Dragged from (1,2) to (30,40).",
             ToolCalls.OkText(await ToolCalls.CallAsync(ToolCalls.Create("Move", desktop.Services()), """{"label": 3, "drag": true}""")));
+        // The start checked under the lock is the start pressed (not a second cursor read after the settle).
         Assert.Equal(["Drag (1,2) (30,40) none"], desktop.Input.Calls);
+        Assert.Equal(["Label 3", "Point (1,2)"], desktop.Targets.Calls);
     }
 
     [Fact]

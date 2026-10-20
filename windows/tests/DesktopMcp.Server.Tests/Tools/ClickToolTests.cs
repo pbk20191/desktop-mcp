@@ -62,6 +62,21 @@ public class ClickToolTests
     }
 
     [Fact]
+    public async Task TargetsAreResolvedInsideTheLock()
+    {
+        var desktop = new FakeDesktop { BlockFirstCall = true, Labels = { [1] = new ScreenPoint(3, 3) } };
+        var services = desktop.Services();
+        var first = ToolCalls.CallAsync(ToolCalls.Create("Click", services), """{"loc": [1, 1]}""");
+        await desktop.FirstCallStarted;
+        var second = ToolCalls.CallAsync(ToolCalls.Create("Click", services), """{"label": 1}""");
+        await Task.Delay(100);
+        Assert.Equal(["Point (1,1)"], desktop.Targets.Calls);
+        desktop.ReleaseFirstCall();
+        await Task.WhenAll(first, second);
+        Assert.Equal(["Point (1,1)", "Label 1"], desktop.Targets.Calls);
+    }
+
+    [Fact]
     public async Task ACallWaitingForTheLockIsCancellable()
     {
         var inputLock = new DesktopInputLock();

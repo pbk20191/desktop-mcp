@@ -19,7 +19,10 @@ public sealed class ScrollTool(Tool protocolTool, ToolServices services) : SpecT
         var type = ActArguments.Choice(arguments.Get("type"), "type", "vertical", "horizontal", "vertical");
         var direction = ActArguments.Choice(arguments.Get("direction"), "direction", "down", "up", "down", "left", "right");
         var wheelTimes = arguments.Integer("wheel_times", 1);
-        var loc = label is null ? ActArguments.Point(arguments.Get("loc"), "loc", ClickTool.LocationShape) : null;
+        // An empty list means no point, like upstream's falsy loc.
+        var loc = label is null && !PointerTools.IsEmptyList(arguments.Get("loc"))
+            ? ActArguments.Point(arguments.Get("loc"), "loc", PointerTools.LocationShape)
+            : null;
 
         using (await services.InputLock.EnterAsync(cancellationToken).ConfigureAwait(false))
         {
@@ -29,12 +32,12 @@ public sealed class ScrollTool(Tool protocolTool, ToolServices services) : SpecT
                 var cursor = services.Input.Cursor;
                 services.Targets.Point(cursor);
                 return ToolResults.Text(await services.Input.ScrollAsync(null, type, direction, wheelTimes, cancellationToken).ConfigureAwait(false)
-                    ?? ClickTool.Text($"Scrolled {type} {direction} by {wheelTimes} wheel times at current cursor position ({cursor.X},{cursor.Y})."));
+                    ?? PointerTools.Text($"Scrolled {type} {direction} by {wheelTimes} wheel times at current cursor position ({cursor.X},{cursor.Y})."));
             }
 
             var point = await services.Targets.ResolveAsync(label, loc, cancellationToken).ConfigureAwait(false);
             return ToolResults.Text(await services.Input.ScrollAsync(point, type, direction, wheelTimes, cancellationToken).ConfigureAwait(false)
-                ?? ClickTool.Text($"Scrolled {type} {direction} by {wheelTimes} wheel times at ({point.X},{point.Y})."));
+                ?? PointerTools.Text($"Scrolled {type} {direction} by {wheelTimes} wheel times at ({point.X},{point.Y})."));
         }
     }
 }
