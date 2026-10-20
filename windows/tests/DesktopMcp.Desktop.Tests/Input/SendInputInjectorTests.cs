@@ -165,4 +165,26 @@ public class SendInputInjectorTests
         var injector = new SendInputInjector(recorder.Send, _ => 0, () => false, () => "Taskmgr.exe", () => higher);
         Assert.Throws<InputBlockedException>(() => injector.Send([InjectedInput.Wheel(120)]));
     }
+
+    [Theory]
+    [InlineData(5)]
+    [InlineData(0)]
+    public void AShortCountOffTheDefaultDesktopIsTheSessionTextNotUipi(int win32Error)
+    {
+        var recorder = new Recorder { Result = 0, Error = win32Error };
+        var injector = new SendInputInjector(recorder.Send, _ => 0, () => false, () => "Taskmgr.exe", () => true,
+            () => throw new DesktopException("The desktop is not available: locked"));
+        var error = Assert.Throws<DesktopException>(() => injector.Send([InjectedInput.Wheel(120)]));
+        Assert.IsNotType<InputBlockedException>(error);
+        Assert.Equal("The desktop is not available: locked", error.Message);
+    }
+
+    [Fact]
+    public void TheSessionIsCheckedOnlyAfterAShortCount()
+    {
+        var checks = 0;
+        var injector = new SendInputInjector(new Recorder().Send, _ => 0, () => false, () => null, () => null, () => checks++);
+        injector.Send([InjectedInput.Wheel(120)]);
+        Assert.Equal(0, checks);
+    }
 }

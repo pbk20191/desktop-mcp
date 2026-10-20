@@ -29,6 +29,8 @@ public sealed class TypeTool(Tool protocolTool, ToolServices services) : SpecToo
 
         using (await services.InputLock.EnterAsync(cancellationToken).ConfigureAwait(false))
         {
+            // The desktop-session check (P2 Decisions 18) before any target is resolved.
+            services.Targets.CheckSession();
             var target = await services.Targets.ResolveTargetAsync(label, loc, cancellationToken).ConfigureAwait(false);
             var warning = await Sequence(services).RunAsync(target, text, ToCaret(caret), clear, pressEnter, null, cancellationToken)
                 .ConfigureAwait(false);

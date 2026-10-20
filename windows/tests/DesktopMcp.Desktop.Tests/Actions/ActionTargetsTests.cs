@@ -90,12 +90,14 @@ public class ActionTargetsTests
         Func<ElementIdentity, ScreenPoint, CancellationToken, Task<LocateResult>> locate = (_, p, _) => Task.FromResult(new LocateResult(null, p, null));
         Func<ScreenRect> screen = () => default;
         Func<int, bool> higher = _ => false;
-        Assert.Throws<ArgumentNullException>(() => new ActionTargets(null!, locate, windows, screen, higher, blocks));
-        Assert.Throws<ArgumentNullException>(() => new ActionTargets(store, null!, windows, screen, higher, blocks));
-        Assert.Throws<ArgumentNullException>(() => new ActionTargets(store, locate, null!, screen, higher, blocks));
-        Assert.Throws<ArgumentNullException>(() => new ActionTargets(store, locate, windows, null!, higher, blocks));
-        Assert.Throws<ArgumentNullException>(() => new ActionTargets(store, locate, windows, screen, null!, blocks));
-        Assert.Throws<ArgumentNullException>(() => new ActionTargets(store, locate, windows, screen, higher, null!));
+        Action session = () => { };
+        Assert.Throws<ArgumentNullException>(() => new ActionTargets(null!, locate, windows, screen, higher, blocks, session));
+        Assert.Throws<ArgumentNullException>(() => new ActionTargets(store, null!, windows, screen, higher, blocks, session));
+        Assert.Throws<ArgumentNullException>(() => new ActionTargets(store, locate, null!, screen, higher, blocks, session));
+        Assert.Throws<ArgumentNullException>(() => new ActionTargets(store, locate, windows, null!, higher, blocks, session));
+        Assert.Throws<ArgumentNullException>(() => new ActionTargets(store, locate, windows, screen, null!, blocks, session));
+        Assert.Throws<ArgumentNullException>(() => new ActionTargets(store, locate, windows, screen, higher, null!, session));
+        Assert.Throws<ArgumentNullException>(() => new ActionTargets(store, locate, windows, screen, higher, blocks, null!));
     }
 
     [Fact]
@@ -158,6 +160,15 @@ public class ActionTargetsTests
             Assert.Throws<ArgumentException>(() => new TargetsRig(snapshot: null).Targets.CheckLabels([0], "Failed to process labels")).Message);
 
     [Fact]
+    public void CheckSessionRunsTheSessionCheck()
+    {
+        var rig = new TargetsRig(sessionError: "locked");
+        Assert.Equal("locked", Assert.Throws<DesktopException>(rig.Targets.CheckSession).Message);
+        Assert.Equal(1, rig.SessionChecks);
+        Assert.Equal(0, rig.Locates);
+    }
+
+    [Fact]
     public void CheckLabelsAcceptsLabelsInRange() => new TargetsRig(interactive: 1, scrollable: 1).Targets.CheckLabels([0, 1], "Failed");
 }
 
@@ -174,7 +185,7 @@ internal sealed class TargetsRig
 
     /// <param name="snapshot">Null: nothing is stored (no Snapshot yet).</param>
     public TargetsRig(bool? snapshot = true, int interactive = 0, int scrollable = 0, LocateResult? locate = null, Exception? locateThrows = null,
-        bool identity = true, string name = "OK", bool elevatedAtPoint = false, bool elevatedForeground = false)
+        bool identity = true, string name = "OK", bool elevatedAtPoint = false, bool elevatedForeground = false, string? sessionError = null)
     {
         Interactive = Enumerable.Range(0, interactive).Select(i => Element(i, identity, name)).ToArray();
         Scrollable = Enumerable.Range(interactive, scrollable).Select(i => Element(i, identity, name)).ToArray();
@@ -204,13 +215,18 @@ internal sealed class TargetsRig
             Locates++;
             if (locateThrows is not null) throw locateThrows;
             return Task.FromResult(locate ?? new LocateResult(null, center, null));
-        }, windows, () => new ScreenRect(0, 0, 1920, 1080), processId => elevated && processId == TaskManagerProcess, Blocks);
+        }, windows, () => new ScreenRect(0, 0, 1920, 1080), processId => elevated && processId == TaskManagerProcess, Blocks, () =>
+        {
+            SessionChecks++;
+            if (sessionError is not null) throw new DesktopException(sessionError);
+        });
     }
 
     public UiElement[] Interactive { get; }
     public UiElement[] Scrollable { get; }
     public ActionTargets Targets { get; }
     public int Locates { get; private set; }
+    public int SessionChecks { get; private set; }
     public HangBlockList Blocks { get; } = new(TimeProvider.System, HangBlockList.DefaultDuration);
 
     private static UiElement Element(int i, bool identity, string name) =>

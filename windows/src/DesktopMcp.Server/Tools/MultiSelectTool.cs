@@ -29,6 +29,8 @@ public sealed class MultiSelectTool(Tool protocolTool, ToolServices services) : 
 
         using (await services.InputLock.EnterAsync(cancellationToken).ConfigureAwait(false))
         {
+            // The desktop-session check (P2 Decisions 18) before any target is resolved.
+            services.Targets.CheckSession();
             var count = locs.Count + labels.Count;
             var points = await services.Input.MultiSelectAsync(pressCtrl, count, async (i, ct) =>
             {

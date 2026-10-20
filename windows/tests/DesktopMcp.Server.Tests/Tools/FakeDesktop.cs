@@ -128,7 +128,7 @@ internal sealed class FakeDesktop
 
     private int _sessionChecks;
 
-    /// <summary>When set, the desktop session check throws a <see cref="DesktopException"/> with this text.</summary>
+    /// <summary>When set, the desktop session checks (WaitFor's and the input tools') throw a <see cref="DesktopException"/> with this text.</summary>
     public string? SessionError { get; set; }
 
     public FakeInput Input { get; }
@@ -275,6 +275,17 @@ internal sealed class FakeDesktop
         {
             foreach (var label in labels)
                 if (!desktop.Labels.ContainsKey(label)) throw new ArgumentException($"{wrapper}: {LabelErrors.OutOfRange(label)}");
+        }
+
+        /// <summary>How many times an input tool checked the desktop session (throws <see cref="SessionError"/> when set).</summary>
+        public int SessionChecks => Volatile.Read(ref _sessionChecks);
+
+        private int _sessionChecks;
+
+        public void CheckSession()
+        {
+            Interlocked.Increment(ref _sessionChecks);
+            if (desktop.SessionError is { } error) throw new DesktopException(error);
         }
 
         public int ForegroundInputChecks => Volatile.Read(ref _foregroundInputChecks);

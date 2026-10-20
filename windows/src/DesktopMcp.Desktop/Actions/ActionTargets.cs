@@ -14,6 +14,12 @@ public sealed record ActionTarget(ScreenPoint Point, long Window, string WindowN
 /// <summary>Labels and points checked and resolved before any input is sent (P3 Decisions 1, 8, 15, 22, 39).</summary>
 public interface IActionTargets
 {
+    /// <summary>
+    /// The desktop-session check (P2 Decisions 18): no interactive session, a locked screen or a secure desktop throws a
+    /// <see cref="DesktopException"/> with the session text. Every input tool calls it inside the input lock first.
+    /// </summary>
+    void CheckSession();
+
     /// <summary>The label's element found again and gated (Decisions 1), then checked like <see cref="Point"/>.</summary>
     Task<ActionTarget> LabelAsync(long label, CancellationToken ct);
 
@@ -78,17 +84,19 @@ public sealed class ActionTargets : IActionTargets
     private readonly Func<ScreenRect> _virtualScreen;
     private readonly Func<int, bool> _higherIntegrity;
     private readonly HangBlockList _blocks;
+    private readonly Action _checkSession;
 
     public ActionTargets(DesktopMachine machine, DesktopStateStore store)
         : this(store, Locator(machine).LocateAsync, machine.Windows, machine.Displays.GetVirtualScreen, ProcessIntegrity.IsHigherThanCurrent,
-            machine.Blocks)
+            machine.Blocks, DesktopSession.ThrowIfUnavailable)
     {
     }
 
     /// <param name="locate">The label locator (preflight F18: no label argument; the real one never needs it).</param>
     /// <param name="blocks">The hang block list shared with Snapshot (P2 Decisions 2).</param>
+    /// <param name="checkSession">The desktop-session check (P2 Decisions 18), <see cref="DesktopSession.ThrowIfUnavailable"/>.</param>
     internal ActionTargets(DesktopStateStore store, Func<ElementIdentity, ScreenPoint, CancellationToken, Task<LocateResult>> locate,
-        IWindowSystem windows, Func<ScreenRect> virtualScreen, Func<int, bool> higherIntegrity, HangBlockList blocks)
+        IWindowSystem windows, Func<ScreenRect> virtualScreen, Func<int, bool> higherIntegrity, HangBlockList blocks, Action checkSession)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(locate);
@@ -96,13 +104,17 @@ public sealed class ActionTargets : IActionTargets
         ArgumentNullException.ThrowIfNull(virtualScreen);
         ArgumentNullException.ThrowIfNull(higherIntegrity);
         ArgumentNullException.ThrowIfNull(blocks);
+        ArgumentNullException.ThrowIfNull(checkSession);
         _store = store;
         _locate = locate;
         _windows = windows;
         _virtualScreen = virtualScreen;
         _higherIntegrity = higherIntegrity;
         _blocks = blocks;
+        _checkSession = checkSession;
     }
+
+    public void CheckSession() => _checkSession();
 
     private static UiaLabelLocator Locator(DesktopMachine machine)
     {

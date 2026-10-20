@@ -20,6 +20,8 @@ public sealed class ShortcutTool(Tool protocolTool, ToolServices services) : Spe
 
         using (await services.InputLock.EnterAsync(cancellationToken).ConfigureAwait(false))
         {
+            // The desktop-session check (P2 Decisions 18) before any target is resolved.
+            services.Targets.CheckSession();
             services.Targets.CheckForegroundInput();
             await services.Input.PressKeysAsync(tokens, InputTiming.ShortcutInterval, InputTiming.OperationWait, cancellationToken)
                 .ConfigureAwait(false);

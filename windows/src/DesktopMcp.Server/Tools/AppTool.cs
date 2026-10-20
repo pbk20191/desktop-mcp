@@ -42,6 +42,8 @@ public sealed class AppTool(Tool protocolTool, ToolServices services) : SpecTool
 
         using (await services.InputLock.EnterAsync(cancellationToken).ConfigureAwait(false))
         {
+            // The desktop-session check (P2 Decisions 18) before any target is resolved.
+            services.Targets.CheckSession();
             var result = mode switch
             {
                 "launch" => await services.Apps.LaunchAsync(name!, cancellationToken).ConfigureAwait(false),

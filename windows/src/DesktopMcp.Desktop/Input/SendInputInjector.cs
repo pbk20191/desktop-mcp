@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using DesktopMcp.Core.Input;
 using DesktopMcp.Desktop.Errors;
+using DesktopMcp.Desktop.Snapshots;
 using DesktopMcp.Desktop.Tree;
 using Windows.Win32;
 using Windows.Win32.UI.Input.KeyboardAndMouse;
@@ -20,9 +21,10 @@ public sealed class SendInputInjector : IInputInjector
     private readonly Func<bool> _selfElevated;
     private readonly Func<string?> _foregroundProcessName;
     private readonly Func<bool?> _foregroundHigherIntegrity;
+    private readonly Action _checkSession;
 
     public SendInputInjector() : this(NativeSend, MapVirtualKey, () => ProcessIntegrity.CurrentIsElevated, ForegroundProcessName,
-        ForegroundHigherIntegrity)
+        ForegroundHigherIntegrity, DesktopSession.ThrowIfUnavailable)
     {
     }
 
@@ -31,11 +33,22 @@ public sealed class SendInputInjector : IInputInjector
     {
     }
 
-    /// <param name="foregroundHigherIntegrity">Whether the foreground process outranks this one; null when unknown.</param>
     internal SendInputInjector(SendInputCall send, Func<ushort, ushort> mapVirtualKey, Func<bool> selfElevated,
         Func<string?> foregroundProcessName, Func<bool?> foregroundHigherIntegrity)
+        : this(send, mapVirtualKey, selfElevated, foregroundProcessName, foregroundHigherIntegrity, static () => { })
+    {
+    }
+
+    /// <param name="foregroundHigherIntegrity">Whether the foreground process outranks this one; null when unknown.</param>
+    /// <param name="checkSession">
+    /// The desktop-session check (P2 Decisions 18), made only after a short count: off the user's default desktop (the lock
+    /// screen, a UAC prompt) it throws the session text, so a blocked batch there is not reported as UIPI.
+    /// </param>
+    internal SendInputInjector(SendInputCall send, Func<ushort, ushort> mapVirtualKey, Func<bool> selfElevated,
+        Func<string?> foregroundProcessName, Func<bool?> foregroundHigherIntegrity, Action checkSession)
     {
         _foregroundHigherIntegrity = foregroundHigherIntegrity;
+        _checkSession = checkSession;
         _send = send;
         _mapVirtualKey = mapVirtualKey;
         _selfElevated = selfElevated;
@@ -50,6 +63,7 @@ public sealed class SendInputInjector : IInputInjector
 
         var inserted = _send(native, out var error);
         if (inserted == native.Length) return;
+        _checkSession();
         // Access denied without elevation is UIPI unless the foreground process is known not to outrank us (secure desktop).
         if (error == 5 && !_selfElevated() && _foregroundHigherIntegrity() != false)
             throw new InputBlockedException(InputBlockedException.ElevatedText(_foregroundProcessName()));

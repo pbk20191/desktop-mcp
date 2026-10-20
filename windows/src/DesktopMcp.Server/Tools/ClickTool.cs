@@ -24,6 +24,8 @@ public sealed class ClickTool(Tool protocolTool, ToolServices services) : SpecTo
 
         using (await services.InputLock.EnterAsync(cancellationToken).ConfigureAwait(false))
         {
+            // The desktop-session check (P2 Decisions 18) before any target is resolved.
+            services.Targets.CheckSession();
             var point = await services.Targets.ResolveAsync(label, loc, cancellationToken).ConfigureAwait(false);
             await services.Input.ClickAsync(point, ToButton(button), clicks, cancellationToken).ConfigureAwait(false);
             return ToolResults.Text(clicks switch

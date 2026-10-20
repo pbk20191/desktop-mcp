@@ -26,6 +26,8 @@ public sealed class ScrollTool(Tool protocolTool, ToolServices services) : SpecT
 
         using (await services.InputLock.EnterAsync(cancellationToken).ConfigureAwait(false))
         {
+            // The desktop-session check (P2 Decisions 18) before any target is resolved.
+            services.Targets.CheckSession();
             if (label is null && loc is null)
             {
                 // The wheel goes to the window under the cursor: it gets the same integrity check as a point (Decisions 8).

@@ -27,6 +27,8 @@ public sealed class MoveTool(Tool protocolTool, ToolServices services) : SpecToo
 
         using (await services.InputLock.EnterAsync(cancellationToken).ConfigureAwait(false))
         {
+            // The desktop-session check (P2 Decisions 18) before any target is resolved.
+            services.Targets.CheckSession();
             var to = await services.Targets.ResolveAsync(label, loc, cancellationToken).ConfigureAwait(false);
             if (!drag)
             {
