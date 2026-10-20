@@ -89,6 +89,128 @@ public class PhysicalInputFilterTests
     }
 
     [Fact]
+    public void ARepeatedBackspaceHeldBeforeTheModifiersDoesNotTakeOver()
+    {
+        var f = Filter();
+        f.SetSuppression(true, _now + 10_000_000);
+        Assert.Equal(HookVerdict.Swallow, f.OnKey(0x08, true, 0, 0)); // no chord yet
+        foreach (var vk in new uint[] { 0x11, 0x12, 0x10 }) f.OnKey(vk, true, 0, 0);
+        Assert.Equal(HookVerdict.Swallow, f.OnKey(0x08, true, 0, 0)); // auto-repeat: was already down
+        Assert.False(f.TakeoverPending);
+        Assert.Equal(0, _blocks);
+        Assert.DoesNotContain(Drain(f), e => e.Kind == PhysicalEventKind.Hotkey);
+    }
+
+    [Fact]
+    public void AChordWhileATakeoverIsPendingDoesNotFireAgain()
+    {
+        var f = TookOver();
+        foreach (var vk in new uint[] { 0x08, 0xA3, 0xA4, 0xA1 }) f.OnKey(vk, false, 0, 0);
+        f.SetSuppression(true, _now + 10_000_000);                     // takeover still pending
+        Drain(f);
+        foreach (var vk in new uint[] { 0x11, 0x12, 0x10, 0x08 }) f.OnKey(vk, true, 0, 0);
+        Assert.True(f.TakeoverPending);
+        Assert.Equal(1, _blocks);
+        Assert.DoesNotContain(Drain(f), e => e.Kind == PhysicalEventKind.Hotkey);
+    }
+
+    [Fact]
+    public void ADeadlineEqualToNowStillSwallows()
+    {
+        var f = Filter();
+        f.SetSuppression(true, _now);
+        Assert.Equal(HookVerdict.Swallow, f.OnKey(0x41, true, 0, 0));
+        Assert.False(f.FailOpenRequested);
+    }
+
+    [Fact]
+    public void AThrowingBlockLedgerStillSwallowsTheChordBackspace()
+    {
+        var f = new PhysicalInputFilter(() => _now, TimeSpan.TicksPerSecond, ForeignInjectedPolicy.Physical, () => throw new InvalidOperationException());
+        f.SetSuppression(true, _now + 10_000_000);
+        foreach (var vk in new uint[] { 0x11, 0x12, 0x10 }) f.OnKey(vk, true, 0, 0);
+        Assert.Equal(HookVerdict.Swallow, f.OnKey(0x08, true, 0, 0));
+        Assert.True(f.TakeoverPending);
+        Assert.Equal(PhysicalEventKind.Hotkey, Drain(f)[^1].Kind);
+    }
+
+    [Fact]
+    public void ADownForwardedAfterAnExceptionIsStillTrackedForDelivery()
+    {
+        var f = new PhysicalInputFilter(() => throw new InvalidOperationException(), TimeSpan.TicksPerSecond, ForeignInjectedPolicy.Physical, () => _blocks++);
+        Assert.Equal(HookVerdict.Pass, f.OnKey(0x41, true, 0, 0)); f.AfterKeyForwarded(0x41, true, 0);
+        Assert.True(f.KeyDelivered(0x41));
+        Assert.Equal(HookVerdict.Pass, f.OnMouse(0x201, 0, 0, 0, 0, 0)); f.AfterMouseForwarded(0x201, 0, 0);
+        Assert.True(f.ButtonDelivered(1));
+    }
+
+    // Deviation from upstream (controller ruling): an up inherits its down's verdict, so suppression never strands a
+    // key or button down in the user's apps.
+    [Fact]
+    public void ADeliveredDownsUpPassesDuringSuppression()
+    {
+        var f = Filter();
+        f.OnKey(0x41, true, 0, 0); f.AfterKeyForwarded(0x41, true, 0);
+        f.OnMouse(0x201, 0, 0, 0, 0, 0); f.AfterMouseForwarded(0x201, 0, 0);
+        f.SetSuppression(true, _now + 10_000_000);
+        Assert.Equal(HookVerdict.Swallow, f.OnKey(0x41, true, 0, 0)); // a repeat during suppression is swallowed
+        Assert.Equal(HookVerdict.Pass, f.OnKey(0x41, false, 0, 0));
+        f.AfterKeyForwarded(0x41, false, 0);
+        Assert.False(f.KeyDelivered(0x41));
+        Assert.Equal(HookVerdict.Pass, f.OnMouse(0x202, 0, 0, 0, 0, 0));
+        f.AfterMouseForwarded(0x202, 0, 0);
+        Assert.False(f.ButtonDelivered(1));
+        Assert.False(f.Held);
+        var events = Drain(f);                                         // the ups are still queued as input
+        Assert.Equal(3, events.Count(e => e.Kind == PhysicalEventKind.Key));
+        Assert.Equal(2, events.Count(e => e.Kind == PhysicalEventKind.Pointer));
+    }
+
+    [Fact]
+    public void ASwallowedDownsUpIsSwallowedAfterSuppressionEnds()
+    {
+        var f = Filter();
+        f.SetSuppression(true, _now + 10_000_000);
+        Assert.Equal(HookVerdict.Swallow, f.OnKey(0x41, true, 0, 0));
+        Assert.Equal(HookVerdict.Swallow, f.OnMouse(0x204, 0, 0, 0, 0, 0));
+        f.SetSuppression(false, 0);
+        Assert.Equal(HookVerdict.Swallow, f.OnKey(0x41, false, 0, 0));
+        Assert.Equal(HookVerdict.Swallow, f.OnMouse(0x205, 0, 0, 0, 0, 0));
+        Assert.False(f.Held);
+        Assert.Equal(HookVerdict.Pass, f.OnKey(0x41, true, 0, 0));    // the flag went with the up
+        Assert.Equal(HookVerdict.Pass, f.OnKey(0x41, false, 0, 0));
+    }
+
+    [Fact]
+    public void FailOpenPassesASwallowedDownsUpAndForgetsIt()
+    {
+        var f = Filter();
+        f.SetSuppression(true, _now + 1);
+        Assert.Equal(HookVerdict.Swallow, f.OnKey(0x41, true, 0, 0));
+        _now += 2;
+        Assert.Equal(HookVerdict.Pass, f.OnKey(0x41, false, 0, 0));   // lapsed deadline: fail-open passes everything
+        Assert.True(f.FailOpenRequested);
+        f.ClearFailOpen();
+        f.OnKey(0x41, true, 0, 0);
+        Assert.Equal(HookVerdict.Pass, f.OnKey(0x41, false, 0, 0));
+    }
+
+    [Fact]
+    public void TheMissedReleaseSampleForgetsSwallowedDowns()
+    {
+        var f = Filter();
+        f.SetSuppression(true, _now + 10_000_000);
+        f.OnKey(0x41, true, 0, 0);
+        f.OnMouse(0x201, 0, 0, 0, 0, 0);
+        f.SetSuppression(false, 0);
+        f.PublishState(ControlState.User, _now - 20 * TimeSpan.TicksPerSecond, 10);
+        for (var i = 0; i < 5; i++) { f.SampleMissedReleases(_ => 0); _now += TimeSpan.TicksPerSecond / 10; }
+        Assert.False(f.Held);
+        Assert.Equal(HookVerdict.Pass, f.OnKey(0x41, false, 0, 0));
+        Assert.Equal(HookVerdict.Pass, f.OnMouse(0x202, 0, 0, 0, 0, 0));
+    }
+
+    [Fact]
     public void WithoutSuppressionTheChordIsOrdinaryInput()
     {
         var f = Filter();

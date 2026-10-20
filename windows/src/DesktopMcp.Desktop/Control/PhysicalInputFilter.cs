@@ -49,9 +49,12 @@ internal static class RawMouse
 /// Everything the low-level hook and Raw Input callbacks decide, with no Win32 (<c>control_hooks.py</c>,
 /// <c>control_recovery.py</c>; Decisions 18, 24, 25, 29). The entry points and <see cref="SampleMissedReleases"/>
 /// run on the dispatcher thread, which alone writes the key and button arrays; the setters and the read-only members
-/// may be used from any thread. The hook path takes no lock, never blocks and catches every exception (a caught
-/// exception requests fail-open). It does no per-event allocation once the queue's buffer has grown (preflight F18):
-/// the bounded channel's deque grows on early writes, bounded by <c>queueCapacity</c>.
+/// may be used from any thread. The hook path takes none of our locks, never waits and catches every exception (a
+/// caught exception requests fail-open). Its one shared structure is the bounded channel: <c>TryWrite</c> holds the
+/// channel's short internal lock (never held across a wait or by our own code), and its deque grows on early writes,
+/// bounded by <c>queueCapacity</c>, so the hook does no per-event allocation once the queue has grown (preflight F18).
+/// Deviation from upstream (controller ruling): a key or button up inherits its down's verdict, so suppression never
+/// strands input down in the user's apps (see <see cref="UpVerdict"/>).
 /// </summary>
 internal sealed class PhysicalInputFilter
 {
@@ -77,8 +80,10 @@ internal sealed class PhysicalInputFilter
     private readonly bool[] _pressed = new bool[256];
     private readonly bool[] _delivered = new bool[256];
     private readonly bool[] _quarantine = new bool[256];
+    private readonly bool[] _keySwallowed = new bool[256];      // every down since the key went down was swallowed
     private readonly bool[] _buttonDown = new bool[6];
     private readonly bool[] _buttonDelivered = new bool[6];
+    private readonly bool[] _buttonSwallowed = new bool[6];
     private int _held;
     private long _pressVersion;
 
@@ -167,12 +172,10 @@ internal sealed class PhysicalInputFilter
 
             if (tracked && _quarantine[index])
             {
-                if (!down)
-                {
-                    Volatile.Write(ref _quarantine[index], false);
-                    Queue(PhysicalEventKind.Key, now); // idle starts after the last chord key is released
-                }
-                return HookVerdict.Swallow;
+                if (down) return HookVerdict.Swallow; // a repeat of a chord key
+                Volatile.Write(ref _quarantine[index], false);
+                Queue(PhysicalEventKind.Key, now); // idle starts after the last chord key is released
+                return Forwarded(UpVerdict(_keySwallowed, _delivered, index), index);
             }
 
             if (down && index == VirtualKeys.Backspace && !wasDown && !TakeoverPending && Suppressing && ChordHeld())
@@ -181,19 +184,33 @@ internal sealed class PhysicalInputFilter
                     if (_pressed[k] && ChordKey[k]) Volatile.Write(ref _quarantine[k], true);
                 Volatile.Write(ref _takeover, true);
                 Volatile.Write(ref _suppress, false); // release first, then tell the coordinator
-                _blockLedger();
+                _keySwallowed[index] = true;
+                try
+                {
+                    _blockLedger();
+                }
+                catch (Exception)
+                {
+                    // The chord still swallows its Backspace; the coordinator releases on the Hotkey.
+                }
                 Queue(PhysicalEventKind.Hotkey, now);
                 return HookVerdict.Swallow;
             }
 
             Queue(PhysicalEventKind.Key, now);
             var verdict = Decide();
-            if (tracked && verdict == HookVerdict.Pass) _pendingKey = index; // only a forwarded event can be delivered
-            return verdict;
+            if (!tracked) return verdict;
+            verdict = down ? DownVerdict(_keySwallowed, index, wasDown, verdict) : UpVerdict(_keySwallowed, _delivered, index);
+            return Forwarded(verdict, index);
         }
         catch (Exception)
         {
             RequestFailOpen();
+            if (vk < 256)
+            {
+                _keySwallowed[vk] = false;
+                _pendingKey = (int)vk; // forwarded: delivery is still tracked (control_hooks.py:97-104)
+            }
             return HookVerdict.Pass;
         }
     }
@@ -238,15 +255,23 @@ internal sealed class PhysicalInputFilter
             if (kind != PhysicalEventKind.ForeignMotion || dx != 0 || dy != 0) Volatile.Write(ref _lastPhysical, now);
 
             var (button, down) = Button(message, mouseData);
+            var wasDown = button != 0 && _buttonDown[button];
             if (button != 0) SetButton(button, down);
             Queue(kind, now, 0, dx, dy);
             var verdict = Decide();
+            if (button == 0) return verdict;
+            verdict = down
+                ? DownVerdict(_buttonSwallowed, button, wasDown, verdict)
+                : UpVerdict(_buttonSwallowed, _buttonDelivered, button);
             if (verdict == HookVerdict.Pass) _pendingButton = button;
             return verdict;
         }
         catch (Exception)
         {
             RequestFailOpen();
+            var button = Button(message, mouseData).Button;
+            _buttonSwallowed[button] = false;
+            _pendingButton = button; // forwarded: delivery is still tracked (control_hooks.py:43-50)
             return HookVerdict.Pass;
         }
     }
@@ -327,18 +352,48 @@ internal sealed class PhysicalInputFilter
             SetPressed(k, false);
             Volatile.Write(ref _delivered[k], false);
             Volatile.Write(ref _quarantine[k], false);
+            _keySwallowed[k] = false;
         }
         for (var b = 1; b < 6; b++)
         {
             if (!_buttonDown[b]) continue;
             SetButton(b, false);
             Volatile.Write(ref _buttonDelivered[b], false);
+            _buttonSwallowed[b] = false;
         }
         ResetSampler();
     }
 
     private bool ForeignCounts(nuint extraInfo) =>
         extraInfo != InputSignature.ExtraInfo && _foreign == ForeignInjectedPolicy.Physical;
+
+    // A down's verdict stands. The flag stays set only while every down since the first was swallowed, so a down the
+    // apps saw (say an auto-repeat passed before suppression began) always gets its up.
+    private static HookVerdict DownVerdict(bool[] swallowed, int index, bool wasDown, HookVerdict verdict)
+    {
+        swallowed[index] = (!wasDown || swallowed[index]) && verdict == HookVerdict.Swallow;
+        return verdict;
+    }
+
+    /// <summary>
+    /// An up inherits its down's verdict, whatever the suppression now. Deviation from upstream, which applies the
+    /// current suppression to ups too and can strand a passed down in the user's apps: an up whose down was swallowed
+    /// (and not delivered) is swallowed even after suppression ends; any other up passes, even while suppressing.
+    /// Fail-open passes everything. Called after <see cref="Decide"/>, so a lapsed deadline has already failed open.
+    /// The flag is cleared here, so it never outlives its up.
+    /// </summary>
+    private HookVerdict UpVerdict(bool[] swallowed, bool[] delivered, int index)
+    {
+        var swallow = swallowed[index] && !delivered[index] && !FailOpenRequested;
+        swallowed[index] = false;
+        return swallow ? HookVerdict.Swallow : HookVerdict.Pass;
+    }
+
+    private HookVerdict Forwarded(HookVerdict verdict, int index)
+    {
+        if (verdict == HookVerdict.Pass) _pendingKey = index; // only a forwarded event can be delivered
+        return verdict;
+    }
 
     private HookVerdict Decide()
     {
