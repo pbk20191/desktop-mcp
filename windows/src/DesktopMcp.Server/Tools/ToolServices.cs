@@ -36,6 +36,9 @@ public sealed record ToolServices
     public required IActionTargets Targets { get; init; }
     public required IForeground Foreground { get; init; }
 
+    /// <summary>Type's and MultiEdit's read-back of the focused element's value (P3 Decisions 4).</summary>
+    public required ITypeReadBack ReadBack { get; init; }
+
     /// <summary>
     /// Every key or button the input holds; the server releases it on shutdown (Decisions 19). It must be the ledger
     /// <see cref="Input"/> presses through, or the shutdown release misses what the input holds: replace both together.
@@ -65,6 +68,7 @@ public sealed record ToolServices
             Input = new DesktopInput(ledger, clipboard, NoCheckpoint.Instance),
             Targets = new ActionTargets(machine, snapshots.State),
             Foreground = new ForegroundService(),
+            ReadBack = new UiaTypeReadBack(machine),
             Ledger = ledger,
             InputLock = new DesktopInputLock(),
             Time = TimeProvider.System,

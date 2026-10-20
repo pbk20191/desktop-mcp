@@ -29,6 +29,8 @@ public static class ToolRegistry
         "Click" => new ClickTool(protocolTool, services),
         "Move" => new MoveTool(protocolTool, services),
         "Scroll" => new ScrollTool(protocolTool, services),
+        "Type" => new TypeTool(protocolTool, services),
+        "Shortcut" => new ShortcutTool(protocolTool, services),
         _ => new PendingTool(protocolTool),
     };
 }

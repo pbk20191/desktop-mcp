@@ -31,9 +31,13 @@ internal static class PointerTools
     }
 
     /// <summary>The label's checked point (Decisions 1, 22), else the checked <paramref name="loc"/> (Decisions 8, 15).</summary>
-    public static async Task<ScreenPoint> ResolveAsync(this IActionTargets targets, long? label, ScreenPoint? loc, CancellationToken ct)
+    public static async Task<ScreenPoint> ResolveAsync(this IActionTargets targets, long? label, ScreenPoint? loc, CancellationToken ct) =>
+        (await targets.ResolveTargetAsync(label, loc, ct).ConfigureAwait(false)).Point;
+
+    /// <summary><see cref="ResolveAsync"/> with the target's window, for the keyboard-target check.</summary>
+    public static async Task<ActionTarget> ResolveTargetAsync(this IActionTargets targets, long? label, ScreenPoint? loc, CancellationToken ct)
     {
-        if (label is { } value) return (await targets.LabelAsync(value, ct).ConfigureAwait(false)).Point;
-        return targets.Point(loc ?? throw new ArgumentException(EitherLocOrLabel)).Point;
+        if (label is { } value) return await targets.LabelAsync(value, ct).ConfigureAwait(false);
+        return targets.Point(loc ?? throw new ArgumentException(EitherLocOrLabel));
     }
 }

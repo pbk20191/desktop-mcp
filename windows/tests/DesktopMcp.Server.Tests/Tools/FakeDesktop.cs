@@ -1,6 +1,7 @@
 using DesktopMcp.Core.Input;
 using DesktopMcp.Core.Snapshots;
 using DesktopMcp.Desktop.Actions;
+using DesktopMcp.Desktop.Errors;
 using DesktopMcp.Desktop.Input;
 using DesktopMcp.Desktop.WindowControl;
 using DesktopMcp.Server.Tools;
@@ -36,6 +37,29 @@ internal sealed class FakeDesktop
     /// <summary>When set, <see cref="IActionTargets.Point"/> throws an <see cref="ArgumentException"/> with this text.</summary>
     public string? PointError { get; set; }
 
+    /// <summary>What the read-back returns (null: skipped or unreadable).</summary>
+    public string? ReadBack { get; set; }
+
+    /// <summary>When set, <see cref="IForeground.EnsureKeyboardTargetAsync"/> throws a <see cref="DesktopException"/> with this text.</summary>
+    public string? ForegroundFails { get; set; }
+
+    /// <summary>When set, <see cref="IActionTargets.CheckForegroundInput"/> throws a <see cref="DesktopException"/> with this text.</summary>
+    public string? ForegroundInputError { get; set; }
+
+    public int ReadBackCalls => Volatile.Read(ref _readBackCalls);
+
+    /// <summary>Each keyboard-target check as <c>window name</c>.</summary>
+    public IReadOnlyList<string> ForegroundChecks
+    {
+        get
+        {
+            lock (_foregroundChecks) return [.. _foregroundChecks];
+        }
+    }
+
+    private int _readBackCalls;
+    private readonly List<string> _foregroundChecks = [];
+
     public FakeInput Input { get; }
 
     public FakeTargets Targets { get; }
@@ -48,7 +72,8 @@ internal sealed class FakeDesktop
     {
         Input = Input,
         Targets = Targets,
-        Foreground = new FakeForeground(),
+        Foreground = new FakeForeground(this),
+        ReadBack = new FakeReadBack(this),
         Ledger = new InputLedger(),
         InputLock = new DesktopInputLock(),
     };
@@ -175,15 +200,34 @@ internal sealed class FakeDesktop
                 if (!desktop.Labels.ContainsKey(label)) throw new ArgumentException($"{wrapper}: {LabelErrors.OutOfRange(label)}");
         }
 
+        public int ForegroundInputChecks => Volatile.Read(ref _foregroundInputChecks);
+
+        private int _foregroundInputChecks;
+
         public void CheckForegroundInput()
         {
+            Interlocked.Increment(ref _foregroundInputChecks);
+            if (desktop.ForegroundInputError is { } error) throw new DesktopException(error);
         }
     }
 
-    internal sealed class FakeForeground : IForeground
+    internal sealed class FakeForeground(FakeDesktop desktop) : IForeground
     {
         public Task<ForegroundResult> SwitchToAsync(long window, CancellationToken ct) => Task.FromResult(new ForegroundResult(true, false));
 
-        public Task EnsureKeyboardTargetAsync(long window, string windowName, CancellationToken ct) => Task.CompletedTask;
+        public Task EnsureKeyboardTargetAsync(long window, string windowName, CancellationToken ct)
+        {
+            lock (desktop._foregroundChecks) desktop._foregroundChecks.Add($"{window} {windowName}");
+            return desktop.ForegroundFails is { } error ? Task.FromException(new DesktopException(error)) : Task.CompletedTask;
+        }
+    }
+
+    internal sealed class FakeReadBack(FakeDesktop desktop) : ITypeReadBack
+    {
+        public Task<string?> ReadFocusedValueAsync(CancellationToken ct)
+        {
+            Interlocked.Increment(ref desktop._readBackCalls);
+            return Task.FromResult(desktop.ReadBack);
+        }
     }
 }
