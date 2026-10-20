@@ -11,6 +11,16 @@ public interface IDesktopDispatcher : IAsyncDisposable
     int ManagedThreadId { get; }
     Task InvokeAsync(Action action);
     Task<T> InvokeAsync<T>(Func<T> func);
-    /// <summary>Starts a repeating timer whose ticks run on the dispatcher thread. Dispose to stop.</summary>
+    /// <summary>
+    /// Runs <paramref name="func"/> on the dispatcher thread with the dispatcher's <see cref="SynchronizationContext"/>, so
+    /// every <c>await</c> inside it resumes on the dispatcher. The returned task completes when <paramref name="func"/>'s does.
+    /// </summary>
+    Task InvokeAsync(Func<Task> func);
+    /// <summary>
+    /// Starts a repeating timer whose ticks run on the dispatcher thread. Dispose to stop. An exception thrown by a tick is
+    /// raised through <see cref="UnhandledException"/> and the timer keeps running.
+    /// </summary>
     Task<IDisposable> StartTimerAsync(TimeSpan interval, Action tick);
+    /// <summary>Raised on the dispatcher thread for an exception thrown by a timer tick.</summary>
+    event Action<Exception>? UnhandledException;
 }

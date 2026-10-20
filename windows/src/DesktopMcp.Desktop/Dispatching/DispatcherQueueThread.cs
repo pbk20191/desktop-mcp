@@ -41,8 +41,15 @@ public sealed class DispatcherQueueThread : IDesktopDispatcher
         {
             throw ComErrors.Translate("Starting the dispatcher thread", e);
         }
+        var queue = controller.DispatcherQueue;
+        var context = new DispatcherQueueSynchronizationContext(work => queue.TryEnqueue(() => work()), () => queue.HasThreadAccess);
+        // The first work item installs the context, so every later work item and timer tick on the thread runs with it.
         var threadId = WaitForThreadId(
-            work => controller.DispatcherQueue.TryEnqueue(() => work()),
+            work => queue.TryEnqueue(() =>
+            {
+                SynchronizationContext.SetSynchronizationContext(context);
+                work();
+            }),
             () => controller.ShutdownQueueAsync().AsTask(),
             StartTimeout);
         return new DispatcherQueueThread(controller, threadId);
@@ -50,15 +57,23 @@ public sealed class DispatcherQueueThread : IDesktopDispatcher
 
     /// <summary>
     /// Runs one work item on the new thread to learn its id. When the queue rejects it or it does not run in time, the
-    /// queue is shut down (so the controller and its thread are not leaked) and a <see cref="DesktopException"/> is thrown.
+    /// queue is shut down (so the controller and its thread are not leaked) and a <see cref="DesktopException"/> is thrown;
+    /// an enqueue that throws counts as a rejection.
     /// </summary>
     internal static int WaitForThreadId(Func<Action, bool> tryEnqueue, Func<Task> shutdown, TimeSpan timeout)
     {
         var threadId = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
         string? failure = null;
-        if (!tryEnqueue(() => threadId.TrySetResult(Environment.CurrentManagedThreadId)))
-            failure = "The new DispatcherQueue rejected work.";
-        else if (!threadId.Task.Wait(timeout))
+        try
+        {
+            if (!tryEnqueue(() => threadId.TrySetResult(Environment.CurrentManagedThreadId)))
+                failure = "The new DispatcherQueue rejected work.";
+        }
+        catch (Exception e)
+        {
+            failure = $"The new DispatcherQueue rejected work: {e.Message}";
+        }
+        if (failure is null && !threadId.Task.Wait(timeout))
             failure = $"The dispatcher thread did not start within {timeout.TotalSeconds:0.#} s.";
         if (failure is null) return threadId.Task.Result;
         // Best effort: the queue may already be unusable, and the shutdown (which can fail synchronously or as a faulted
@@ -87,12 +102,16 @@ public sealed class DispatcherQueueThread : IDesktopDispatcher
         return completion.Task;
     }
 
+    public Task InvokeAsync(Func<Task> func) => InvokeAsync<Task>(func).Unwrap();
+
+    public event Action<Exception>? UnhandledException;
+
     public Task<IDisposable> StartTimerAsync(TimeSpan interval, Action tick) => InvokeAsync<IDisposable>(() =>
     {
         var timer = _queue.CreateTimer();
         timer.Interval = interval;
         timer.IsRepeating = true;
-        timer.Tick += (_, _) => tick();
+        timer.Tick += (_, _) => TimerTicks.Guard(tick, e => UnhandledException?.Invoke(e));
         timer.Start();
         return new TimerHandle(this, timer);
     });
@@ -110,6 +129,10 @@ public sealed class DispatcherQueueThread : IDesktopDispatcher
 
     private sealed class TimerHandle(DispatcherQueueThread owner, DispatcherQueueTimer timer) : IDisposable
     {
+        /// <summary>
+        /// Stops the timer. On the dispatcher thread no tick runs after this returns; from another thread the stop is
+        /// enqueued, so one more tick may run before it.
+        /// </summary>
         public void Dispose()
         {
             if (owner.HasThreadAccess) { timer.Stop(); return; }

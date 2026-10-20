@@ -45,6 +45,39 @@ public class DispatcherQueueThreadTests
     }
 
     [Fact]
+    public async Task AwaitInsideInvokeAsyncResumesOnTheDispatcher()
+    {
+        await using var dispatcher = DispatcherQueueThread.Start();
+        var observed = new List<bool>();
+        await dispatcher.InvokeAsync(async () =>
+        {
+            await Task.Delay(10);
+            observed.Add(dispatcher.HasThreadAccess);
+            await Task.Delay(10);
+            observed.Add(dispatcher.HasThreadAccess);
+        }).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal([true, true], observed);
+    }
+
+    [Fact]
+    public async Task AThrowingTickIsReportedAndTheTimerKeepsTicking()
+    {
+        await using var dispatcher = DispatcherQueueThread.Start();
+        var ticks = 0;
+        var reported = new List<(string Message, bool OnDispatcher)>();
+        dispatcher.UnhandledException += e => { lock (reported) reported.Add((e.Message, dispatcher.HasThreadAccess)); };
+        using (await dispatcher.StartTimerAsync(TimeSpan.FromMilliseconds(20), () =>
+        {
+            if (Interlocked.Increment(ref ticks) == 1) throw new InvalidOperationException("first tick");
+        }))
+        {
+            await Task.Delay(300);
+        }
+        lock (reported) Assert.Equal([("first tick", true)], reported);
+        Assert.True(Volatile.Read(ref ticks) >= 3, $"only {Volatile.Read(ref ticks)} ticks");
+    }
+
+    [Fact]
     public async Task DisposeResumesOffTheDispatcherThread()
     {
         // Task.Run: no synchronization context (xUnit's would move the continuation off the dispatcher thread whatever
