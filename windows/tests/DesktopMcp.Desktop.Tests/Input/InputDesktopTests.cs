@@ -16,18 +16,26 @@ namespace DesktopMcp.Desktop.Tests.Input;
 public partial class InputDesktopTests
 {
     private static DesktopInput Guarded(nint window, IClipboard? clipboard = null) =>
-        new(new InputLedger(), clipboard ?? new SystemClipboard(), NoCheckpoint.Instance, new GuardedInjector(new SendInputInjector(), window));
+        new DesktopInput(new InputLedger(), clipboard ?? new SystemClipboard(), NoCheckpoint.Instance, new GuardedInjector(new SendInputInjector(), window));
+
+    /// <summary>
+    /// MoveAsync walks from wherever the user left the cursor, and the guard refuses any step off the test window, so the
+    /// cursor first jumps onto the window in one guarded event (a hover: Click with no clicks).
+    /// </summary>
+    private static Task HoverAsync(DesktopInput input, nint window) =>
+        input.ClickAsync(TestForeground.ClientRect(window).Center, MouseButton.Left, 0, default);
 
     [Fact]
     public async Task InjectedMouseEventsCarryTheSignature()
     {
         using var target = new ActiveTestWindow();
         var input = Guarded(target.Handle);
-        var centre = TestForeground.ClientRect(target.Handle).Center;
+        var client = TestForeground.ClientRect(target.Handle);
+        await HoverAsync(input, target.Handle);
         IReadOnlyList<nuint> recorded;
         using (var hook = new MouseHookRecorder())
         {
-            await input.MoveAsync(centre, default);
+            await input.MoveAsync(new(client.Left + 10, client.Top + 10), default);
             await Task.Delay(200); // let the hook thread see the last event
             recorded = hook.InjectedExtraInfo;
         }
@@ -56,10 +64,27 @@ public partial class InputDesktopTests
         Assert.Equal("héllo \U0001F600", target.Window.ReadEditText());
 
         const string Long = "abcdefghijklmnopqrstuvwxy"; // 25 characters: the paste path
-        var before = await clipboard.GetTextAsync(default);
-        await input.TypeAsync(edit, Long, CaretPosition.Idle, clear: true, pressEnter: false, null, default);
-        Assert.Equal(Long, target.Window.ReadEditText());
-        Assert.Equal(before, await clipboard.GetTextAsync(default));
+        const string Seed = "desktop-mcp clipboard seed";
+        var users = await clipboard.GetTextAsync(default);
+        try
+        {
+            await clipboard.SetTextAsync(Seed, default);
+            await input.TypeAsync(edit, Long, CaretPosition.Idle, clear: true, pressEnter: false, null, default);
+            Assert.Equal(Long, target.Window.ReadEditText());
+            Assert.Equal(Seed, await clipboard.GetTextAsync(default));
+        }
+        finally
+        {
+            // Best effort: give the user back their clipboard text (a non-text clipboard cannot be saved this way).
+            try
+            {
+                if (users is not null) await clipboard.SetTextAsync(users, default);
+            }
+            catch (Exception)
+            {
+                // the assertion above is what this test reports
+            }
+        }
     }
 
     [Fact]
@@ -79,6 +104,7 @@ public partial class InputDesktopTests
         using var target = new ActiveTestWindow();
         var input = Guarded(target.Handle);
         var client = TestForeground.ClientRect(target.Handle);
+        await HoverAsync(input, target.Handle);
         ScreenPoint[] corners =
         [
             new(client.Left + 2, client.Top + 2), new(client.Right - 3, client.Top + 2),

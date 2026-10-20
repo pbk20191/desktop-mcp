@@ -195,6 +195,7 @@ public sealed class DesktopInput : IDesktopInput
         _ledger.Press(MouseLeft,
             () => Send([Mouse(MouseFlags.AbsoluteMove, start), Mouse(MouseFlags.AbsoluteMove | MouseFlags.LeftDown, start)]),
             () => SendMouse(MouseFlags.AbsoluteMove | MouseFlags.LeftUp, _cursor()));
+        Exception? primary = null;
         try
         {
             await WaitAsync(InputTiming.DragButtonWait, ct).ConfigureAwait(false);
@@ -203,9 +204,14 @@ public sealed class DesktopInput : IDesktopInput
             foreach (var point in points)
                 await StepAsync(() => SendMouse(MouseFlags.AbsoluteMove, point), interval, ct).ConfigureAwait(false);
         }
+        catch (Exception e)
+        {
+            primary = e;
+            throw;
+        }
         finally
         {
-            await ReleaseAsync(MouseLeft, InputTiming.DragButtonWait).ConfigureAwait(false);
+            await ReleaseAsync([MouseLeft], InputTiming.DragButtonWait, primary).ConfigureAwait(false);
         }
         return new DragResult(start, duration);
     }
@@ -249,14 +255,20 @@ public sealed class DesktopInput : IDesktopInput
 
         ct.ThrowIfCancellationRequested();
         _ledger.Press(KeyShift, () => SendKey(KeyTables.VkShift, false), () => SendKey(KeyTables.VkShift, true));
+        Exception? primary = null;
         try
         {
             await WaitAsync(InputTiming.KeyHoldWait, ct).ConfigureAwait(false);
             await WheelAsync(delta, wheelTimes, ct).ConfigureAwait(false);
         }
+        catch (Exception e)
+        {
+            primary = e;
+            throw;
+        }
         finally
         {
-            await ReleaseAsync(KeyShift, InputTiming.KeyHoldWait).ConfigureAwait(false);
+            await ReleaseAsync([KeyShift], InputTiming.KeyHoldWait, primary).ConfigureAwait(false);
         }
         return null;
     }
@@ -268,6 +280,7 @@ public sealed class DesktopInput : IDesktopInput
     public async Task PressKeysAsync(IReadOnlyList<KeyToken> tokens, TimeSpan interval, TimeSpan waitTime, CancellationToken ct)
     {
         var held = new List<string>();
+        Exception? primary = null;
         try
         {
             foreach (var step in SendKeysPlan.Build(tokens, interval, waitTime))
@@ -301,9 +314,15 @@ public sealed class DesktopInput : IDesktopInput
                 await WaitAsync(step.PauseAfter, ct).ConfigureAwait(false);
             }
         }
+        catch (Exception e)
+        {
+            primary = e;
+            throw;
+        }
         finally
         {
-            for (var i = held.Count - 1; i >= 0; i--) await ReleaseAsync(held[i], SendKeysPlan.HotkeyInterval).ConfigureAwait(false);
+            held.Reverse();
+            await ReleaseAsync(held, SendKeysPlan.HotkeyInterval, primary).ConfigureAwait(false);
         }
     }
 
@@ -352,6 +371,7 @@ public sealed class DesktopInput : IDesktopInput
         _checkpoint.Checkpoint();
         var points = new List<ScreenPoint>();
         var holding = false;
+        Exception? primary = null;
         try
         {
             if (pressCtrl)
@@ -371,9 +391,14 @@ public sealed class DesktopInput : IDesktopInput
                 await WaitAsync(InputTiming.MultiSelectSettle, ct).ConfigureAwait(false);
             }
         }
+        catch (Exception e)
+        {
+            primary = e;
+            throw;
+        }
         finally
         {
-            if (holding) await ReleaseAsync(KeyCtrl, InputTiming.KeyHoldWait).ConfigureAwait(false);
+            if (holding) await ReleaseAsync([KeyCtrl], InputTiming.KeyHoldWait, primary).ConfigureAwait(false);
         }
         return points;
     }
@@ -389,7 +414,6 @@ public sealed class DesktopInput : IDesktopInput
             _checkpoint.Checkpoint();
             ct.ThrowIfCancellationRequested();
             SendMouse(MouseFlags.AbsoluteMove, point);
-            _checkpoint.RecordStep();
             return;
         }
 
@@ -410,13 +434,19 @@ public sealed class DesktopInput : IDesktopInput
                 await WaitAsync(InputTiming.PressAfterMove, ct).ConfigureAwait(false);
             }
             _ledger.Press(name, () => SendMouse(MouseFlags.AbsoluteMove | down, point), () => SendMouse(MouseFlags.AbsoluteMove | up, point));
+            Exception? primary = null;
             try
             {
                 await WaitAsync(InputTiming.ButtonHold, ct).ConfigureAwait(false);
             }
+            catch (Exception e)
+            {
+                primary = e;
+                throw;
+            }
             finally
             {
-                _ledger.Release(name);
+                await ReleaseAsync([name], TimeSpan.Zero, primary).ConfigureAwait(false);
             }
             _checkpoint.RecordStep();
             await WaitAsync(i < clicks - 1 ? between : lastWait, ct).ConfigureAwait(false);
@@ -478,10 +508,27 @@ public sealed class DesktopInput : IDesktopInput
         }
     }
 
-    private async Task ReleaseAsync(string name, TimeSpan wait)
+    /// <summary>
+    /// Releases every name in order, each followed by its wait (never cancelled). One failed release does not stop the
+    /// rest; the error that ended the held section stays primary, else the first release error is thrown (as
+    /// <see cref="InputLedger.ReleaseAll"/>).
+    /// </summary>
+    private async Task ReleaseAsync(IReadOnlyList<string> names, TimeSpan wait, Exception? primary)
     {
-        _ledger.Release(name);
-        await WaitAsync(wait, CancellationToken.None).ConfigureAwait(false);
+        Exception? first = null;
+        foreach (var name in names)
+        {
+            try
+            {
+                _ledger.Release(name);
+            }
+            catch (Exception e)
+            {
+                first ??= e;
+            }
+            await WaitAsync(wait, CancellationToken.None).ConfigureAwait(false);
+        }
+        if (primary is null && first is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(first).Throw();
     }
 
     private Task WaitAsync(TimeSpan wait, CancellationToken ct) => wait > TimeSpan.Zero ? _delay(wait, ct) : Task.CompletedTask;
