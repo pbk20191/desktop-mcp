@@ -13,6 +13,17 @@ public static class ToolResults
             new Dictionary<string, string> { ["result"] = text }, ToolJsonContext.Default.DictionaryStringString),
     };
 
+    /// <summary>
+    /// A result for a tool without an outputSchema (Snapshot, Screenshot; spec §4): the text, then the PNG when there is
+    /// one, and no structuredContent.
+    /// </summary>
+    public static CallToolResult Content(string text, byte[]? png) => new()
+    {
+        Content = png is null
+            ? [new TextContentBlock { Text = text }]
+            : [new TextContentBlock { Text = text }, ImageContentBlock.FromBytes(png, "image/png")],
+    };
+
     /// <summary>A JSON result (spec §4): the JSON as text, plus structuredContent {"result": json}.</summary>
     public static CallToolResult Json(string json)
     {

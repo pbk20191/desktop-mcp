@@ -24,6 +24,8 @@ public static class ToolRegistry
         "Notification" => new NotificationTool(protocolTool, services.Toasts),
         "Scrape" => new ScrapeTool(protocolTool, services.Scrape),
         "DisplayInventory" => new DisplayInventoryTool(protocolTool, services.Displays),
+        "Snapshot" => new SnapshotTool(protocolTool, services.Snapshots),
+        "Screenshot" => new ScreenshotTool(protocolTool, services.Snapshots),
         _ => new PendingTool(protocolTool),
     };
 }
