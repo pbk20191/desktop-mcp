@@ -2,6 +2,7 @@ using DesktopMcp.Core;
 using DesktopMcp.Core.Config;
 using DesktopMcp.Core.PowerShell;
 using DesktopMcp.Desktop;
+using DesktopMcp.Desktop.Control;
 using DesktopMcp.Server.Control;
 using DesktopMcp.Server.Tools;
 using Microsoft.Extensions.DependencyInjection;
@@ -49,6 +50,11 @@ public static class StdioServer
         // running before the first request and stops after the last one.
         builder.Services.AddSingleton<IHostedService>(provider => new ControlHostedService(services.Control,
             provider.GetRequiredService<ILoggerFactory>().CreateLogger("desktop-mcp"), services.Dispatcher));
+        // stdio has one session for the process's life: it is never forgotten for being idle (spec §7, Decisions 22).
+        var sessions = new SessionRegistry(services.Time, ttl: null);
+        // After the control and before the MCP server: the notifier starts after the control and is closed before it.
+        builder.Services.AddSingleton<IHostedService>(provider => new ControlNotifierHostedService(services.Control, sessions,
+            provider.GetRequiredService<ILoggerFactory>().CreateLogger("desktop-mcp")));
         var server = builder.Services.AddMcpServer(options =>
         {
             options.ServerInfo = new() { Name = ServerText.Name, Version = ServerText.Version };
@@ -59,7 +65,7 @@ public static class StdioServer
         addTransport(server);
         server.WithTools(tools);
         var gate = new ControlGate(services.Control, services.Time);
-        server.WithRequestFilters(filters => filters.AddCallToolFilter(ControlGateFilter.Create(gate, static _ => { })));
+        server.WithRequestFilters(filters => filters.AddCallToolFilter(ControlGateFilter.Create(gate, session => sessions.Remember(session, new McpServerSession(session)))));
 
         using var host = builder.Build();
         var logger = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("desktop-mcp");
@@ -96,6 +102,38 @@ public static class StdioServer
             ReleaseHeldInput();
         }
         return 0;
+    }
+}
+
+/// <summary>The <see cref="ControlNotifier"/> with the host: started after the control, closed before it.</summary>
+internal sealed class ControlNotifierHostedService(IDesktopControl control, SessionRegistry sessions, ILogger log) : IHostedService
+{
+    private readonly ControlNotifier _notifier = new(control, sessions, log);
+
+    public Task StartAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            _notifier.Start();
+        }
+        catch (Exception e)
+        {
+            // Notifications are best effort; the tools keep serving without them.
+            log.LogError(e, "Control notifications failed to start: {Message}", e.Message);
+        }
+        return Task.CompletedTask;
+    }
+
+    public async Task StopAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _notifier.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception e)
+        {
+            log.LogError(e, "Control notifications failed to stop: {Message}", e.Message);
+        }
     }
 }
 

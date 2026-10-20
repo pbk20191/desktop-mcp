@@ -121,13 +121,14 @@ public static class ControlErrors
 /// <summary>
 /// Control turned off (<c>--no-control</c>): state <c>disabled</c>, generation 0. Calls get a lease with token 0 whose
 /// checkpoints do nothing, the ledger is always enabled and has no physical-key predicate, and start and stop touch
-/// nothing (no hook, no window, no Windows App SDK).
+/// nothing (no hook, no window, no Windows App SDK). Its <see cref="Settings"/> always say <c>Enabled = false</c>, whatever
+/// it was built with, so whoever reads them takes the disabled path.
 /// </summary>
 public sealed class DisabledControl(ControlSettings settings) : IDesktopControl
 {
     private readonly ControlStatus _status = new(ControlState.Disabled, 0, 0, false, settings.Policy, settings.IdleTimeoutSeconds);
 
-    public ControlSettings Settings { get; } = settings;
+    public ControlSettings Settings { get; } = settings with { Enabled = false };
 
     public InputLedger Ledger { get; } = new();
 

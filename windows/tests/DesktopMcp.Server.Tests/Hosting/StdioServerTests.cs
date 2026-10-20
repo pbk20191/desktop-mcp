@@ -1,9 +1,11 @@
 using System.IO.Pipelines;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using DesktopMcp.Core.Config;
 using DesktopMcp.Core.Control;
 using DesktopMcp.Desktop.Dispatching;
 using DesktopMcp.Desktop.Input;
+using DesktopMcp.Server.Control;
 using DesktopMcp.Server.Hosting;
 using DesktopMcp.Server.Tools;
 using Microsoft.Extensions.DependencyInjection;
@@ -101,6 +103,30 @@ public sealed class StdioServerTests
             else
                 Assert.Equal("{}", (await setLevel).Result?.ToJsonString());
         }, new McpClientOptions { ProtocolVersion = protocolVersion });
+    }
+
+    [Fact]
+    public async Task TheClientReceivesUserControlNotifications()
+    {
+        var control = new FakeControl();
+        await ServeAsync(ToolServices.CreateDefault() with { Control = control }, async (client, ct) =>
+        {
+            var received = new TaskCompletionSource<JsonNode?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            await using var registration = client.RegisterNotificationHandler(McpLogging.MessageMethod, (notification, _) =>
+            {
+                received.TrySetResult(notification.Params?.DeepClone());
+                return ValueTask.CompletedTask;
+            });
+            // The call makes the gate filter remember the session.
+            var wait = await client.CallToolAsync("Wait", new Dictionary<string, object?> { ["duration"] = 0 }, cancellationToken: ct);
+            Assert.False(wait.IsError ?? false);
+            control.RaiseStateChanged(new(ControlState.User, 2, 10, true, "relaxed", 10));
+            var message = await received.Task.WaitAsync(TimeSpan.FromSeconds(5), ct);
+            Assert.Equal("notice", message?["level"]?.GetValue<string>());
+            Assert.Equal("desktop-mcp.control", message?["logger"]?.GetValue<string>());
+            Assert.Equal("USER_CONTROL", message?["data"]?["event"]?.GetValue<string>());
+            Assert.Equal("user", message?["data"]?["status"]?["state"]?.GetValue<string>());
+        });
     }
 
     [Fact]

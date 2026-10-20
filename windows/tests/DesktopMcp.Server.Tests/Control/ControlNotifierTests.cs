@@ -1,0 +1,201 @@
+using DesktopMcp.Core.Control;
+using DesktopMcp.Server.Control;
+using Microsoft.Extensions.Logging;
+
+namespace DesktopMcp.Server.Tests;
+
+public class ControlNotifierTests
+{
+    [Theory]
+    [InlineData(ControlState.Ready, ControlState.User, "USER_CONTROL")]
+    [InlineData(ControlState.Ai, ControlState.User, "USER_CONTROL")]
+    [InlineData(ControlState.User, ControlState.Ready, "AI_CONTROL_AVAILABLE")]
+    [InlineData(ControlState.Ai, ControlState.Ready, null)]
+    [InlineData(ControlState.Ready, ControlState.Ai, null)]
+    [InlineData(ControlState.Ai, ControlState.Unavailable, null)]
+    [InlineData(ControlState.Unavailable, ControlState.User, null)]
+    public void UpstreamsEvents(ControlState previous, ControlState current, string? expected) =>
+        Assert.Equal(expected, ControlNotifier.EventFor(previous, current));
+
+    [Fact]
+    public async Task ATakeoverReachesEveryLiveSessionWithUpstreamsShape()
+    {
+        var rig = new NotifierRig(ttl: null);
+        var a = rig.Session("a"); var b = rig.Session("b");
+        rig.Control.RaiseStateChanged(new(ControlState.Ai, 2, 0, true, "relaxed", 10));
+        rig.Control.RaiseStateChanged(new(ControlState.User, 3, 10, true, "relaxed", 10));
+        await rig.Drained();
+        var message = Assert.Single(a.Sent);
+        Assert.Equal(("notice", "desktop-mcp.control"), (message.Level, message.Logger));
+        Assert.Equal("""{"event":"USER_CONTROL","status":{"state":"user","generation":3,"wait_seconds":10.0,"enabled":true,"policy":"relaxed","idle_timeout_seconds":10.0}}""",
+            message.Data.GetRawText());
+        Assert.Single(b.Sent);
+    }
+
+    [Fact]
+    public async Task TheReturnIsAnnouncedAsAiControlAvailable()
+    {
+        var rig = new NotifierRig(ttl: null);
+        var a = rig.Session("a");
+        rig.Control.RaiseStateChanged(new(ControlState.User, 2, 10, true, "relaxed", 10));
+        rig.Control.RaiseStateChanged(new(ControlState.Ready, 3, 0, true, "relaxed", 10));
+        await rig.Drained();
+        Assert.Equal(["USER_CONTROL", "AI_CONTROL_AVAILABLE"], a.Sent.Select(m => m.Data.GetProperty("event").GetString()));
+    }
+
+    [Fact]
+    public async Task OlderGenerationsAreDropped()
+    {
+        var rig = new NotifierRig(ttl: null);
+        var a = rig.Session("a");
+        rig.Control.RaiseStateChanged(new(ControlState.User, 5, 10, true, "relaxed", 10));
+        rig.Control.RaiseStateChanged(new(ControlState.Ready, 4, 0, true, "relaxed", 10));
+        await rig.Drained();
+        Assert.Single(a.Sent);
+    }
+
+    [Fact]
+    public async Task AFailedSendForgetsTheSession()
+    {
+        var rig = new NotifierRig(ttl: null);
+        rig.Session("a", fail: true);
+        rig.Control.RaiseStateChanged(new(ControlState.User, 2, 10, true, "relaxed", 10));
+        await rig.Drained();
+        Assert.Empty(rig.Sessions.Live());
+        Assert.Contains(rig.Log.Entries, entry => entry.Level == LogLevel.Debug);
+    }
+
+    [Fact]
+    public async Task ExpiredAndStatelessSessionsGetNothing()
+    {
+        var rig = new NotifierRig(ttl: TimeSpan.FromSeconds(60));
+        var a = rig.Session("a");
+        rig.Advance(61);
+        rig.Control.RaiseStateChanged(new(ControlState.User, 2, 10, true, "relaxed", 10));
+        await rig.Drained();
+        Assert.Empty(a.Sent);
+        var stateless = new SessionRegistry(TimeProvider.System, TimeSpan.Zero);
+        stateless.Remember("s", new RecordingSession());
+        Assert.Empty(stateless.Live());
+    }
+
+    [Fact]
+    public void RememberingRefreshesTheLastSeenTime()
+    {
+        var time = new ManualTime();
+        var sessions = new SessionRegistry(time, TimeSpan.FromSeconds(60));
+        var first = new RecordingSession();
+        sessions.Remember("a", first);
+        time.Advance(TimeSpan.FromSeconds(50));
+        var second = new RecordingSession();
+        sessions.Remember("a", second);
+        time.Advance(TimeSpan.FromSeconds(50));
+        var live = Assert.Single(sessions.Live());
+        Assert.Equal("a", live.Key);
+        Assert.Same(second, live.Session);
+        sessions.Forget("a");
+        Assert.Empty(sessions.Live());
+    }
+
+    [Fact]
+    public async Task NothingIsSentAfterDisposal()
+    {
+        var rig = new NotifierRig(ttl: null);
+        var a = rig.Session("a");
+        await rig.Drained();
+        rig.Control.RaiseStateChanged(new(ControlState.User, 2, 10, true, "relaxed", 10));
+        Assert.Empty(a.Sent);
+    }
+}
+
+internal sealed class NotifierRig
+{
+    private readonly ManualTime _time = new();
+
+    public NotifierRig(TimeSpan? ttl)
+    {
+        Sessions = new SessionRegistry(_time, ttl);
+        Notifier = new ControlNotifier(Control, Sessions, Log);
+        Notifier.Start();
+    }
+
+    public FakeControl Control { get; } = new();
+
+    public SessionRegistry Sessions { get; }
+
+    public RecordingLogger Log { get; } = new();
+
+    public ControlNotifier Notifier { get; }
+
+    public RecordingSession Session(string key, bool fail = false)
+    {
+        var session = new RecordingSession { Fail = fail };
+        Sessions.Remember(key, session);
+        return session;
+    }
+
+    public void Advance(double seconds) => _time.Advance(TimeSpan.FromSeconds(seconds));
+
+    /// <summary>Handles everything raised so far and waits for the sends (disposal drains the queue).</summary>
+    public Task Drained() => Notifier.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+}
+
+internal sealed class RecordingSession : IControlSession
+{
+    private readonly Lock _lock = new();
+    private readonly List<ControlLogMessage> _sent = [];
+
+    public bool Fail { get; init; }
+
+    public IReadOnlyList<ControlLogMessage> Sent
+    {
+        get
+        {
+            lock (_lock) return [.. _sent];
+        }
+    }
+
+    public ValueTask NotifyAsync(ControlLogMessage message, CancellationToken ct)
+    {
+        if (Fail) throw new IOException("The client went away.");
+        lock (_lock) _sent.Add(message);
+        return ValueTask.CompletedTask;
+    }
+}
+
+internal sealed class RecordingLogger : ILogger
+{
+    private readonly Lock _lock = new();
+    private readonly List<(LogLevel Level, string Message)> _entries = [];
+
+    public IReadOnlyList<(LogLevel Level, string Message)> Entries
+    {
+        get
+        {
+            lock (_lock) return [.. _entries];
+        }
+    }
+
+    public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+    public bool IsEnabled(LogLevel logLevel) => true;
+
+    public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+    {
+        lock (_lock) _entries.Add((logLevel, formatter(state, exception)));
+    }
+}
+
+/// <summary>A clock that moves only when <see cref="Advance"/> is called.</summary>
+internal sealed class ManualTime : TimeProvider
+{
+    private long _ticks = new DateTimeOffset(2026, 10, 20, 0, 0, 0, TimeSpan.Zero).UtcTicks;
+
+    public override DateTimeOffset GetUtcNow() => new(Interlocked.Read(ref _ticks), TimeSpan.Zero);
+
+    public override long GetTimestamp() => Interlocked.Read(ref _ticks);
+
+    public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+    public void Advance(TimeSpan by) => Interlocked.Add(ref _ticks, by.Ticks);
+}

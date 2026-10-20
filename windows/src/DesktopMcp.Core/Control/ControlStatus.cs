@@ -48,19 +48,25 @@ public static class ControlJson
     {
         using var stream = new MemoryStream();
         using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping }))
-        {
-            writer.WriteStartObject();
-            writer.WriteString("state", ControlStates.Wire(status.State));
-            writer.WriteNumber("generation", status.Generation);
-            writer.WritePropertyName("wait_seconds");
-            writer.WriteRawValue(PyText.FloatRepr(status.WaitSeconds));
-            writer.WriteBoolean("enabled", status.Enabled);
-            writer.WriteString("policy", status.Policy);
-            writer.WritePropertyName("idle_timeout_seconds");
-            writer.WriteRawValue(PyText.FloatRepr(status.IdleTimeoutSeconds));
-            writer.WriteEndObject();
-        }
+            WriteStatus(writer, status);
         return Encoding.UTF8.GetString(stream.GetBuffer(), 0, (int)stream.Length);
+    }
+
+    /// <summary>Writes <paramref name="status"/> as one JSON object in upstream's key order (the <see cref="Status"/> form).</summary>
+    public static void WriteStatus(Utf8JsonWriter writer, ControlStatus status)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        ArgumentNullException.ThrowIfNull(status);
+        writer.WriteStartObject();
+        writer.WriteString("state", ControlStates.Wire(status.State));
+        writer.WriteNumber("generation", status.Generation);
+        writer.WritePropertyName("wait_seconds");
+        writer.WriteRawValue(PyText.FloatRepr(status.WaitSeconds));
+        writer.WriteBoolean("enabled", status.Enabled);
+        writer.WriteString("policy", status.Policy);
+        writer.WritePropertyName("idle_timeout_seconds");
+        writer.WriteRawValue(PyText.FloatRepr(status.IdleTimeoutSeconds));
+        writer.WriteEndObject();
     }
 
     /// <summary>Python's <c>json.dumps</c> form: <c>, </c> and <c>: </c> separators.</summary>

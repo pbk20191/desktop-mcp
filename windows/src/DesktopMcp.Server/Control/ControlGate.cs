@@ -28,17 +28,14 @@ public sealed class ControlGate(IDesktopControl control, TimeProvider time)
         ArgumentNullException.ThrowIfNull(next);
         if (toolName == "ControlStatus") return await next(ct).ConfigureAwait(false);
 
-        if (!control.Settings.Enabled)
+        // DisabledControl always reports Enabled = false, whatever it was built with.
+        var settings = control.Settings;
+        if (!settings.Enabled)
         {
             await _lock.WaitAsync(ct).ConfigureAwait(false);
             try
             {
-                return await next(ct).ConfigureAwait(false);
-            }
-            catch (InputUnavailableException e)
-            {
-                // Shutdown blocked new presses (Decisions 19): an ordinary error, as P3 reported it.
-                return ToolResults.Error(toolName, e.Message);
+                return await RunOutsideALeaseAsync(toolName, next, ct).ConfigureAwait(false);
             }
             finally
             {
@@ -46,8 +43,8 @@ public sealed class ControlGate(IDesktopControl control, TimeProvider time)
             }
         }
 
-        if (!ControlPolicy.RequiresControl(control.Settings.Policy, toolName, ControlPolicy.ModeOf(toolName, arguments)))
-            return await next(ct).ConfigureAwait(false);
+        if (!ControlPolicy.RequiresControl(settings.Policy, toolName, ControlPolicy.ModeOf(toolName, arguments)))
+            return await RunOutsideALeaseAsync(toolName, next, ct).ConfigureAwait(false);
 
         if (await WaitForLockAsync(ct).ConfigureAwait(false) is { } rejected) return rejected;
         ControlLease? lease = null;
@@ -75,6 +72,28 @@ public sealed class ControlGate(IDesktopControl control, TimeProvider time)
         {
             lease?.Dispose();
             _lock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Runs a call that has no lease (control disabled, or a call the policy does not gate) and maps its interruptions to
+    /// results, so none escapes as the SDK's generic error.
+    /// </summary>
+    private static async ValueTask<CallToolResult> RunOutsideALeaseAsync(string toolName,
+        Func<CancellationToken, ValueTask<CallToolResult>> next, CancellationToken ct)
+    {
+        try
+        {
+            return await next(ct).ConfigureAwait(false);
+        }
+        catch (InputUnavailableException e)
+        {
+            // Shutdown blocked new presses (Decisions 19): an ordinary error, as P3 reported it.
+            return ToolResults.Error(toolName, e.Message);
+        }
+        catch (ControlRejectedException e)
+        {
+            return ToolResults.Rejection(e);
         }
     }
 

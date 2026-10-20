@@ -1,4 +1,5 @@
 using System.Text.Json;
+using DesktopMcp.Core.Config;
 using DesktopMcp.Core.Control;
 using DesktopMcp.Desktop.Control;
 using DesktopMcp.Desktop.Input;
@@ -184,6 +185,55 @@ public class ControlGateTests
         Assert.True(result.IsError);
         Assert.Equal("Error calling tool 'Click': Input is shutting down.", ToolCalls.Text(result));
         Assert.Equal(0, control.BegunCalls);
+    }
+
+    [Fact]
+    public void DisabledControlNeverReportsItselfEnabled()
+    {
+        var control = new DisabledControl(new ControlSettings(true, "balanced", 12, 500, 500));
+        Assert.False(control.Settings.Enabled);
+        Assert.Equal(("balanced", 12.0), (control.Settings.Policy, control.Settings.IdleTimeoutSeconds));
+        Assert.Equal(ControlState.Disabled, control.Status().State);
+    }
+
+    [Fact]
+    public async Task DisabledControlTakesTheDisabledPathWhateverItsSettingsSay()
+    {
+        // Built with Enabled = true, the disabled control must still serialise and run calls, not reject them.
+        var gate = new ControlGate(new DisabledControl(new ControlSettings(true, "relaxed", 10, 500, 500)), TimeProvider.System);
+        var release = new TaskCompletionSource();
+        var click = gate.InvokeAsync("Click", null, async _ => { await release.Task; return await Ok(); }, default).AsTask();
+        var snapshotRan = false;
+        var snapshot = gate.InvokeAsync("Snapshot", null, _ => { snapshotRan = true; return Ok(); }, default).AsTask();
+        await Task.Delay(100);
+        Assert.False(snapshotRan);
+        release.SetResult();
+        Assert.False((await click).IsError ?? false);
+        Assert.False((await snapshot).IsError ?? false);
+        Assert.True(snapshotRan);
+    }
+
+    [Fact]
+    public async Task AnUngatedCallTurnsUnavailableInputIntoAnError()
+    {
+        var control = new FakeControl { Current = Ready };
+        var result = await new ControlGate(control, TimeProvider.System).InvokeAsync("Wait", null,
+            _ => throw new InputUnavailableException("Input is shutting down."), default);
+        Assert.True(result.IsError);
+        Assert.Equal("Error calling tool 'Wait': Input is shutting down.", ToolCalls.Text(result));
+        Assert.Equal(0, control.BegunCalls);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ARejectionOutsideALeaseIsReturnedAsARejection(bool enabled)
+    {
+        var control = new FakeControl { Current = enabled ? Ready : new(ControlState.Disabled, 0, 0, false, "relaxed", 10) };
+        var result = await new ControlGate(control, TimeProvider.System).InvokeAsync("Wait", null,
+            _ => throw new ControlRejectedException(ControlCodes.ControlPreempted, User, 1), default);
+        Assert.True(result.IsError);
+        Assert.EndsWith("\"executed_steps\": 1}}", ToolCalls.Text(result));
     }
 
     [Theory]
