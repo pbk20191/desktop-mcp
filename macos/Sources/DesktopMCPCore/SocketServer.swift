@@ -1,5 +1,6 @@
 import Dispatch
 import Foundation
+import launch
 import System
 
 /// The stdio binding served over a Unix domain socket: every accepted connection gets its own
@@ -26,6 +27,9 @@ public actor SocketServer {
     private let name: String
     /// The path this process bound, and so unlinks at shutdown.
     private let ownedPath: String?
+    private let activated: Bool
+    /// One log line per connection accepted and per connection ended.
+    private let debug: Bool
     private let sources: [any DispatchSourceRead]
     private let accepted: AsyncStream<Int32>
     private let continuation: AsyncStream<Int32>.Continuation
@@ -38,13 +42,22 @@ public actor SocketServer {
     /// Connections whose server is still running.
     public var connections: Int { live.count }
 
-    /// Listens at `path`, binding it here: a stale socket file left by a server that is gone is
-    /// replaced, a live one is `Busy`, and anything that is not a socket is `CannotListen` and is
-    /// never removed. The file is made `0600` at once.
-    ///
-    /// `launchdName` is the launchd `Sockets` key to take the listener from; the launchd call is
-    /// not made yet, so for now the path is always bound here, whatever `launchdName` is.
-    public static func listen(path: String, launchdName: String?, registry: ToolRegistry) async throws -> SocketServer {
+    /// Whether the listeners came from launchd rather than being bound here.
+    public var activatedByLaunchd: Bool { activated }
+
+    /// Listens at `path`. With a `launchdName`, launchd is asked first for the listeners of that
+    /// `Sockets` key, and when it has them they are used and nothing is bound or unlinked here.
+    /// Without one, or when the process was not started by launchd or has no such key, the path
+    /// is bound here: a stale socket file left by a server that is gone is replaced, a live one
+    /// is `Busy`, and anything that is not a socket is `CannotListen` and is never removed. The
+    /// file is made `0600` at once.
+    public static func listen(path: String, launchdName: String?, registry: ToolRegistry,
+                              debug: Bool = false) async throws -> SocketServer {
+        if let launchdName, let listeners = try activate(launchdName) {
+            try adopt(listeners)
+            return SocketServer(listeners: listeners, name: path, ownedPath: nil, activated: true,
+                                registry: registry, debug: debug)
+        }
         let listener = try bind(path)
         do {
             try setNonBlocking(listener)
@@ -53,27 +66,31 @@ public actor SocketServer {
             unlink(path)
             throw error
         }
-        return SocketServer(listeners: [listener], name: path, ownedPath: path, registry: registry)
+        return SocketServer(listeners: [listener], name: path, ownedPath: path, activated: false,
+                            registry: registry, debug: debug)
     }
 
     /// Serves on listeners that are already bound and listening (from launchd, or a test). They
-    /// become this server's: it makes them non-blocking and closes them at shutdown. Nothing is
-    /// unlinked.
-    public static func listen(fileDescriptors: [FileDescriptor], registry: ToolRegistry) async throws -> SocketServer {
-        guard !fileDescriptors.isEmpty else { throw CannotListen(reason: "no listening sockets") }
-        for fd in fileDescriptors { try setNonBlocking(fd.rawValue) }
+    /// become this server's: it makes them non-blocking and closes them at shutdown, or at once
+    /// if that fails. Nothing is unlinked.
+    public static func listen(fileDescriptors: [FileDescriptor], registry: ToolRegistry,
+                              debug: Bool = false) async throws -> SocketServer {
         let listeners = fileDescriptors.map(\.rawValue)
+        try adopt(listeners)
         return SocketServer(listeners: listeners, name: boundPath(listeners[0]) ?? "socket", ownedPath: nil,
-                            registry: registry)
+                            activated: false, registry: registry, debug: debug)
     }
 
-    private init(listeners: [Int32], name: String, ownedPath: String?, registry: ToolRegistry) {
+    private init(listeners: [Int32], name: String, ownedPath: String?, activated: Bool,
+                 registry: ToolRegistry, debug: Bool) {
         let (accepted, continuation) = AsyncStream.makeStream(of: Int32.self)
         self.accepted = accepted
         self.continuation = continuation
         self.registry = registry
         self.name = name
         self.ownedPath = ownedPath
+        self.activated = activated
+        self.debug = debug
         sources = listeners.map { Self.makeSource(listener: $0, yieldingTo: continuation) }
     }
 
@@ -144,17 +161,19 @@ public actor SocketServer {
             return
         }
         let label = "\(name) peer \(Self.peerPID(fd).map(String.init) ?? "?")"
+        if debug { log("Accepted a connection: \(label)") }
         let registry = registry
         live[fd] = Task {
             let descriptor = FileDescriptor(rawValue: fd)
             await StdioServer.run(registry, input: descriptor, output: descriptor, label: label)
-            self.ended(fd)
+            self.ended(fd, label: label)
             close(fd)
         }
     }
 
-    private func ended(_ fd: Int32) {
+    private func ended(_ fd: Int32, label: String) {
         live[fd] = nil
+        if debug { log("Connection ended: \(label)") }
     }
 
     // MARK: - Accepting
@@ -201,6 +220,44 @@ public actor SocketServer {
 
     private static func closeHandler(_ listener: Int32) -> @Sendable () -> Void {
         { close(listener) }
+    }
+
+    // MARK: - launchd
+
+    /// The listeners launchd holds for `name`, or nil when this process was not started by
+    /// launchd or its job has no such socket (`ENOENT`, `ESRCH`). The descriptors are blocking.
+    private static func activate(_ name: String) throws -> [Int32]? {
+        var fds: UnsafeMutablePointer<Int32>?
+        var count = 0
+        let code = withUnsafeMutablePointer(to: &fds) {
+            // `int * _Nonnull * _Nullable`: an optional pointer has the same layout, and stays nil
+            // when launchd hands nothing back.
+            $0.withMemoryRebound(to: UnsafeMutablePointer<Int32>.self, capacity: 1) {
+                launch_activate_socket(name, $0, &count)
+            }
+        }
+        defer { free(fds) }
+        switch code {
+        case 0:
+            guard let fds, count > 0 else { throw CannotListen(reason: "launchd has no sockets for \(name)") }
+            return Array(UnsafeBufferPointer(start: fds, count: count))
+        case ENOENT, ESRCH:
+            return nil
+        default:
+            throw CannotListen(reason: "launch_activate_socket: \(String(cString: strerror(code)))")
+        }
+    }
+
+    /// Makes listeners handed over (by launchd or a test) non-blocking. On failure every one of
+    /// them is closed, so that launchd stops queueing connections nobody would accept.
+    private static func adopt(_ listeners: [Int32]) throws {
+        guard !listeners.isEmpty else { throw CannotListen(reason: "no listening sockets") }
+        do {
+            for fd in listeners { try setNonBlocking(fd) }
+        } catch {
+            for fd in listeners { close(fd) }
+            throw error
+        }
     }
 
     // MARK: - Binding

@@ -98,6 +98,10 @@ struct Serve: AsyncParsableCommand {
             help: "Seconds a session may stay idle before it is dropped; 0 keeps sessions until the client ends them. (default: 1800)")
     var sessionTimeout: Int?
 
+    @Option(name: .customLong("socket"),
+            help: "Also serve the stdio binding on this Unix domain socket (what `install` sets up).")
+    var socket: String?
+
     func validate() throws {
         if let maxTimeout, maxTimeout < 0 { throw ValidationError("--max-timeout must be 0 or greater.") }
         if let sessionTimeout, sessionTimeout < 0 { throw ValidationError("--session-timeout must be 0 or greater.") }
@@ -124,6 +128,7 @@ struct Serve: AsyncParsableCommand {
         values.oauthClientSecret = oauthClientSecret
         values.excludeTools = excludeTools
         values.sessionTimeout = sessionTimeout
+        values.socketPath = socket
         do {
             return try ServePlan.resolve(values, environment: ProcessInfo.processInfo.environment, config: fileConfig)
         } catch {
@@ -150,11 +155,23 @@ struct Serve: AsyncParsableCommand {
         let stdio = plan.transport == "stdio"
         let registry = await DesktopMCP.makeRegistry(excluding: plan.excludedTools)
         await registry.setObserver(analytics)
+        let socket = await listenOnSocket(registry, plan: plan, debug: debug)
+        // Set once `serve` stops the socket itself, so its accept loop ending then is not news.
+        let stopping = Locked(false)
 
-        // This task is the root; everything else is a child of it: telemetry delivery, the server
-        // (stdio or HTTP) and the signal watcher that stops it. The process exits by returning.
+        // This task is the root; everything else is a child of it: telemetry delivery, the socket
+        // server, the server (stdio or HTTP) and the signal watcher that stops it. The process
+        // exits by returning.
         let code = await withTaskGroup(of: Int32?.self) { group in
             if let analytics { group.addTask { await analytics.run(); return nil } }
+            if let socket, let path = plan.socketPath {
+                // Beside the race, not in it: the socket ending never ends `serve`.
+                group.addTask {
+                    await socket.run()
+                    if !stopping.current { log("Socket \(path): accept loop ended; serving HTTP only") }
+                    return nil
+                }
+            }
             group.addTask {
                 // The server, until its input or listener closes, it fails, or a signal arrives.
                 await withTaskGroup(of: Int32.self) { race in
@@ -183,6 +200,8 @@ struct Serve: AsyncParsableCommand {
             while let result = await group.next() {
                 if let result { code = result; break }
             }
+            stopping.current = true
+            await socket?.shutdown()
             // The server has stopped and its event loops are shut down: let queued telemetry
             // land (bounded), then let go of whatever is still stuck.
             await analytics?.close()
@@ -190,6 +209,22 @@ struct Serve: AsyncParsableCommand {
             return code
         }
         if code != 0 { throw ExitCode(code) }
+    }
+
+    /// The socket server for `--socket`, listening, or nil without the option or when the socket
+    /// cannot be taken: that is logged and `serve` goes on with HTTP alone rather than exiting
+    /// (a Launch Agent that exits is restarted, and would fail the same way again).
+    func listenOnSocket(_ registry: ToolRegistry, plan: ServePlan, debug: Bool) async -> SocketServer? {
+        guard let path = plan.socketPath else { return nil }
+        do {
+            let socket = try await SocketServer.listen(path: path, launchdName: LaunchAgent.socketName,
+                                                       registry: registry, debug: debug)
+            log("Serving stdio over \(path)" + (await socket.activatedByLaunchd ? " (socket from launchd)" : ""))
+            return socket
+        } catch {
+            log("Socket \(path): \(error); serving HTTP only")
+            return nil
+        }
     }
 
     func serveHTTP(_ registry: ToolRegistry, plan: ServePlan, debug: Bool) async throws {

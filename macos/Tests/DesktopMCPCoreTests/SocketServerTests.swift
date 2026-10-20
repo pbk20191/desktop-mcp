@@ -303,6 +303,25 @@ final class SocketServerTests: XCTestCase {
         }
     }
 
+    func testAnUnknownLaunchdNameFallsBackToBinding() async throws {
+        // Not run by launchd (or no such key): launch_activate_socket fails with ENOENT/ESRCH and
+        // the path is bound here instead.
+        let path = socketPath()
+        let server = try await SocketServer.listen(path: path, launchdName: "NoSuchSocket",
+                                                   registry: await DesktopMCP.makeRegistry())
+        let run = Task { await server.run() }
+        let activated = await server.activatedByLaunchd
+        XCTAssertFalse(activated)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: path))
+        let (client, fd) = try await client(path)
+        try await client.ping()
+        await client.disconnect()
+        await server.shutdown()
+        await run.value
+        try fd.close()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: path), "the owner unlinks the socket file")
+    }
+
     func testShutdownCancelsCallsInFlight() async throws {
         let observer = RecordingObserver()
         let registry = await DesktopMCP.makeRegistry()

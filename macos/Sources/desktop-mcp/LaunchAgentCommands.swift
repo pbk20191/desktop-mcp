@@ -62,10 +62,17 @@ struct Install: ParsableCommand {
         try FileManager.default.createDirectory(at: configDirectory, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: plistURL.deletingLastPathComponent(), withIntermediateDirectories: true)
 
+        let socketPath = LaunchAgent.socketURL.path
+        do {
+            try LaunchAgent.validateSocketPath(socketPath)
+        } catch {
+            throw CLIError(error)
+        }
         let executable = Self.executablePath()
         let arguments = LaunchAgent.programArguments(executable: executable, transport: transport.rawValue,
-                                                     host: host, port: port)
-        try LaunchAgent.plist(programArguments: arguments, logDirectory: configDirectory).write(to: plistURL)
+                                                     host: host, port: port, socketPath: socketPath)
+        try LaunchAgent.plist(programArguments: arguments, logDirectory: configDirectory, socketPath: socketPath)
+            .write(to: plistURL)
         print("Wrote \(plistURL.path)")
 
         let domain = "gui/\(getuid())"
@@ -80,6 +87,7 @@ struct Install: ParsableCommand {
         print("Launch agent loaded — server is starting now.")
         print("  Transport : \(transport.rawValue)")
         print("  Address   : \(host):\(port)")
+        print("  Socket    : \(socketPath)")
         print("  Logs      : \(logs.out.path)")
         print("\nThe server will restart automatically at every login.")
         print("Run `desktop-mcp uninstall` to remove it.")
@@ -142,6 +150,14 @@ struct Uninstall: ParsableCommand {
             print("Removed \(plistURL.path)")
         } else {
             print("Plist already removed.")
+        }
+        // launchd removes the socket file it made; one left behind is removed here, and only if
+        // it is a socket.
+        let socketPath = LaunchAgent.socketURL.path
+        var info = stat()
+        if lstat(socketPath, &info) == 0, info.st_mode & S_IFMT == S_IFSOCK {
+            try FileManager.default.removeItem(atPath: socketPath)
+            print("Removed \(socketPath)")
         }
         print("desktop-mcp will no longer start at login.")
     }
