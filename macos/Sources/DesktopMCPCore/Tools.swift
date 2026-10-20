@@ -449,6 +449,7 @@ public enum DesktopMCP {
             RunShortcutTool.tool(),
             SpotlightTool.tool(),
             WindowTool.tool(),
+            MenuTool.tool(),
         ]
     }
 }

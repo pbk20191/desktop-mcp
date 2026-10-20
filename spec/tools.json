@@ -680,6 +680,47 @@
         "type": "object"
       },
       "name": "Window"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "Menu"
+      },
+      "description": "Reads and chooses commands from an app's menu bar ('app': name or bundle id; default the frontmost app). 'list' (default) returns an indented tree of item titles with keyboard shortcuts and [disabled], 'depth' levels deep (default 2, max 4), below the optional 'path' prefix. 'select' presses the item 'path' names from the bar item down, e.g. [\"File\", \"Export…\"]: titles match exactly, then ignoring case, then also treating '...' as '…'; the Apple menu is \"Apple\". A disabled item is not pressed.",
+      "inputSchema": {
+        "properties": {
+          "app": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "depth": {
+            "default": 2,
+            "type": "integer"
+          },
+          "mode": {
+            "default": "list",
+            "enum": [
+              "list",
+              "select"
+            ],
+            "type": "string"
+          },
+          "path": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "name": "Menu"
     }
   ]
 }

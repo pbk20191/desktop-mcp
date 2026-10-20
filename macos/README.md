@@ -57,6 +57,7 @@ Run `desktop-mcp permissions` to check the current state and trigger the system 
 | `RunShortcut` | Lists or runs the user's Shortcuts (the Shortcuts app), with optional text input |
 | `Spotlight` | Searches the Spotlight index by words or a raw query, newest first, optionally by kind and folder |
 | `Window` | Lists app windows with ids and frames; focuses, moves, resizes, minimizes, restores or closes one by id |
+| `Menu` | Lists an app's menu bar as a tree with shortcuts; selects a menu item by its path (`["File", "Export…"]`) |
 
 ## Commands and options
 
