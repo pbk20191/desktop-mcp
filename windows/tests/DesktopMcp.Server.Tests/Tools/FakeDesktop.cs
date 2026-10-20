@@ -106,8 +106,11 @@ internal sealed class FakeDesktop
 
     private readonly List<string> _appCalls = [];
 
-    /// <summary>What each WaitFor poll returns, in order; the last entry repeats once the list is used up.</summary>
-    public IReadOnlyList<(bool Matched, string Detail)> WaitResults { get; set; } = [(true, "matched")];
+    /// <summary>
+    /// What each WaitFor poll returns, in order; the last entry repeats once the list is used up. A null detail is a
+    /// transient failure (Decisions 28).
+    /// </summary>
+    public IReadOnlyList<(bool Matched, string? Detail)> WaitResults { get; set; } = [(true, "matched")];
 
     /// <summary>Each WaitFor poll as <c>condition text window</c> (<c>-</c> for null).</summary>
     public IReadOnlyList<string> WaitCalls
@@ -324,7 +327,7 @@ internal sealed class FakeDesktop
             if (desktop.SessionError is { } error) throw new DesktopException(error);
         }
 
-        public Task<(bool Matched, string Detail)> CheckAsync(WaitCondition condition, string? text, string? windowName, CancellationToken ct)
+        public Task<(bool Matched, string? Detail)> CheckAsync(WaitCondition condition, string? text, string? windowName, CancellationToken ct)
         {
             int poll;
             lock (desktop._waitCalls)

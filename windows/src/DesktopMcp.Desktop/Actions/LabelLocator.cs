@@ -231,14 +231,9 @@ internal sealed unsafe class UiaElementSource(UiaSession session) : IElementSour
         return element is null ? null : UiaTreeSource.ReadAction(element);
     }
 
-    public UiaElementData? Parent(UiaElementData element)
-    {
-        var parent = session.ControlView.GetParentElementBuildCache(Element(element), session.ActionRequest);
-        return parent is null ? null : UiaTreeSource.ReadAction(parent);
-    }
+    public UiaElementData? Parent(UiaElementData element) => UiaActionReads.Parent(session, element);
 
-    public UiaElementData ReadWindow(long window) =>
-        UiaTreeSource.ReadAction(session.Automation.ElementFromHandleBuildCache((HWND)(nint)window, session.ActionRequest));
+    public UiaElementData ReadWindow(long window) => UiaActionReads.ReadWindow(session, window);
 
     public IReadOnlyList<UiaElementData> Children(UiaElementData parent, out bool capped) => UiaTreeSource.ReadSiblings(
         Element(parent),
@@ -265,8 +260,7 @@ internal sealed unsafe class UiaElementSource(UiaSession session) : IElementSour
     public UiaElementData Refresh(UiaElementData element) =>
         UiaTreeSource.ReadAction(Element(element).BuildUpdatedCache(session.ActionRequest));
 
-    private static IUIAutomationElement Element(UiaElementData data) =>
-        data.Handle as IUIAutomationElement ?? throw new InvalidOperationException("The element has no UIA handle.");
+    private static IUIAutomationElement Element(UiaElementData data) => UiaActionReads.Element(data);
 }
 
 /// <summary>

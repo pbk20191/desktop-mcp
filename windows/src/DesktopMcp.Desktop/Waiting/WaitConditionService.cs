@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using DesktopMcp.Core.Snapshots;
 using DesktopMcp.Core.Text;
 using DesktopMcp.Desktop.Displays;
@@ -5,7 +6,6 @@ using DesktopMcp.Desktop.Errors;
 using DesktopMcp.Desktop.Snapshots;
 using DesktopMcp.Desktop.Tree;
 using DesktopMcp.Desktop.Uia;
-using Windows.Win32.Foundation;
 
 namespace DesktopMcp.Desktop.Waiting;
 
@@ -20,10 +20,10 @@ public interface IWaitConditions
 
     /// <summary>
     /// Whether the condition holds now, and upstream's detail text (tools/input.py:127-170). A UIA timeout, a dead element
-    /// or a window that stops answering is "not matched" with the condition's absent text (Decisions 28); other failures
-    /// propagate.
+    /// or a window that stops answering is "not matched" with no detail (null): the poll was not evaluated, and WaitFor keeps
+    /// the previous detail (Decisions 28). Other failures propagate.
     /// </summary>
-    Task<(bool Matched, string Detail)> CheckAsync(WaitCondition condition, string? text, string? windowName, CancellationToken ct);
+    Task<(bool Matched, string? Detail)> CheckAsync(WaitCondition condition, string? text, string? windowName, CancellationToken ct);
 }
 
 /// <summary>
@@ -32,6 +32,12 @@ public interface IWaitConditions
 /// windows (hang-blocked windows skipped) and run an early-exit walk of the windows Snapshot walks (excluded processes
 /// skipped), stopping at the first matching element. No capture, no virtual-desktop read, no store update, no retry.
 /// </summary>
+/// <remarks>
+/// Two differences from upstream's full snapshot per poll, both accepted: the early-exit walk returns a match it visited
+/// before a later modal sibling window (upstream tree/service.py:862-878 would have cleared the elements found before the
+/// modal dialog, and so that match); and one poll can run past the remaining timeout when a window hangs inside the walk
+/// or the read (up to the job's deadline, once per hang, since the window is then blocked), as upstream's get_state can.
+/// </remarks>
 public sealed class WaitConditionService : IWaitConditions
 {
     private readonly IWindowScanner _windows;
@@ -69,11 +75,11 @@ public sealed class WaitConditionService : IWaitConditions
 
     public void EnsureSession() => _ensureSession();
 
-    public async Task<(bool Matched, string Detail)> CheckAsync(WaitCondition condition, string? text, string? windowName, CancellationToken ct)
+    public async Task<(bool Matched, string? Detail)> CheckAsync(WaitCondition condition, string? text, string? windowName, CancellationToken ct)
     {
         try
         {
-            return condition switch
+            (bool, string?) result = condition switch
             {
                 WaitCondition.ActiveWindow => await ActiveWindowAsync(text, windowName, ct).ConfigureAwait(false),
                 WaitCondition.FocusedElement => await FocusedAsync(text, windowName, ct).ConfigureAwait(false),
@@ -81,11 +87,12 @@ public sealed class WaitConditionService : IWaitConditions
                 WaitCondition.ElementExists or WaitCondition.ElementEnabled => await ElementAsync(condition, text, windowName, ct).ConfigureAwait(false),
                 _ => throw new ArgumentOutOfRangeException(nameof(condition)),
             };
+            return result;
         }
         catch (Exception e) when (ComErrors.IsTimeout(e) || ComErrors.IsDeadElement(e))
         {
-            // Decisions 28: the next poll is the retry.
-            return (false, Absent(condition, text, ""));
+            // Decisions 28: not evaluated; the next poll is the retry.
+            return (false, null);
         }
     }
 
@@ -168,13 +175,16 @@ internal static class FocusedElement
     /// focused element's parents are climbed (at most <see cref="MaxAncestors"/>) to the first with a native window handle,
     /// whose top-level window names the element. That window, when it is not the foreground window, must not be
     /// <paramref name="skip"/>ped (blocked or excluded) and must answer the check before it is read. Null when any step
-    /// finds nothing or a window does not answer.
+    /// finds nothing or a window does not answer. <paramref name="entering"/> is told each window before the first UIA call
+    /// into it, so a deadline can block the window the read was in.
     /// </summary>
     public static UiElement? Describe(
-        IFocusSource source, IWindowSystem windows, long foreground, Func<long, bool> skip, ScreenRect screen, CancellationToken ct)
+        IFocusSource source, IWindowSystem windows, long foreground, Func<long, bool> skip, ScreenRect screen, CancellationToken ct,
+        Action<long>? entering = null)
     {
         if (windows.CheckResponding(foreground) != WindowResponse.Responding) return null;
         ct.ThrowIfCancellationRequested();
+        entering?.Invoke(foreground);
         if (source.Focused() is not { } focused) return null;
         var element = focused;
         for (var level = 0; element.NativeWindowHandle == 0; level++)
@@ -185,7 +195,11 @@ internal static class FocusedElement
             element = parent;
         }
         var root = windows.GetRoot(element.NativeWindowHandle);
-        if (root != foreground && (skip(root) || windows.CheckResponding(root) != WindowResponse.Responding)) return null;
+        if (root != foreground)
+        {
+            if (skip(root) || windows.CheckResponding(root) != WindowResponse.Responding) return null;
+            entering?.Invoke(root);
+        }
         ct.ThrowIfCancellationRequested();
         var window = source.ReadWindow(root);
         // upstream tree/service.py:939-941 strips the title before app_name_correction.
@@ -201,60 +215,84 @@ internal sealed class UiaFocusSource(UiaSession session) : IFocusSource
     public UiaElementData? Focused() =>
         session.Automation.GetFocusedElementBuildCache(session.ActionRequest) is { } element ? UiaTreeSource.ReadAction(element) : null;
 
-    public UiaElementData? Parent(UiaElementData element)
-    {
-        var handle = element.Handle as Windows.Win32.UI.Accessibility.IUIAutomationElement
-            ?? throw new InvalidOperationException("The element has no UIA handle.");
-        var parent = session.ControlView.GetParentElementBuildCache(handle, session.ActionRequest);
-        return parent is null ? null : UiaTreeSource.ReadAction(parent);
-    }
+    public UiaElementData? Parent(UiaElementData element) => UiaActionReads.Parent(session, element);
 
-    public UiaElementData ReadWindow(long window) =>
-        UiaTreeSource.ReadAction(session.Automation.ElementFromHandleBuildCache((HWND)(nint)window, session.ActionRequest));
+    public UiaElementData ReadWindow(long window) => UiaActionReads.ReadWindow(session, window);
 }
 
 /// <summary>
 /// The focused element read as one UIA job within <see cref="Deadline"/> (global constraints: WaitFor's focused-element
 /// read 5 s). A foreground window that is blocked or belongs to an excluded process is not read; a job past its deadline
-/// blocks the foreground window and its process (P2 Decisions 2) and throws <see cref="UiaTimeoutException"/>. A dead
-/// element gives null; UIA's own timeout propagates (the service treats both as no match).
+/// blocks the window it last entered (the foreground window, or the other top-level window it moved into) and its process
+/// (P2 Decisions 2) and throws <see cref="UiaTimeoutException"/>. A dead element gives null; UIA's own timeout propagates
+/// (the service treats both as not evaluated).
 /// </summary>
-internal sealed class UiaFocusedElementReader(
-    UiaWorker<UiaSession> worker, IWindowSystem windows, HangBlockList blocks, IDisplayProvider displays, Func<string, string?> environment)
+internal sealed class UiaFocusedElementReader
 {
     public static readonly TimeSpan Deadline = TimeSpan.FromSeconds(5);
 
+    /// <summary>The read itself: the UIA job, which reports each window through <c>entering</c> before it calls into it.</summary>
+    internal delegate Task<UiElement?> FocusJob(
+        long foreground, Func<long, bool> skip, ScreenRect screen, Action<long> entering, CancellationToken ct);
+
+    private readonly IWindowSystem _windows;
+    private readonly HangBlockList _blocks;
+    private readonly Func<ScreenRect> _screen;
+    private readonly Func<string, string?> _environment;
+    private readonly FocusJob _job;
+
+    public UiaFocusedElementReader(
+        UiaWorker<UiaSession> worker, IWindowSystem windows, HangBlockList blocks, IDisplayProvider displays, Func<string, string?> environment)
+        : this(windows, blocks, displays.GetVirtualScreen, environment, Job(worker, windows))
+    {
+    }
+
+    internal UiaFocusedElementReader(
+        IWindowSystem windows, HangBlockList blocks, Func<ScreenRect> screen, Func<string, string?> environment, FocusJob job)
+    {
+        _windows = windows;
+        _blocks = blocks;
+        _screen = screen;
+        _environment = environment;
+        _job = job;
+    }
+
+    private static FocusJob Job(UiaWorker<UiaSession> worker, IWindowSystem windows) =>
+        (foreground, skip, screen, entering, ct) => worker.RunAsync((session, token) =>
+        {
+            try
+            {
+                return UiaJob.Run("UI Automation focused element read",
+                    () => FocusedElement.Describe(new UiaFocusSource(session), windows, foreground, skip, screen, token, entering));
+            }
+            catch (Exception e) when (ComErrors.IsDeadElement(e))
+            {
+                return null;
+            }
+        }, Deadline, ct);
+
     public async Task<UiElement?> ReadAsync(CancellationToken ct)
     {
-        var foreground = windows.GetForegroundWindow();
+        var foreground = _windows.GetForegroundWindow();
         if (foreground == 0) return null;
-        var excluded = SnapshotSettings.ExcludedProcesses(environment(SnapshotSettings.ExcludeProcessesVariable));
+        var excluded = SnapshotSettings.ExcludedProcesses(_environment(SnapshotSettings.ExcludeProcessesVariable));
         bool Skip(long window)
         {
-            var processId = windows.GetProcessId(window);
-            return blocks.IsBlocked(window, processId)
-                || (windows.GetProcessName(processId) is { } name && excluded.Contains(name.ToLowerInvariant()));
+            var processId = _windows.GetProcessId(window);
+            return _blocks.IsBlocked(window, processId)
+                || (_windows.GetProcessName(processId) is { } name && excluded.Contains(name.ToLowerInvariant()));
         }
         if (Skip(foreground)) return null;
-        var screen = displays.GetVirtualScreen();
+        // The window the job last entered; written on the worker thread, read here after a missed deadline.
+        var entered = new StrongBox<long>(foreground);
         try
         {
-            return await worker.RunAsync((session, token) =>
-            {
-                try
-                {
-                    return UiaJob.Run("UI Automation focused element read",
-                        () => FocusedElement.Describe(new UiaFocusSource(session), windows, foreground, Skip, screen, token));
-                }
-                catch (Exception e) when (ComErrors.IsDeadElement(e))
-                {
-                    return null;
-                }
-            }, Deadline, ct).ConfigureAwait(false);
+            return await _job(foreground, Skip, _screen(), window => Volatile.Write(ref entered.Value, window), ct).ConfigureAwait(false);
         }
         catch (UiaTimeoutException)
         {
-            blocks.Block(foreground, windows.GetProcessId(foreground));
+            var window = Volatile.Read(ref entered.Value);
+            _blocks.Block(window, _windows.GetProcessId(window));
             throw;
         }
     }

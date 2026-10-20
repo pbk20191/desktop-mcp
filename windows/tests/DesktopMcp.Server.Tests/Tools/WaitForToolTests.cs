@@ -26,6 +26,23 @@ public class WaitForToolTests
     }
 
     [Fact]
+    public async Task TransientPollsKeepThePreviousDetail()
+    {
+        var desktop = new FakeDesktop { WaitResults = [(false, "text 'a' was absent"), (false, null)] };
+        Assert.Equal("Error calling tool 'WaitFor': Timed out after 1.00s waiting for 'text_exists': text 'a' was absent.",
+            ToolCalls.Text(await ToolCalls.CallAsync(ToolCalls.Create("WaitFor", desktop.Services()), """{"condition": "text", "text": "a", "timeout": 1, "interval": 0.5}""")));
+    }
+
+    [Fact]
+    public async Task EveryPollFailingTransientlyLeavesTheConditionNotEvaluated()
+    {
+        var desktop = new FakeDesktop { WaitResults = [(false, null)] };
+        Assert.Equal("Error calling tool 'WaitFor': Timed out after 1.00s waiting for 'element_exists': condition was not evaluated.",
+            ToolCalls.Text(await ToolCalls.CallAsync(ToolCalls.Create("WaitFor", desktop.Services()), """{"condition": "element", "text": "ok", "timeout": 1, "interval": 0.5}""")));
+        Assert.Equal(3, desktop.WaitCalls.Count);
+    }
+
+    [Fact]
     public async Task TheLastWaitIsCutToTheRemainingTime()
     {
         var desktop = new FakeDesktop { WaitResults = [(false, "text 'a' was absent")] };

@@ -149,8 +149,9 @@ public class WaitConditionServiceTests
     [Fact]
     public async Task ATransientUiaFailureIsNotAMatch()
     {
+        // Decisions 28: no match and no detail, so WaitFor keeps the previous one.
         var rig = new WaitRig(active: "A", findThrows: new UiaNotRespondingException("busy"));
-        Assert.Equal((false, "matching element was absent"), await rig.Service.CheckAsync(WaitCondition.ElementExists, "ok", null, default));
+        Assert.Equal((false, (string?)null), await rig.Service.CheckAsync(WaitCondition.ElementExists, "ok", null, default));
     }
 
     [Theory]
@@ -159,8 +160,8 @@ public class WaitConditionServiceTests
     public async Task ADeadElementOrAUiaTimeoutIsNotAMatch(uint hresult)
     {
         var rig = new WaitRig(active: "A", findThrows: new COMException("x", unchecked((int)hresult)));
-        Assert.Equal((false, "text 'ok' was absent"), await rig.Service.CheckAsync(WaitCondition.TextExists, "ok", null, default));
-        Assert.Equal((false, "matching element was absent"),
+        Assert.Equal((false, (string?)null), await rig.Service.CheckAsync(WaitCondition.TextExists, "ok", null, default));
+        Assert.Equal((false, (string?)null),
             await new WaitRig(active: "A", findThrows: new UiaTimeoutException("hung")).Service.CheckAsync(WaitCondition.ElementEnabled, "ok", null, default));
     }
 
@@ -257,6 +258,46 @@ public class FocusedElementTests
         var source = new FakeFocus();
         Assert.Null(FocusedElement.Describe(source, windows, foreground: 5, _ => false, Screen, default));
         Assert.Empty(source.Calls);
+    }
+
+    [Fact]
+    public void TheReadRecordsEachWindowItEntersBeforeItsUiaCalls()
+    {
+        var source = new FakeFocus();
+        var entered = new List<string>();
+        void Entering(long window) => entered.Add($"{window} after {source.Calls.Count} calls");
+        Assert.NotNull(FocusedElement.Describe(source, _windows, foreground: 3, _ => false, Screen, default, Entering));
+        Assert.Equal(["3 after 0 calls", "5 after 3 calls"], entered); // the root before ReadWindow 5
+    }
+
+    [Fact]
+    public async Task ADeadlineBlocksTheWindowTheReadLastEntered()
+    {
+        var blocks = new HangBlockList(TimeProvider.System, HangBlockList.DefaultDuration);
+        _windows.Foreground.Enqueue(3);
+        var reader = new UiaFocusedElementReader(_windows, blocks, () => Screen, _ => null, (foreground, skip, screen, entering, ct) =>
+        {
+            entering(5);
+            throw new UiaTimeoutException("hung");
+        });
+        await Assert.ThrowsAsync<UiaTimeoutException>(() => reader.ReadAsync(default));
+        Assert.True(blocks.IsBlocked(5, 50));
+        Assert.False(blocks.IsBlocked(3, 100));
+    }
+
+    [Fact]
+    public async Task ADeadlineBeforeAnyOtherWindowBlocksTheForegroundWindow()
+    {
+        var blocks = new HangBlockList(TimeProvider.System, HangBlockList.DefaultDuration);
+        _windows.Foreground.Enqueue(3);
+        var reader = new UiaFocusedElementReader(_windows, blocks, () => Screen, _ => null, (foreground, skip, screen, entering, ct) =>
+        {
+            entering(foreground);
+            throw new UiaTimeoutException("hung");
+        });
+        await Assert.ThrowsAsync<UiaTimeoutException>(() => reader.ReadAsync(default));
+        Assert.True(blocks.IsBlocked(3, 100));
+        Assert.False(blocks.IsBlocked(5, 50));
     }
 
     [Fact]

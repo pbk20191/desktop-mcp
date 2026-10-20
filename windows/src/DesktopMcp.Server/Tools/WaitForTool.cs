@@ -35,16 +35,19 @@ public sealed class WaitForTool(Tool protocolTool, ToolServices services) : Spec
         var limit = TimeSpan.FromSeconds(timeout);
         var pause = TimeSpan.FromSeconds(interval);
         var attempts = 0;
+        var lastDetail = "condition was not evaluated";
         while (true)
         {
             attempts++;
             var (matched, detail) = await services.WaitConditions.CheckAsync(normalized, text, windowName, cancellationToken).ConfigureAwait(false);
+            // Decisions 28: a transiently failed poll (no detail) keeps the previous detail.
+            if (detail is not null) lastDetail = detail;
             var elapsed = time.GetElapsedTime(startedAt);
             if (matched)
-                return ToolResults.Text($"WaitFor condition '{name}' satisfied after {PyText.Fixed(elapsed.TotalSeconds, 2)}s and {attempts} attempt(s): {detail}.");
+                return ToolResults.Text($"WaitFor condition '{name}' satisfied after {PyText.Fixed(elapsed.TotalSeconds, 2)}s and {attempts} attempt(s): {lastDetail}.");
             var remaining = limit - elapsed;
             if (remaining <= TimeSpan.Zero)
-                throw new TimeoutException($"Timed out after {PyText.Fixed(timeout, 2)}s waiting for '{name}': {detail}.");
+                throw new TimeoutException($"Timed out after {PyText.Fixed(timeout, 2)}s waiting for '{name}': {lastDetail}.");
             await Task.Delay(remaining < pause ? remaining : pause, time, cancellationToken).ConfigureAwait(false);
         }
     }
