@@ -44,6 +44,39 @@ public class ControlNotifierTests
     }
 
     [Fact]
+    public async Task TwoQuickChangesReachASessionInOrder()
+    {
+        var rig = new NotifierRig(ttl: null);
+        var gated = new GatedSession();
+        rig.Sessions.Remember("a", gated);
+        var probe = rig.Session("b");
+        rig.Control.RaiseStateChanged(new(ControlState.User, 2, 10, true, "relaxed", 10));
+        rig.Control.RaiseStateChanged(new(ControlState.Ready, 3, 0, true, "relaxed", 10));
+        await gated.FirstEntered.WaitAsync(TimeSpan.FromSeconds(10));
+        // The probe has both messages, so the consumer has handled both changes; the gated session's second send must
+        // still wait for its first.
+        using (var bound = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
+            while (probe.Sent.Count < 2) await Task.Delay(10, bound.Token);
+        Assert.Equal(1, gated.Entered);
+        gated.Release();
+        await rig.Drained();
+        Assert.Equal(["USER_CONTROL", "AI_CONTROL_AVAILABLE"], gated.Completed.Select(m => m.Data.GetProperty("event").GetString()));
+    }
+
+    [Fact]
+    public async Task AFailingSessionDoesNotStopTheOthers()
+    {
+        var rig = new NotifierRig(ttl: null);
+        rig.Session("a", fail: true);
+        var b = rig.Session("b");
+        rig.Control.RaiseStateChanged(new(ControlState.User, 2, 10, true, "relaxed", 10));
+        rig.Control.RaiseStateChanged(new(ControlState.Ready, 3, 0, true, "relaxed", 10));
+        await rig.Drained();
+        Assert.Equal(["USER_CONTROL", "AI_CONTROL_AVAILABLE"], b.Sent.Select(m => m.Data.GetProperty("event").GetString()));
+        Assert.Equal("b", Assert.Single(rig.Sessions.Live()).Key);
+    }
+
+    [Fact]
     public async Task OlderGenerationsAreDropped()
     {
         var rig = new NotifierRig(ttl: null);
@@ -160,6 +193,40 @@ internal sealed class RecordingSession : IControlSession
         if (Fail) throw new IOException("The client went away.");
         lock (_lock) _sent.Add(message);
         return ValueTask.CompletedTask;
+    }
+}
+
+/// <summary>A session whose first send waits for <see cref="Release"/>; messages are recorded when their send completes.</summary>
+internal sealed class GatedSession : IControlSession
+{
+    private readonly Lock _lock = new();
+    private readonly List<ControlLogMessage> _completed = [];
+    private readonly TaskCompletionSource _firstEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private int _entered;
+
+    public Task FirstEntered => _firstEntered.Task;
+
+    public int Entered => Volatile.Read(ref _entered);
+
+    public IReadOnlyList<ControlLogMessage> Completed
+    {
+        get
+        {
+            lock (_lock) return [.. _completed];
+        }
+    }
+
+    public void Release() => _release.TrySetResult();
+
+    public async ValueTask NotifyAsync(ControlLogMessage message, CancellationToken ct)
+    {
+        if (Interlocked.Increment(ref _entered) == 1)
+        {
+            _firstEntered.TrySetResult();
+            await _release.Task.WaitAsync(ct);
+        }
+        lock (_lock) _completed.Add(message);
     }
 }
 

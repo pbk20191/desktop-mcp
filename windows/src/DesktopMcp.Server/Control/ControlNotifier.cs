@@ -28,6 +28,7 @@ public sealed class ControlNotifier(IDesktopControl control, SessionRegistry ses
     private readonly CancellationTokenSource _stop = new();
     private readonly Lock _sendsLock = new();
     private readonly HashSet<Task> _sends = [];
+    private readonly Dictionary<object, Task> _tails = [];
     private Task? _consumer;
     private ControlState _state;
     private long _generation;
@@ -112,13 +113,31 @@ public sealed class ControlNotifier(IDesktopControl control, SessionRegistry ses
         var message = new ControlLogMessage(Level, LoggerName, Data(name, status));
         foreach (var (key, session) in sessions.Live())
         {
-            var send = Task.Run(() => SendAsync(key, session, message));
-            lock (_sendsLock) _sends.Add(send);
+            Task send;
+            lock (_sendsLock)
+            {
+                // One chain per session: its notifications go out in order; a slow session holds up only itself.
+                var previousSend = _tails.GetValueOrDefault(key) ?? Task.CompletedTask;
+                send = SendAfterAsync(previousSend, key, session, message);
+                _tails[key] = send;
+                _sends.Add(send);
+            }
             _ = send.ContinueWith(done =>
             {
-                lock (_sendsLock) _sends.Remove(done);
+                lock (_sendsLock)
+                {
+                    _sends.Remove(done);
+                    if (_tails.TryGetValue(key, out var tail) && tail == done) _tails.Remove(key);
+                }
             }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         }
+    }
+
+    /// <summary>Sends after <paramref name="previous"/> (which never fails) has finished, on the thread pool.</summary>
+    private async Task SendAfterAsync(Task previous, object key, IControlSession session, ControlLogMessage message)
+    {
+        await previous.ConfigureAwait(ConfigureAwaitOptions.ForceYielding | ConfigureAwaitOptions.SuppressThrowing);
+        await SendAsync(key, session, message).ConfigureAwait(false);
     }
 
     private async Task SendAsync(object key, IControlSession session, ControlLogMessage message)
