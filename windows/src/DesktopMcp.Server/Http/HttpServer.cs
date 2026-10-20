@@ -113,6 +113,8 @@ public static class HttpServer
         await using var app = builder.Build();
         var logger = McpServerSetup.AfterBuild(app.Services, plan, services, desktopLog);
         using var releaseOnStop = McpServerSetup.ReleaseHeldInputOnStop(app.Services, services, logger);
+        HttpPipeline.Use(app, plan, validateOAuthToken: null);
+        app.MapGet("/health", new RequestDelegate(HttpPipeline.Health));
         MapTransport(app, plan);
 
         try

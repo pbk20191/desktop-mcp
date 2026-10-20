@@ -169,11 +169,35 @@ public sealed class HttpRig : IAsyncDisposable
         return request;
     }
 
+    /// <summary>
+    /// Sends <paramref name="method"/> to <paramref name="path"/> under <see cref="Base"/> with <paramref name="headers"/>
+    /// added without validation (a <c>Host</c> header replaces the default one).
+    /// </summary>
+    public Task<HttpResponseMessage> SendAsync(HttpMethod method, string path, params (string Name, string Value)[] headers) =>
+        SendWithHeadersAsync(new HttpRequestMessage(method, new Uri(Base, path)), headers);
+
+    /// <summary>A raw <c>initialize</c> POST to <see cref="Endpoint"/> with <paramref name="headers"/> added without validation.</summary>
+    public Task<HttpResponseMessage> SendInitializeAsync(params (string Name, string Value)[] headers) =>
+        SendWithHeadersAsync(InitializeRequest(Endpoint), headers);
+
     /// <summary>Stops the server and asserts that it exited with 0.</summary>
     public async ValueTask DisposeAsync()
     {
         Http.Dispose();
         Assert.Equal(0, await StopAsync(_stop, _serving));
+    }
+
+    private async Task<HttpResponseMessage> SendWithHeadersAsync(HttpRequestMessage request, (string Name, string Value)[] headers)
+    {
+        using (request)
+        {
+            foreach (var (name, value) in headers)
+            {
+                request.Headers.Remove(name);
+                Assert.True(request.Headers.TryAddWithoutValidation(name, value), $"could not set {name}");
+            }
+            return await Http.SendAsync(request);
+        }
     }
 
     /// <summary>Cancels the server and waits for its exit code; the token source is disposed even when that times out.</summary>
