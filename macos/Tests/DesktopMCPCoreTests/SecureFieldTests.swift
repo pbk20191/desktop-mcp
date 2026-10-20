@@ -61,6 +61,83 @@ final class SecureFieldTests: XCTestCase {
         XCTAssertEqual(EarlyAttributes(role: "AXTextField").isSecure, false)
     }
 
+    /// The walker asks an interactive element for what its phase-1 attributes allow: never the
+    /// value of a secure field, nor of one whose role could not be read.
+    func testWalkerAsksBySecureFromEarlyAttributes() {
+        let withheld: Set<String> = [kAXValueAttribute, kAXSelectedTextAttribute, kAXSelectedTextRangeAttribute]
+        for early in [EarlyAttributes(role: "AXTextField", subrole: "AXSecureTextField"),
+                      EarlyAttributes(role: "AXSecureTextField"), EarlyAttributes(role: "")] {
+            XCTAssertTrue(early.isSecure, early.role)
+            XCTAssertTrue(withheld.isDisjoint(with: LateAttributes.names(for: early)), early.role)
+        }
+        XCTAssertTrue(LateAttributes.names(for: EarlyAttributes(role: "AXTextField")).contains(kAXValueAttribute))
+    }
+
+    /// An element whose role could not be read is shown as a secure field.
+    func testUnreadableRoleFailsClosed() {
+        let node = Tree.describe(early: EarlyAttributes(role: ""), late: LateAttributes(value: "hunter2" as NSString),
+                                 linkedTitle: nil, box: box, windowName: "Login")
+        XCTAssertFalse(TreeState(interactiveNodes: [node]).interactiveElementsString().contains("hunter2"))
+        XCTAssertEqual(node.metadata["value"], .string(SecureField.hidden))
+    }
+
+    /// A fake element for the password-field climb; `parentNode` is its parent.
+    final class Node: SecureFieldNode {
+        let role: String?
+        let subrole: String?
+        let parentNode: Node?
+        let reads: Locked<Int>
+
+        init(_ role: String?, subrole: String? = nil, parent: Node? = nil, reads: Locked<Int> = Locked(0)) {
+            self.role = role
+            self.subrole = subrole
+            self.parentNode = parent
+            self.reads = reads
+        }
+
+        func roles() -> (role: String?, subrole: String?) {
+            reads.withLock { $0 += 1 }
+            return (role, subrole)
+        }
+
+        func parent() -> Node? { parentNode }
+    }
+
+    /// `inner` under `depth` plain groups under `top`.
+    private func chain(depth: Int, top: Node, reads: Locked<Int> = Locked(0)) -> Node {
+        var node = top
+        for _ in 0..<depth { node = Node("AXGroup", parent: node, reads: reads) }
+        return node
+    }
+
+    func testClimbFindsAPasswordFieldThreeLevelsUp() {
+        let field = Node("AXTextField", subrole: "AXSecureTextField", parent: Node("AXWebArea"))
+        XCTAssertTrue(SecureField.receivesSecureInput(focused: nil, hit: chain(depth: 3, top: field)))
+        XCTAssertFalse(SecureField.receivesSecureInput(focused: nil, hit: chain(depth: 3, top: Node("AXTextField"))))
+        // No more than five ancestors.
+        XCTAssertTrue(SecureField.receivesSecureInput(focused: nil, hit: chain(depth: 5, top: field)))
+        XCTAssertFalse(SecureField.receivesSecureInput(focused: nil, hit: chain(depth: 6, top: field)))
+    }
+
+    func testClimbStopsAtTheWindowOrWebArea() {
+        let reads = Locked(0)
+        let field = Node("AXSecureTextField")
+        for stop in ["AXWindow", "AXWebArea"] {
+            reads.current = 0
+            let hit = chain(depth: 1, top: Node(stop, parent: field, reads: reads), reads: reads)
+            XCTAssertFalse(SecureField.receivesSecureInput(focused: nil, hit: hit), stop)
+            XCTAssertEqual(reads.current, 2, stop)  // the group and the stop, never the field above
+        }
+    }
+
+    func testFocusedPasswordFieldWins() {
+        let hit = Node("AXTextField", parent: Node("AXWindow"))
+        XCTAssertTrue(SecureField.receivesSecureInput(focused: Node("AXSecureTextField"), hit: hit))
+        XCTAssertTrue(SecureField.receivesSecureInput(focused: Node("AXTextField", subrole: "AXSecureTextField"), hit: nil))
+        XCTAssertFalse(SecureField.receivesSecureInput(focused: Node("AXTextField"), hit: hit))
+        XCTAssertFalse(SecureField.receivesSecureInput(focused: Node?.none, hit: nil))
+    }
+
     func testTypedMessage() {
         XCTAssertEqual(SecureField.typedMessage(count: 7, x: 10, y: 20),
                        "Typed 7 characters into a secure field at (10,20).")

@@ -149,22 +149,26 @@ public final class Desktop: Sendable {
         try await Input.click(x: x, y: y, button: button, count: clicks)
     }
 
-    /// Whether the element at the point, or its parent (a click often lands on the field's
-    /// inner element), is a password field. Only role and subrole are read; false on any error.
+    /// Whether the keys typed now go to a password field: the focused element, or the element
+    /// at the point or one of its near ancestors, is one (`SecureField.receivesSecureInput`).
+    /// Only roles and subroles are read; an element that cannot be read is not counted.
     public func isSecureField(atX x: Int, y: Int) async -> Bool {
         await offload {
-            var element: AXUIElement?
-            guard AXUIElementCopyElementAtPosition(AX.systemWide, Float(x), Float(y), &element) == .success,
-                  let element else { return false }
-            if SecureField.isSecure(element) { return true }
-            guard let parent = AX.element(AX.attribute(element, kAXParentAttribute)) else { return false }
-            return SecureField.isSecure(parent)
+            var hit: AXUIElement?
+            let found = AXUIElementCopyElementAtPosition(AX.systemWide, Float(x), Float(y), &hit) == .success
+            let focused = AX.element(AX.attribute(AX.systemWide, kAXFocusedUIElementAttribute))
+            return SecureField.receivesSecureInput(focused: focused.map(AXSecureFieldNode.init),
+                                                   hit: found ? hit.map(AXSecureFieldNode.init) : nil)
         }
     }
 
-    public func type(x: Int, y: Int, text: String, caret: String, clear: Bool, pressEnter: Bool) async throws {
+    /// Clicks at the point, then types. Returns whether the text went into a password field,
+    /// checked after the click (which moves focus) and before the first key.
+    @discardableResult
+    public func type(x: Int, y: Int, text: String, caret: String, clear: Bool, pressEnter: Bool) async throws -> Bool {
         try await Input.click(x: x, y: y)
         try await Input.pause(0.1)
+        let secure = await isSecureField(atX: x, y: y)
         if clear {
             try await Input.hotKey(["command", "a"])
             try await Input.pause(0.05)
@@ -182,6 +186,7 @@ public final class Desktop: Sendable {
         if pressEnter {
             try await Input.keyPress(KeyMap.returnKey)
         }
+        return secure
     }
 
     /// Returns a message when the direction does not fit the scroll type.

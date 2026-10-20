@@ -70,7 +70,9 @@ struct EarlyAttributes {
     var rect: Rect?
     var children: [AXUIElement] = []
 
-    var isSecure: Bool { SecureField.isSecure(role: role, subrole: subrole) }
+    /// A password field, or an element whose role could not be read (fail closed: its value
+    /// is never fetched).
+    var isSecure: Bool { role.isEmpty || SecureField.isSecure(role: role, subrole: subrole) }
 }
 
 extension EarlyAttributes {
@@ -118,6 +120,11 @@ struct LateAttributes {
         return secure ? names.filter { !secret.contains($0) } : names
     }
 
+    /// What the walker asks an interactive element for, from its phase-1 attributes.
+    static func names(for early: EarlyAttributes) -> [String] {
+        names(for: early.role, secure: early.isSecure)
+    }
+
     var title = ""
     var description = ""
     var identifier = ""
@@ -141,8 +148,17 @@ struct LateAttributes {
 extension LateAttributes {
     /// `secure` comes from the role and subrole, read before this so the value is never fetched.
     init(_ element: AXUIElement, role: String?, secure: Bool) {
+        self.init(element, names: Self.names(for: role, secure: secure), secure: secure)
+    }
+
+    /// For an interactive element: `names(for: early)`, secure as `early` says.
+    init(_ element: AXUIElement, early: EarlyAttributes) {
+        self.init(element, names: Self.names(for: early), secure: early.isSecure)
+    }
+
+    private init(_ element: AXUIElement, names: [String], secure: Bool) {
         self.secure = secure
-        let raw = AX.attributes(element, Self.names(for: role, secure: secure))
+        let raw = AX.attributes(element, names)
         title = AX.string(raw[kAXTitleAttribute])
         description = AX.string(raw[kAXDescriptionAttribute])
         identifier = AX.string(raw[AXName.identifier])
@@ -369,7 +385,7 @@ public final class Tree: Sendable {
 
             if TreeConfig.scrollableRoles.contains(role) && isVisible {
                 let label = early.children.first.map {
-                    LateAttributes($0, role: nil, secure: SecureField.isSecure($0)).label
+                    LateAttributes($0, role: nil, secure: SecureField.withholdsValue($0)).label
                 } ?? ""
                 state.scrollableNodes.append(TreeNode(box: box, name: label, controlType: role, windowName: windowName))
             }
@@ -380,7 +396,7 @@ public final class Tree: Sendable {
 
     private func interactiveNode(_ element: AXUIElement, early: EarlyAttributes, box: BoundingBox,
                                  windowName: String, clip: BoundingBox?, isBrowser: Bool) -> TreeNode? {
-        let late = LateAttributes(element, role: early.role, secure: early.isSecure)
+        let late = LateAttributes(element, early: early)
         let linkedTitle = early.titleUIElement.flatMap(Self.linkedTitle)
         let node = Self.describe(early: early, late: late, linkedTitle: linkedTitle, box: box, windowName: windowName)
         return isBrowser
@@ -389,12 +405,15 @@ public final class Tree: Sendable {
     }
 
     /// The text of an element's AXTitleUIElement: its title, else its value, else its description.
-    /// The value is fetched only when the title is empty and the element is not a secure field.
+    /// The value is fetched only when the title is empty and the element is not a secure field
+    /// (nor one whose role could not be read).
     static func linkedTitle(_ titleElement: AXUIElement) -> String? {
         let raw = AX.attributes(titleElement, [kAXRoleAttribute, kAXSubroleAttribute, kAXTitleAttribute, kAXDescriptionAttribute])
         let title = AX.describe(raw[kAXTitleAttribute])
         if !title.isEmpty { return title }
-        if !SecureField.isSecure(role: raw[kAXRoleAttribute] as? String, subrole: raw[kAXSubroleAttribute] as? String) {
+        // Fail closed: an element whose role could not be read is not asked for its value.
+        let role = raw[kAXRoleAttribute] as? String ?? ""
+        if !role.isEmpty && !SecureField.isSecure(role: role, subrole: raw[kAXSubroleAttribute] as? String) {
             let value = AX.describe(AX.attribute(titleElement, kAXValueAttribute))
             if !value.isEmpty { return value }
         }
