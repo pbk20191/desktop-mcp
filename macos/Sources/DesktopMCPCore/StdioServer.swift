@@ -59,6 +59,9 @@ private actor StdoutWatchingTransport: Transport {
     private var unanswered: Set<ID> = []
     private var inputEnded = false
     private var outputClosed = false
+    /// Set when `disconnect()` starts: a send after that is refused rather than queued, since
+    /// it could outlive the wait for the writes already pending.
+    private var closing = false
 
     init(input: FileDescriptor, output: FileDescriptor, label: String) {
         inner = StdioTransport(input: input, output: output)
@@ -83,8 +86,11 @@ private actor StdoutWatchingTransport: Transport {
     /// Also stops every write still queued or in progress, and waits for them: `StdioTransport`
     /// keeps retrying a blocked write after its own `disconnect()`, and once the caller closes
     /// the fd (a socket connection) its number can be reused, so a late write would land in
-    /// some other file.
+    /// some other file. A send that arrives while this waits (the reply of a tool call that
+    /// shutdown just cancelled, say) is refused, as `StdioTransport` refuses one once it is
+    /// disconnected, so no write starts that the wait would not see.
     func disconnect() async {
+        closing = true
         forwarding?.cancel()
         continuation.finish()
         let pending = Array(writes.values)
@@ -94,6 +100,7 @@ private actor StdoutWatchingTransport: Transport {
     }
 
     func send(_ data: Data) async throws {
+        guard !closing else { throw MCPError.transportError(Errno(rawValue: ENOTCONN)) }
         let previous = lastWrite
         let write = Task { [inner] in
             _ = await previous?.result

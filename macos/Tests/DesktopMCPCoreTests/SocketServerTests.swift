@@ -177,13 +177,38 @@ final class SocketServerTests: XCTestCase {
         return registry
     }
 
+    /// Adds "Hold" to `registry`: it counts each call that starts in `started`, then waits until
+    /// it is cancelled.
+    func registerHold(on registry: ToolRegistry, started: Locked<Int>) async {
+        await registry.register(Tool(
+            name: "Hold", description: "Waits until cancelled.",
+            inputSchema: .object(["type": .string("object")]),
+            annotations: ToolAnnotations(title: "Hold", readOnly: true, destructive: false,
+                                         idempotent: true, openWorld: false),
+            handler: { _ in
+                started.withLock { $0 += 1 }
+                try await Task.sleep(for: .seconds(60))
+                return []
+            }))
+    }
+
     func testShutdownStopsAWriteBlockedOnAPeerThatDoesNotRead() async throws {
         // A reply bigger than the send buffer, to a client that never reads: the SDK transport
         // retries the write every 10 ms. Once shutdown returns and the fd is closed, its number
-        // is free for the next socket; the retrying write must not land there.
+        // is free for the next socket; the retrying write must not land there, nor may the
+        // replies of the calls in flight, which shutdown cancels just before it disconnects.
         let path = socketPath()
-        let (server, run) = try await serving(await bigRegistry(size: 4 * 1024 * 1024), path: path)
+        let registry = await bigRegistry(size: 4 * 1024 * 1024)
+        let held = Locked(0)
+        await registerHold(on: registry, started: held)
+        let (server, run) = try await serving(registry, path: path)
         let fd = try connectRaw(path)
+        // Several, so that their replies may come while the transport disconnects.
+        let holds = 16
+        for id in 2..<(2 + holds) {
+            send(fd, #"{"jsonrpc":"2.0","id":\#(id),"method":"tools/call","params":{"name":"Hold","arguments":{}}}"# + "\n")
+        }
+        try await waitUntil(within: 5) { held.current == holds }
         send(fd, #"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"Big","arguments":{}}}"# + "\n")
         try await Task.sleep(for: .milliseconds(500))  // the write is now blocked
         let clock = ContinuousClock()
