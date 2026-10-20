@@ -17,6 +17,9 @@ public static class ShellEnvironment
     internal const string FallbackPathExt = ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC;.CPL;.PY;.PYW";
     private const string MachineKey = @"SYSTEM\CurrentControlSet\Control\Session Manager\Environment";
 
+    /// <summary>The server's own secrets; both Build overloads keep them out of the child's environment.</summary>
+    internal static IReadOnlyList<string> SecretVariables { get; } = ["DESKTOP_MCP_AUTH_KEY", "DESKTOP_MCP_OAUTH_CLIENT_SECRET"];
+
     public static Dictionary<string, string> Build()
     {
         var inherited = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -66,6 +69,8 @@ public static class ShellEnvironment
         environment.TryAdd("HOMEDRIVE", drive);
         environment.TryAdd("HOMEPATH", userProfile[drive.Length..]);
         environment.TryAdd("USERDOMAIN", environment.GetValueOrDefault("COMPUTERNAME") ?? "");
+        // Last, so neither the inherited environment nor HKLM/HKCU can hand the server's secrets to the child.
+        foreach (var secret in SecretVariables) environment.Remove(secret);
         return environment;
     }
 

@@ -61,4 +61,23 @@ public class ShellEnvironmentTests
         Assert.False(string.IsNullOrEmpty(environment["PATH"]));
         Assert.Contains(".EXE", environment["PATHEXT"], StringComparison.OrdinalIgnoreCase);
     }
+
+    [Fact]
+    public void TheServersSecretsNeverReachTheChild()
+    {
+        var inherited = Variables(("desktop_mcp_auth_key", "k"), ("DESKTOP_MCP_OAUTH_CLIENT_SECRET", "s"), ("DESKTOP_MCP_DEBUG", "1"), ("PATH", @"C:\x"));
+        var machine = new RegistryEnvironment(Variables(), "", "");
+        var user = new RegistryEnvironment(Variables(("DESKTOP_MCP_AUTH_KEY", "from-hkcu")), "", "");
+        var environment = ShellEnvironment.Build(inherited, machine, user, "PC", "me", @"C:\Users\me");
+        Assert.False(environment.ContainsKey("DESKTOP_MCP_AUTH_KEY"));
+        Assert.False(environment.ContainsKey("DESKTOP_MCP_OAUTH_CLIENT_SECRET"));
+        Assert.Equal("1", environment["DESKTOP_MCP_DEBUG"]);
+    }
+
+    [Fact]
+    public void SecretsAreRemovedWithoutTheRegistryToo()
+    {
+        var environment = ShellEnvironment.Build(Variables(("DESKTOP_MCP_AUTH_KEY", "k")), null, null, "PC", "me", @"C:\Users\me");
+        Assert.False(environment.ContainsKey("DESKTOP_MCP_AUTH_KEY"));
+    }
 }
