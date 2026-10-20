@@ -53,6 +53,7 @@ Run `desktop-mcp permissions` to check the current state and trigger the system 
 | `Desktop` | Creates a new Mission Control Space |
 | `Notification` | Shows a notification banner |
 | `Open` | Opens a file or URL (optionally with an app), or reveals a path in Finder |
+| `Clipboard` | Reads the clipboard (text, file paths, image) or replaces it with text or files |
 
 ## Commands and options
 

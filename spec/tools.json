@@ -471,6 +471,43 @@
         "type": "object"
       },
       "name": "Open"
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false,
+        "title": "Clipboard"
+      },
+      "description": "Reads or writes the clipboard. mode='read' (default) returns the copied text, file paths and image; mode='write' replaces the clipboard with 'text' or with the files in 'paths' (which must exist), not both.",
+      "inputSchema": {
+        "properties": {
+          "mode": {
+            "default": "read",
+            "enum": [
+              "read",
+              "write"
+            ],
+            "type": "string"
+          },
+          "paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "text": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "name": "Clipboard"
     }
   ]
 }
