@@ -57,8 +57,8 @@ public static class SecurityJson
                 ["client_secret_post"]),
             Context.OAuthMetadata);
 
-    public static string Token(string accessToken) =>
-        JsonSerializer.Serialize(new TokenResponse(accessToken, "Bearer", OAuthServer.TokenLifetimeSeconds), Context.TokenResponse);
+    public static string Token(string accessToken, int expiresIn) =>
+        JsonSerializer.Serialize(new TokenResponse(accessToken, "Bearer", expiresIn), Context.TokenResponse);
 
     public static string Health => JsonSerializer.Serialize(new HealthBody("ok"), Context.HealthBody);
 }

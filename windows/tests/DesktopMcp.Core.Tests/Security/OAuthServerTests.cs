@@ -42,6 +42,31 @@ public class OAuthServerTests
         Assert.Equal(new OAuthResult(status, json, null), Server().Authorize(query));
     }
 
+    // Redirect tricks: each host a browser would visit is not loopback, or the string could not be a valid Location (Decisions 12).
+    [Theory]
+    [InlineData("http://localhost@attacker.example/cb")]
+    [InlineData("http://attacker.example\\@localhost/cb")]
+    [InlineData("http://attacker.example\\localhost/cb")]
+    [InlineData("http:/\\attacker.example/cb")]
+    [InlineData("http://127.0.0.1.attacker.example/cb")]
+    [InlineData("http://localhost/cb#")]
+    [InlineData("http://localhost/a\r\nX-Injected: y")]
+    [InlineData("http://localhost/a\nb")]
+    [InlineData("http://localhost/a\tb")]
+    [InlineData("http://localhost/a b")]
+    [InlineData("http://localhost/é")]
+    [InlineData("http://localhost/\u007f")]
+    public void AuthorizeRefusesRedirectTricks(string redirect) =>
+        Assert.Equal(new OAuthResult(400, """{"error":"invalid_request","error_description":"redirect_uri must be a loopback http(s) URI"}""", null),
+            Server().Authorize(GoodAuthorize(redirect)));
+
+    [Theory]
+    [InlineData("client", "")]
+    [InlineData("", "s3cret")]
+    public void AnUnconfiguredClientIsAServerError(string id, string secret) =>
+        Assert.Equal(new OAuthResult(500, """{"error":"server_error","error_description":"OAuth requires a configured client ID and secret"}""", null),
+            new OAuthServer(id, secret, _time, n => $"tok{++_next}").Authorize(GoodAuthorize()));
+
     [Fact]
     public void AMissingMethodMeansS256()
     {
@@ -110,6 +135,7 @@ public class OAuthServerTests
         var (server, fields) = Issued();
         _time.Advance(301);
         Assert.Equal("""{"error":"invalid_grant","error_description":"code expired"}""", server.Token(fields).Json);
+        Assert.Equal("""{"error":"invalid_grant","error_description":"unknown code"}""", server.Token(fields).Json);   // removed
     }
 
     [Fact]

@@ -17,8 +17,7 @@ public sealed record OAuthResult(int Status, string? Json, string? Location);
 public sealed class OAuthServer(string clientId, string clientSecret, TimeProvider time, Func<int, string>? token = null)
 {
     public static readonly TimeSpan CodeLifetime = TimeSpan.FromSeconds(300);
-    public static readonly TimeSpan TokenLifetime = TimeSpan.FromSeconds(TokenLifetimeSeconds);
-    public const int TokenLifetimeSeconds = 3600;
+    public static readonly TimeSpan TokenLifetime = TimeSpan.FromSeconds(3600);
     public const int MaxPendingCodes = 1000;
 
     private const int CodeBytes = 32;    // oauth.py:180
@@ -106,7 +105,7 @@ public sealed class OAuthServer(string clientId, string clientSecret, TimeProvid
             _tokens[accessToken] = now + Ticks(TokenLifetime);
         }
 
-        return new OAuthResult(200, SecurityJson.Token(accessToken), null);
+        return new OAuthResult(200, SecurityJson.Token(accessToken, (int)TokenLifetime.TotalSeconds), null);
     }
 
     /// <summary>Whether <paramref name="token"/> is a live access token. Never throws: the pipeline calls it for every Bearer token.</summary>
@@ -138,9 +137,12 @@ public sealed class OAuthServer(string clientId, string clientSecret, TimeProvid
         return builder.ToString();
     }
 
-    /// <summary>oauth.py:81-91: http(s), a host, no fragment, and a loopback host.</summary>
+    /// <summary>oauth.py:81-91: http(s), a host, no fragment, and a loopback host. A control character, space or
+    /// non-ASCII character is refused on the raw string (Decisions 12), so the Location built from it is always a valid header.</summary>
     private static bool IsLoopbackRedirectUri(string redirectUri)
     {
+        foreach (var c in redirectUri)
+            if (c <= ' ' || c >= '\u007f') return false;
         if (!Uri.TryCreate(redirectUri, UriKind.Absolute, out var uri)) return false;
         if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) return false;
         // Any '#' is refused: the code appended after it would land in the fragment.
