@@ -20,17 +20,21 @@ public static class StdioServer
         // below, so the test host never joins a kill-on-close job.
         if (!ProcessJob.TryAssignKillOnClose())
             plan = plan with { Warnings = [.. plan.Warnings, "Could not put the server in a kill-on-close Job Object; PowerShell children may outlive it."] };
-        return RunAsync(plan, server => server.WithStdioServerTransport(), cancellationToken);
+        return RunAsync(plan, ToolServices.CreateDefault(), server => server.WithStdioServerTransport(), cancellationToken);
     }
 
-    /// <summary>The server <paramref name="plan"/> describes over the transport <paramref name="addTransport"/> adds; tests pass in-memory streams.</summary>
-    internal static async Task<int> RunAsync(ServePlan plan, Action<IMcpServerBuilder> addTransport, CancellationToken cancellationToken)
+    /// <summary>
+    /// The server <paramref name="plan"/> describes over the transport <paramref name="addTransport"/> adds, with the tools
+    /// over <paramref name="services"/>; tests pass in-memory streams and fakes.
+    /// </summary>
+    internal static async Task<int> RunAsync(ServePlan plan, ToolServices services, Action<IMcpServerBuilder> addTransport,
+        CancellationToken cancellationToken)
     {
         var catalog = ToolSpecCatalog.LoadEmbedded();
         var kept = ToolFilter.Apply(catalog.Names, plan.ExplicitTools, plan.ExcludeTools).ToHashSet(StringComparer.Ordinal);
         // Typed as IEnumerable so WithTools binds to its tool-instance overload, not WithTools<T>(T target), which
         // reflects over T and breaks NativeAOT (IL3050).
-        IEnumerable<McpServerTool> tools = ToolRegistry.CreateAll(catalog, ToolServices.CreateDefault()).Where(tool => kept.Contains(tool.ProtocolTool.Name)).ToArray();
+        IEnumerable<McpServerTool> tools = ToolRegistry.CreateAll(catalog, services).Where(tool => kept.Contains(tool.ProtocolTool.Name)).ToArray();
 
         var builder = Host.CreateEmptyApplicationBuilder(settings: null);
         builder.Logging.ClearProviders();
@@ -47,6 +51,18 @@ public static class StdioServer
         using var host = builder.Build();
         var logger = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("desktop-mcp");
         foreach (var warning in plan.Warnings) logger.LogWarning("{Warning}", warning);
+        // Decisions 19: whatever key or button the input still holds is released when the host stops.
+        using var releaseOnStop = host.Services.GetRequiredService<IHostApplicationLifetime>().ApplicationStopping.Register(() =>
+        {
+            try
+            {
+                services.Ledger.ReleaseAll();
+            }
+            catch (Exception e)
+            {
+                logger.LogError(e, "Could not release held input on shutdown: {Message}", e.Message);
+            }
+        });
         logger.LogDebug("Starting desktop-mcp (transport={Transport}, tools={Tools}, exclude={Exclude})",
             plan.Transport,
             plan.ExplicitTools.Count > 0 ? string.Join(",", plan.ExplicitTools) : "all",

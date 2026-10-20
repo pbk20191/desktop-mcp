@@ -26,6 +26,9 @@ public static class ToolRegistry
         "DisplayInventory" => new DisplayInventoryTool(protocolTool, services.Displays),
         "Snapshot" => new SnapshotTool(protocolTool, services.Snapshots),
         "Screenshot" => new ScreenshotTool(protocolTool, services.Snapshots),
+        "Click" => new ClickTool(protocolTool, services),
+        "Move" => new MoveTool(protocolTool, services),
+        "Scroll" => new ScrollTool(protocolTool, services),
         _ => new PendingTool(protocolTool),
     };
 }

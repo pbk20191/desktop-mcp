@@ -1,5 +1,6 @@
 using System.IO.Pipelines;
 using DesktopMcp.Core.Config;
+using DesktopMcp.Desktop.Input;
 using DesktopMcp.Server.Hosting;
 using DesktopMcp.Server.Tools;
 using Microsoft.Extensions.DependencyInjection;
@@ -18,7 +19,7 @@ public sealed class StdioServerTests
         var serverToClient = new Pipe();
         var plan = new ServePlan { Transport = "stdio", Host = "localhost", Port = 8000, Control = new ControlSettings(true, "relaxed", 10.0, 500, 500) };
         using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        var serving = StdioServer.RunAsync(plan,
+        var serving = StdioServer.RunAsync(plan, ToolServices.CreateDefault(),
             builder => builder.WithStreamServerTransport(clientToServer.Reader.AsStream(), serverToClient.Writer.AsStream()), stop.Token);
 
         await using (var client = await McpClient.CreateAsync(
@@ -38,5 +39,28 @@ public sealed class StdioServerTests
 
         await stop.CancelAsync();
         Assert.Equal(0, await serving);
+    }
+
+    [Fact]
+    public async Task StoppingReleasesHeldInput()
+    {
+        var ups = 0;
+        var ledger = new InputLedger();
+        ledger.Press("key:ctrl", () => { }, () => ups++);
+        var clientToServer = new Pipe();
+        var serverToClient = new Pipe();
+        var plan = new ServePlan { Transport = "stdio", Host = "localhost", Port = 8000, Control = new ControlSettings(true, "relaxed", 10.0, 500, 500) };
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var serving = StdioServer.RunAsync(plan, new FakeDesktop().Services() with { Ledger = ledger },
+            builder => builder.WithStreamServerTransport(clientToServer.Reader.AsStream(), serverToClient.Writer.AsStream()), stop.Token);
+
+        await using (var client = await McpClient.CreateAsync(
+            new StreamClientTransport(clientToServer.Writer.AsStream(), serverToClient.Reader.AsStream()), cancellationToken: stop.Token))
+            Assert.Equal(["key:ctrl"], ledger.Pending);
+
+        await stop.CancelAsync();
+        Assert.Equal(0, await serving);
+        Assert.Empty(ledger.Pending);
+        Assert.Equal(1, ups);
     }
 }
