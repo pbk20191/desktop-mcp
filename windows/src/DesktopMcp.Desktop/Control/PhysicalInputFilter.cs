@@ -408,7 +408,12 @@ internal sealed class PhysicalInputFilter
         if (!_events.Writer.TryWrite(new PhysicalEvent(kind, now, device, dx, dy))) RequestFailOpen();
     }
 
-    private void RequestFailOpen()
+    /// <summary>
+    /// Any thread: passes input from now on until the coordinator handles it (<see cref="ClearFailOpen"/>). Turns
+    /// suppression off and blocks new ledger presses; never throws. The hook path calls it on any fault, and the input
+    /// monitor calls it when a hook reinstall or a missed-key-up sample fails.
+    /// </summary>
+    public void RequestFailOpen()
     {
         Volatile.Write(ref _failOpen, true);
         Volatile.Write(ref _suppress, false);

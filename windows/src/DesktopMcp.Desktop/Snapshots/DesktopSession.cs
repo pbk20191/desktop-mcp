@@ -35,19 +35,35 @@ internal static unsafe class DesktopSession
     {
         if (!PInvoke.ProcessIdToSessionId((uint)Environment.ProcessId, out var session) || session == 0)
             throw new DesktopException(NoInteractiveSession);
-        var desktop = PInvoke.OpenInputDesktop(0, false, DESKTOP_ACCESS_FLAGS.DESKTOP_READOBJECTS);
-        if (desktop.IsNull) throw new DesktopException(DesktopUnavailable);
+        if (!IsInputDesktopDefault()) throw new DesktopException(DesktopUnavailable);
+    }
+
+    /// <summary>
+    /// Whether the input desktop is the user's "Default" desktop: false on the lock screen or a secure desktop (a UAC
+    /// prompt), or when the input desktop cannot be opened. A desktop whose name cannot be read counts as the user's.
+    /// Never throws. Shared by <see cref="ThrowIfUnavailable"/> and the control's interactive-desktop check (P4 preflight F12).
+    /// </summary>
+    public static bool IsInputDesktopDefault()
+    {
         try
         {
-            var name = stackalloc char[NameChars];
-            uint needed;
-            if (PInvoke.GetUserObjectInformation((HANDLE)(nint)desktop.Value, USER_OBJECT_INFORMATION_INDEX.UOI_NAME, name, NameChars * sizeof(char), &needed)
-                && !NameOf(name, needed).Equals("Default", StringComparison.OrdinalIgnoreCase))
-                throw new DesktopException(DesktopUnavailable);
+            var desktop = PInvoke.OpenInputDesktop(0, false, DESKTOP_ACCESS_FLAGS.DESKTOP_READOBJECTS);
+            if (desktop.IsNull) return false;
+            try
+            {
+                var name = stackalloc char[NameChars];
+                uint needed;
+                return !PInvoke.GetUserObjectInformation((HANDLE)(nint)desktop.Value, USER_OBJECT_INFORMATION_INDEX.UOI_NAME, name, NameChars * sizeof(char), &needed)
+                    || NameOf(name, needed).Equals("Default", StringComparison.OrdinalIgnoreCase);
+            }
+            finally
+            {
+                PInvoke.CloseDesktop(desktop);
+            }
         }
-        finally
+        catch (Exception)
         {
-            PInvoke.CloseDesktop(desktop);
+            return false;
         }
     }
 

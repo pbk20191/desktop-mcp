@@ -169,3 +169,27 @@ ShowWindow
 BLENDFUNCTION
 WINDOW_EX_STYLE
 WINDOW_DISPLAY_AFFINITY
+// Input monitor (Task 7): the low-level hooks, the Raw Input sink window (message-only, Decisions 23), the missed-key-up
+// sampler and the interactive-session check (the window class calls are listed above)
+SetWindowsHookEx
+UnhookWindowsHookEx
+CallNextHookEx
+WINDOWS_HOOK_ID
+KBDLLHOOKSTRUCT
+MSLLHOOKSTRUCT
+RegisterRawInputDevices
+GetRawInputData
+RAWINPUT
+RAWINPUTHEADER
+RAWINPUTDEVICE
+RAWINPUTDEVICE_FLAGS
+RAW_INPUT_DATA_COMMAND_FLAGS
+GetAsyncKeyState
+WTSQuerySessionInformation
+WTSFreeMemory
+WTS_CONNECTSTATE_CLASS
+WTS_CURRENT_SERVER_HANDLE
+WTS_CURRENT_SESSION
+HWND_MESSAGE
+GetModuleHandle
+WM_INPUT
