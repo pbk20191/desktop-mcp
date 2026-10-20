@@ -50,7 +50,11 @@ internal interface ITreeSource
     /// <summary>The element's children in the control view with their properties cached; empty when it is gone.</summary>
     IReadOnlyList<UiaElementData> GetChildren(UiaElementData parent);
 
-    /// <summary>Up to <paramref name="maxWords"/> visible words with their boxes; empty without a TextPattern.</summary>
+    /// <summary>
+    /// The visible words with their boxes, one entry per box (a word wrapped over two lines gives two), up to
+    /// <paramref name="maxWords"/> entries: the limit counts boxes, since each becomes one word element of the walk.
+    /// Empty without a TextPattern.
+    /// </summary>
     IReadOnlyList<WordBox> GetWords(UiaElementData element, int maxWords);
 
     /// <summary>The walk is done with the element: the source may drop what it holds for it.</summary>

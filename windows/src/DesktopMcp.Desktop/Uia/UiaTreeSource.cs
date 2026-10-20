@@ -29,6 +29,12 @@ internal sealed unsafe class UiaTreeSource(UiaSession session) : ITreeSource
     /// <summary>The most word moves through one control's text, so a provider that never advances cannot spin forever.</summary>
     public const int MaxWordSteps = 10_000;
 
+    /// <summary>
+    /// The most characters read from one word range. Upstream reads the whole range (GetText(-1)); a provider whose word
+    /// unit never ends (one huge "word") would copy all of its text into one string.
+    /// </summary>
+    public const int MaxWordLength = 1_000;
+
     /// <summary>The top-level window with the traversal properties cached.</summary>
     public UiaElementData ReadWindow(long window) =>
         Read(session.Automation.ElementFromHandleBuildCache((HWND)(nint)window, session.ElementRequest));
@@ -38,8 +44,9 @@ internal sealed unsafe class UiaTreeSource(UiaSession session) : ITreeSource
     {
         var element = session.Automation.ElementFromHandleBuildCache((HWND)(nint)window, session.ProbeRequest);
         var name = UiaValues.Take(element.get_CachedName());
-        // upstream desktop/service.py:1063-1066: only a nameless window is checked for children.
-        var hasChildren = name.Trim().Length > 0 || session.ControlView.GetFirstChildElement(element) is not null;
+        // upstream desktop/service.py:1063-1066: only a nameless window is checked for children, in the raw view
+        // (uia/core.py:77), which also sees the elements the control view hides.
+        var hasChildren = name.Trim().Length > 0 || session.RawView.GetFirstChildElement(element) is not null;
         return new WindowProbe(
             name,
             (int)element.get_CachedControlType(),
@@ -89,24 +96,31 @@ internal sealed unsafe class UiaTreeSource(UiaSession session) : ITreeSource
 
         var dpi = (int)PInvoke.GetDpiForSystem();
         if (dpi <= 0) dpi = 96;
-        var uniformSize = FontSize(pattern.get_DocumentRange());
         var ranges = pattern.GetVisibleRanges();
         var steps = 0;
         for (var r = 0; ranges is not null && r < ranges.get_Length(); r++)
         {
             var visible = ranges.GetElement(r);
+            // Upstream reads the uniform size once on DocumentRange; on a huge document that attribute scan can exceed the
+            // transaction timeout (and block the window for 90 s), so it is read on each visible range instead. Visible
+            // words get the same size either way.
+            var uniformSize = FontSize(visible);
             var word = visible.Clone();
             word.ExpandToEnclosingUnit(TextUnit.TextUnit_Word);
             while (word.CompareEndpoints(TextPatternRangeEndpoint.TextPatternRangeEndpoint_Start, visible,
                        TextPatternRangeEndpoint.TextPatternRangeEndpoint_End) < 0)
             {
                 if (++steps > MaxWordSteps || words.Count >= maxWords) return words;
-                var text = UiaValues.Take(word.GetText(-1)).Trim();
+                var text = UiaValues.Take(word.GetText(MaxWordLength)).Trim();
                 if (text.Length > 0)
                 {
                     var size = uniformSize ?? FontSize(word);
                     foreach (var box in BoundingRectangles(word))
+                    {
+                        // maxWords counts boxes (the walker's word elements); a wrapped word's later lines are cut at the limit.
+                        if (words.Count >= maxWords) return words;
                         words.Add(new WordBox(text, size is { } points ? ShrinkToFontSize(box, points, dpi) : box));
+                    }
                 }
                 if (word.Move(TextUnit.TextUnit_Word, 1) == 0) break;
             }

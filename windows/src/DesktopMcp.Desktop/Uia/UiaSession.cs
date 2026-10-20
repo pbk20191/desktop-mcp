@@ -84,6 +84,7 @@ internal sealed class UiaSession
         ChildrenRequest = CreateRequest(automation, TraversalProperties, TraversalPatterns, TreeScope.TreeScope_Children);
         ProbeRequest = CreateRequest(automation, ProbeProperties, [UIA_PATTERN_ID.UIA_WindowPatternId], TreeScope.TreeScope_Element);
         ControlView = automation.get_ControlViewWalker();
+        RawView = automation.get_RawViewWalker();
     }
 
     public IUIAutomation6 Automation { get; }
@@ -91,6 +92,9 @@ internal sealed class UiaSession
     public IUIAutomationCacheRequest ChildrenRequest { get; }
     public IUIAutomationCacheRequest ProbeRequest { get; }
     public IUIAutomationTreeWalker ControlView { get; }
+
+    /// <summary>The raw view, for the window probe's children check only (upstream uia/core.py:77 walks it there).</summary>
+    public IUIAutomationTreeWalker RawView { get; }
 
     // UIAutomationCore's first use in a process is not thread-safe: when several threads create clients at once, all but
     // one fail their first CreateCacheRequest with E_FAIL (measured in P2 Task 11). Creation is in-process only (no call

@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using Windows.Win32;
 using Windows.Win32.Foundation;
 using Windows.Win32.System.Com;
+using Windows.Win32.System.Variant;
 using Windows.Win32.UI.Accessibility;
 
 namespace DesktopMcp.Desktop.Uia;
@@ -63,15 +64,19 @@ internal static unsafe class UiaValues
         return parts.Length == 0 ? null : string.Join('.', parts);
     }
 
-    /// <summary>Reads a one-dimensional SAFEARRAY of VT_I4 without taking ownership.</summary>
-    public static int[] ReadInts(SAFEARRAY* array) => Read<int>(array);
+    /// <summary>Reads a one-dimensional SAFEARRAY of VT_I4 without taking ownership; any other array reads as empty.</summary>
+    public static int[] ReadInts(SAFEARRAY* array) => Read<int>(array, VARENUM.VT_I4);
 
-    /// <summary>Reads a one-dimensional SAFEARRAY of VT_R8 without taking ownership.</summary>
-    public static double[] ReadDoubles(SAFEARRAY* array) => Read<double>(array);
+    /// <summary>Reads a one-dimensional SAFEARRAY of VT_R8 without taking ownership; any other array reads as empty.</summary>
+    public static double[] ReadDoubles(SAFEARRAY* array) => Read<double>(array, VARENUM.VT_R8);
 
-    private static T[] Read<T>(SAFEARRAY* array) where T : unmanaged
+    private static T[] Read<T>(SAFEARRAY* array, VARENUM type) where T : unmanaged
     {
         if (array is null) return [];
+        // The array comes from a provider in another process: its shape is checked before its data is read, so a wrong
+        // element type or size cannot make the copy run past the end of the buffer.
+        if (PInvoke.SafeArrayGetDim(array) != 1 || PInvoke.SafeArrayGetElemsize(array) != (uint)sizeof(T)) return [];
+        if (PInvoke.SafeArrayGetVartype(array, out var actual).Failed || actual != type) return [];
         PInvoke.SafeArrayGetLBound(array, 1, out var lower).ThrowOnFailure();
         PInvoke.SafeArrayGetUBound(array, 1, out var upper).ThrowOnFailure();
         var count = upper - lower + 1;

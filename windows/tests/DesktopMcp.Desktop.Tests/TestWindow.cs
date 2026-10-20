@@ -37,8 +37,9 @@ internal sealed partial class TestWindow : IDisposable
         }
         catch (TimeoutException)
         {
-            // The thread destroys the window itself if it creates it after this.
-            _created.TrySetCanceled();
+            // The thread destroys the window itself if it creates it after this; if it won the race, it is told to stop.
+            if (!_created.TrySetCanceled() && _created.Task.IsCompletedSuccessfully)
+                PostThreadMessageW(_created.Task.Result.ThreadId, WmApp, 0, 0);
             throw;
         }
     }
@@ -49,8 +50,9 @@ internal sealed partial class TestWindow : IDisposable
 
     public void Dispose()
     {
-        PostThreadMessageW(ThreadId, WmApp, 0, 0);
-        _thread.Join(WaitLimit);
+        if (!PostThreadMessageW(ThreadId, WmApp, 0, 0))
+            throw new InvalidOperationException($"PostThreadMessage failed: {Marshal.GetLastPInvokeError()}");
+        if (!_thread.Join(WaitLimit)) throw new TimeoutException("The test window's thread did not end within 10 s.");
     }
 
     private void Run(int left, int top, int width, int height)
@@ -61,8 +63,8 @@ internal sealed partial class TestWindow : IDisposable
             var module = GetModuleHandleW(null);
             window = CreateWindowExW(0, "#32770", Title, WsOverlappedWindow, left, top, width, height, 0, 0, module, 0);
             if (window == 0) throw new InvalidOperationException($"CreateWindowEx failed: {Marshal.GetLastPInvokeError()}");
-            CreateWindowExW(0, "BUTTON", ButtonText, WsChild | WsVisible, 20, 20, 120, 32, window, 1, module, 0);
-            CreateWindowExW(WsExClientEdge, "EDIT", EditText, WsChild | WsVisible, 20, 70, 300, 28, window, 2, module, 0);
+            CreateChild(0, "BUTTON", ButtonText, 20, 20, 120, 32, window, 1, module);
+            CreateChild(WsExClientEdge, "EDIT", EditText, 20, 70, 300, 28, window, 2, module);
             ShowWindow(window, SwShowNoActivate);
             if (!_created.TrySetResult((window, GetCurrentThreadId()))) return; // the constructor gave up waiting
             while (GetMessageW(out var message, 0, 0, 0) > 0)
@@ -80,6 +82,13 @@ internal sealed partial class TestWindow : IDisposable
         {
             if (window != 0) DestroyWindow(window);
         }
+    }
+
+    private static void CreateChild(uint exStyle, string className, string text, int x, int y, int width, int height,
+        nint parent, nint id, nint module)
+    {
+        if (CreateWindowExW(exStyle, className, text, WsChild | WsVisible, x, y, width, height, parent, id, module, 0) == 0)
+            throw new InvalidOperationException($"CreateWindowEx({className}) failed: {Marshal.GetLastPInvokeError()}");
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -117,7 +126,7 @@ internal sealed partial class TestWindow : IDisposable
     [LibraryImport("user32.dll")]
     private static partial nint DispatchMessageW(in Msg message);
 
-    [LibraryImport("user32.dll")]
+    [LibraryImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool PostThreadMessageW(uint threadId, uint message, nuint wParam, nint lParam);
 

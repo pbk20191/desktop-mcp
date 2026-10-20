@@ -46,6 +46,9 @@ SafeArrayGetUBound
 SafeArrayAccessData
 SafeArrayUnaccessData
 SafeArrayDestroy
+SafeArrayGetDim
+SafeArrayGetElemsize
+SafeArrayGetVartype
 GetDpiForSystem
 GetForegroundWindow
 // Displays (DisplayInventory, display selection; upstream uia/core.py:599-828)
