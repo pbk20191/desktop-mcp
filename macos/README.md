@@ -48,7 +48,7 @@ Run `desktop-mcp permissions` to check the current state and trigger the system 
 | `Scroll` | vertical/horizontal, `wheel_times` |
 | `Move` | Moves the cursor, or drags with `drag=true` |
 | `Shortcut` | e.g. `command+shift+t` |
-| `Wait` | Waits for N seconds |
+| `Wait` | Waits for N seconds, or with `until` for an app to run or quit, a window to appear or close (by `app` and/or `title`), or an element to appear (by `title` and/or `role`; returns its centre in `Click` points), up to `timeout` seconds (default 10). Window and element waits need Accessibility; a password field is never matched by its value |
 | `App` | launch / switch / resize / move / quit / force_quit (quit never targets desktop-mcp itself or loginwindow; no Accessibility needed) |
 | `Shell` | `bash -c`, or `osascript` for AppleScript / JXA (see below) |
 | `Scrape` | Fetches a URL and converts it to Markdown (private, loopback, and other internal addresses are blocked) |

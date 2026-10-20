@@ -313,16 +313,53 @@
         "readOnlyHint": true,
         "title": "Wait"
       },
-      "description": "Pauses execution for specified duration in seconds. Use when waiting for: applications to launch, UI animations to complete, content to load. Helps ensure UI is ready before next interaction.",
+      "description": "Waits a fixed 'duration' in seconds, or with 'until' waits for a condition, checking with backoff until it holds or 'timeout' seconds (default 10) pass, then fails. 'duration' is ignored with 'until'. Conditions: 'app_running' / 'app_quit' ('app': name or bundle id); 'window' / 'window_gone' ('app' and/or 'title', a case-insensitive substring; 'window' returns the matching Window list lines); 'element' ('title' and/or 'role', an exact AX role such as AXButton, in 'app' or else the app owning the menu bar; title matches title, description or value; returns '<role> \"<title>\" at [x,y]', the centre in Click coordinates). Window and element conditions need Accessibility.",
       "inputSchema": {
         "properties": {
+          "app": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "duration": {
             "type": "integer"
+          },
+          "role": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "timeout": {
+            "default": 10,
+            "type": "integer"
+          },
+          "title": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "until": {
+            "default": null,
+            "enum": [
+              "app_running",
+              "app_quit",
+              "window",
+              "window_gone",
+              "element",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
-        "required": [
-          "duration"
-        ],
         "type": "object"
       },
       "name": "Wait"

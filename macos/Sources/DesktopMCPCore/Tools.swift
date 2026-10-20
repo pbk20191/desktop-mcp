@@ -410,16 +410,7 @@ public enum DesktopMCP {
                     return [.text("Pressed \(shortcut).")]
                 }),
 
-            Tool(
-                name: "Wait",
-                description: "Pauses execution for specified duration in seconds. Use when waiting for: applications to launch, UI animations to complete, content to load. Helps ensure UI is ready before next interaction.",
-                inputSchema: schema(["duration": integer()], required: ["duration"]),
-                annotations: ToolAnnotations(title: "Wait", readOnly: true, destructive: false, idempotent: true, openWorld: false),
-                handler: { args in
-                    guard let duration = try args.int("duration") else { throw ToolError("Missing required argument 'duration'") }
-                    try await Task.sleep(for: .seconds(max(0, duration)))
-                    return [.text("Waited for \(duration) seconds.")]
-                }),
+            WaitTool.tool(),
 
             Tool(
                 name: "Scrape",
