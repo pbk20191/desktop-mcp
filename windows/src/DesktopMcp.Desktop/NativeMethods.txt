@@ -109,9 +109,10 @@ WindowFromPoint
 // Desktop input: the double-click time and the non-text clipboard check (Type pastes only over text or nothing)
 GetDoubleClickTime
 CountClipboardFormats
-// Foreground and window placement (Decisions 7 and 32): ShowWindowAsync and SWP_ASYNCWINDOWPOS, never a synchronous cross-process call
+// Foreground and window placement (Decisions 7 and 32): restore and placement use ShowWindowAsync and SWP_ASYNCWINDOWPOS;
+// the AttachThreadInput sequence, whose calls can block on a hung thread, runs on a dedicated thread bounded at 2 s.
+// That thread's first user32 call creates its message queue, which AttachThreadInput needs.
 SetForegroundWindow
-BringWindowToTop
 AttachThreadInput
 AllowSetForegroundWindow
 ASFW_ANY

@@ -17,10 +17,10 @@ internal sealed class ForegroundRig
     public const uint OtherThread = 5;
     public const uint ServiceThread = 3;
 
-    public ForegroundRig()
+    public ForegroundRig(Func<ForegroundRig, RigCalls>? calls = null)
     {
         Windows = new RigWindows(this);
-        Calls = new RigCalls(this);
+        Calls = calls?.Invoke(this) ?? new RigCalls(this);
         Service = new ForegroundService(Windows, Calls, (delay, _) => { Time.Now += delay; return Task.CompletedTask; }, Time);
     }
 
@@ -29,6 +29,7 @@ internal sealed class ForegroundRig
     public string? TakesForegroundOn { get; init; }
     public long ForegroundWindow { get; set; } = 99;
     public bool ForegroundThreadSameAsTarget { get; init; }
+    public bool Gone { get; init; }
 
     public ManualTime Time { get; } = new();
     public RigWindows Windows { get; }
@@ -38,7 +39,7 @@ internal sealed class ForegroundRig
     internal sealed class RigWindows(ForegroundRig rig) : IWindowSystem
     {
         public IReadOnlyList<long> EnumerateTopLevel() => [Target, rig.ForegroundWindow];
-        public bool IsWindow(long window) => true;
+        public bool IsWindow(long window) => !rig.Gone;
         public bool IsVisible(long window) => true;
         public bool IsMinimized(long window) => window == Target && rig.Minimized;
         public bool IsMaximized(long window) => false;
@@ -60,13 +61,30 @@ internal sealed class ForegroundRig
 
     internal sealed class RigCalls(ForegroundRig rig) : IForegroundCalls
     {
-        public List<string> Log { get; } = [];
+        private readonly Lock _lock = new();
+        private readonly List<string> _log = [];
+        private int _attached;
+
+        /// <summary>A copy of the calls so far (the attach sequence runs on its own thread).</summary>
+        public List<string> Log { get { lock (_lock) return [.. _log]; } }
+
         public List<(long Window, int X, int Y, int Width, int Height, uint Flags)> Positions { get; } = [];
         public int SetWindowPosError { get; init; }
 
+        /// <summary>When set, SetWindowPos (inside the attached region) logs, signals <see cref="Blocked"/> and waits for it.</summary>
+        public ManualResetEventSlim? SetWindowPosGate { get; init; }
+        public ManualResetEventSlim Blocked { get; } = new();
+        public Thread? BlockedThread { get; private set; }
+
+        /// <summary>SetForegroundWindow throws while any thread is attached.</summary>
+        public bool ThrowsWhileAttached { get; init; }
+
+        /// <summary>Attaching to this thread fails (an elevated window's thread).</summary>
+        public uint? AttachFailsFor { get; init; }
+
         private bool Record(string name, string call)
         {
-            Log.Add(call);
+            lock (_lock) _log.Add(call);
             if (name == rig.TakesForegroundOn) rig.ForegroundWindow = Target;
             return true;
         }
@@ -77,19 +95,34 @@ internal sealed class ForegroundRig
             return Record("ShowWindowAsync", $"ShowWindowAsync({window}, {(command == ForegroundService.SwRestore ? "SW_RESTORE" : command)})");
         }
 
-        public bool SetForegroundWindow(long window) => Record("SetForegroundWindow", $"SetForegroundWindow({window})");
-        public bool BringWindowToTop(long window) => Record("BringWindowToTop", $"BringWindowToTop({window})");
+        public bool SetForegroundWindow(long window)
+        {
+            Record("SetForegroundWindow", $"SetForegroundWindow({window})");
+            if (ThrowsWhileAttached && Volatile.Read(ref _attached) > 0) throw new InvalidOperationException("SetForegroundWindow failed");
+            return true;
+        }
 
-        public bool AttachThreadInput(uint attach, uint attachTo, bool doAttach) =>
+        public bool AttachThreadInput(uint attach, uint attachTo, bool doAttach)
+        {
             Record(doAttach ? "AttachThreadInput" : "DetachThreadInput", $"AttachThreadInput({attach}, {attachTo}, {doAttach})");
+            if (doAttach && attachTo == AttachFailsFor) return false;
+            Interlocked.Add(ref _attached, doAttach ? 1 : -1);
+            return true;
+        }
 
         public bool AllowSetForegroundWindow(uint processId) => Record("AllowSetForegroundWindow", $"AllowSetForegroundWindow({processId:X})");
 
         public bool SetWindowPos(long window, long insertAfter, int x, int y, int width, int height, uint flags, out int lastError)
         {
-            Positions.Add((window, x, y, width, height, flags));
+            lock (_lock) Positions.Add((window, x, y, width, height, flags));
             lastError = SetWindowPosError;
             Record("SetWindowPos", $"SetWindowPos({window}, {insertAfter}, {x}, {y}, {width}, {height}, 0x{flags:X})");
+            if (SetWindowPosGate is { } gate)
+            {
+                BlockedThread = Thread.CurrentThread;
+                Blocked.Set();
+                gate.Wait();
+            }
             return SetWindowPosError == 0;
         }
 
@@ -149,7 +182,6 @@ public class ForegroundServiceTests
             "AttachThreadInput(3, 5, True)",
             "AttachThreadInput(3, 7, True)",
             "SetForegroundWindow(42)",
-            "BringWindowToTop(42)",
             "SetWindowPos(42, 0, 0, 0, 0, 0, 0x4043)",
             "AttachThreadInput(3, 7, False)",
             "AttachThreadInput(3, 5, False)",
@@ -173,6 +205,62 @@ public class ForegroundServiceTests
         Assert.Equal("Could not bring Notepad to the foreground; nothing was typed.", error.Message);
         Assert.InRange(rig.Time.Now - start, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1.2));
         Assert.False((await rig.Service.SwitchToAsync(42, default)).Succeeded);
+    }
+
+    private static int Attaches(ForegroundRig rig) => rig.Calls.Log.Count(c => c.StartsWith("AttachThreadInput(") && c.EndsWith(", True)"));
+    private static int Detaches(ForegroundRig rig) => rig.Calls.Log.Count(c => c.StartsWith("AttachThreadInput(") && c.EndsWith(", False)"));
+
+    [Fact]
+    public async Task AnAttachSequenceBlockedPastTwoSecondsIsDetachedAndAbandoned()
+    {
+        using var gate = new ManualResetEventSlim();
+        var rig = new ForegroundRig(r => new ForegroundRig.RigCalls(r) { SetWindowPosGate = gate });
+        var ensure = rig.Service.EnsureKeyboardTargetAsync(42, "Notepad", default);
+        try
+        {
+            Assert.True(rig.Calls.Blocked.Wait(TimeSpan.FromSeconds(10)));
+            rig.Time.Now += TimeSpan.FromSeconds(2);
+            var error = await Assert.ThrowsAsync<DesktopException>(() => ensure.WaitAsync(TimeSpan.FromSeconds(10)));
+            Assert.Equal("Could not bring Notepad to the foreground; nothing was typed.", error.Message);
+            Assert.Equal(2, Attaches(rig));
+            Assert.Equal(["AttachThreadInput(3, 7, False)", "AttachThreadInput(3, 5, False)"],
+                rig.Calls.Log.Where(c => c.EndsWith(", False)")));
+            Assert.False(gate.IsSet);
+        }
+        finally
+        {
+            var before = rig.Calls.Log;
+            gate.Set();
+            Assert.True(rig.Calls.BlockedThread!.Join(TimeSpan.FromSeconds(10)));
+            Assert.Equal(before, rig.Calls.Log);
+        }
+    }
+
+    [Fact]
+    public async Task AnExceptionInsideTheAttachedRegionStillDetachesAndIsAClearError()
+    {
+        var rig = new ForegroundRig(r => new ForegroundRig.RigCalls(r) { ThrowsWhileAttached = true });
+        var error = await Assert.ThrowsAsync<DesktopException>(() => rig.Service.EnsureKeyboardTargetAsync(42, "Notepad", default));
+        Assert.Equal("Could not bring Notepad to the foreground; nothing was typed.", error.Message);
+        Assert.Equal(2, Attaches(rig));
+        Assert.Equal(Attaches(rig), Detaches(rig));
+    }
+
+    [Fact]
+    public async Task OnlyTheThreadsThatAttachedAreDetached()
+    {
+        var rig = new ForegroundRig(r => new ForegroundRig.RigCalls(r) { AttachFailsFor = ForegroundRig.OtherThread }) { TakesForegroundOn = "SetWindowPos" };
+        await rig.Service.EnsureKeyboardTargetAsync(42, "Notepad", default);
+        Assert.Equal(["AttachThreadInput(3, 7, False)"], rig.Calls.Log.Where(c => c.EndsWith(", False)")));
+    }
+
+    [Fact]
+    public async Task AWindowThatIsGoneGetsNoKeys()
+    {
+        var rig = new ForegroundRig { Gone = true };
+        var error = await Assert.ThrowsAsync<DesktopException>(() => rig.Service.EnsureKeyboardTargetAsync(42, "Notepad", default));
+        Assert.Equal("Could not bring Notepad to the foreground: the window no longer exists; nothing was typed.", error.Message);
+        Assert.Empty(rig.Calls.Log);
     }
 
     [Fact]

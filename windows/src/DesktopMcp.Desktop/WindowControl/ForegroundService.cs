@@ -28,7 +28,6 @@ internal interface IForegroundCalls
 {
     bool ShowWindowAsync(long window, int command);
     bool SetForegroundWindow(long window);
-    bool BringWindowToTop(long window);
     bool AttachThreadInput(uint attach, uint attachTo, bool doAttach);
     bool AllowSetForegroundWindow(uint processId);
     bool SetWindowPos(long window, long insertAfter, int x, int y, int width, int height, uint flags, out int lastError);
@@ -85,6 +84,11 @@ public sealed class ForegroundService : IForeground
 
     public async Task EnsureKeyboardTargetAsync(long window, string windowName, CancellationToken ct)
     {
+        if (!_windows.IsWindow(window))
+        {
+            var name = windowName.Length > 0 ? windowName : window.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            throw new DesktopException($"Could not bring {name} to the foreground: the window no longer exists; nothing was typed.");
+        }
         if (!await RespondsAsync(window, ct)) throw new DesktopException($"{windowName} is not responding; nothing was typed.");
         var thread = _windows.GetThreadId(window);
         bool HasKeyboard() => thread != 0 && _windows.GetThreadId(_windows.GetForegroundWindow()) == thread;
@@ -129,17 +133,22 @@ public sealed class ForegroundService : IForeground
     }
 
     /// <summary>
-    /// upstream service.py:616-658 on a dedicated thread: AttachThreadInput attaches the calling thread, so the attach and
-    /// the detach happen on that thread, and a call blocked on a hung thread only costs the abandoned thread.
+    /// upstream service.py:616-658 on a dedicated thread, abandoned after 2 s: a call into a hung thread costs only that
+    /// thread. BringWindowToTop is left out (a synchronous cross-thread SetWindowPos, the one unbounded call inside the
+    /// attached region); the SetWindowPos(HWND_TOP, SWP_ASYNCWINDOWPOS) that follows sets the z-order. Each successful
+    /// attach is recorded, so when the caller abandons the thread (timeout or cancellation) it detaches every recorded
+    /// thread itself (AttachThreadInput takes the attaching thread's id, so any thread can undo it) and the worker makes
+    /// no further call once it recovers.
     /// </summary>
     private async Task RunAttachSequenceAsync(long window, CancellationToken ct)
     {
+        var state = new AttachState();
         var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var thread = new Thread(() =>
         {
             try
             {
-                AttachSequence(window);
+                AttachSequence(window, state);
                 finished.TrySetResult();
             }
             catch (Exception e)
@@ -155,32 +164,119 @@ public sealed class ForegroundService : IForeground
         }
         catch (TimeoutException)
         {
-            // Abandoned: the thread detaches itself if the blocked call ever returns. The poll below decides the outcome.
+            // Abandoned; the poll that follows decides the outcome.
+            Abandon(state);
+        }
+        catch (OperationCanceledException)
+        {
+            Abandon(state);
+            throw;
+        }
+        catch (Exception)
+        {
+            // The worker failed (it detached in its finally); the poll that follows gives the clear failure text.
         }
     }
 
-    private void AttachSequence(long window)
+    private void Abandon(AttachState state)
     {
+        var (attachingThread, attached) = state.Cancel();
+        for (var i = attached.Count - 1; i >= 0; i--) _calls.AttachThreadInput(attachingThread, attached[i], false);
+    }
+
+    private void AttachSequence(long window, AttachState state)
+    {
+        // This thread's first user32 call (GetForegroundWindow below) creates its message queue, which AttachThreadInput needs.
         var current = _calls.GetCurrentThreadId();
         var foregroundThread = _windows.GetThreadId(_windows.GetForegroundWindow());
         var targetThread = _windows.GetThreadId(window);
-        _calls.AllowSetForegroundWindow(PInvoke.ASFW_ANY);
-        var attached = new List<uint>(2);
+        if (!state.Start(current)) return;
         try
         {
+            _calls.AllowSetForegroundWindow(PInvoke.ASFW_ANY);
+            Span<uint> tried = [0, 0];
+            var count = 0;
             foreach (var thread in (ReadOnlySpan<uint>)[foregroundThread, targetThread])
             {
                 // Equal threads are attached once; a failed attach (an elevated window's thread) is skipped (service.py:629-641).
-                if (thread == 0 || thread == current || attached.Contains(thread)) continue;
-                if (_calls.AttachThreadInput(current, thread, true)) attached.Add(thread);
+                if (thread == 0 || thread == current || tried[..count].Contains(thread)) continue;
+                tried[count++] = thread;
+                if (state.Cancelled) return;
+                if (!_calls.AttachThreadInput(current, thread, true)) continue;
+                if (!state.Record(thread))
+                {
+                    // The caller gave up while this attach ran, so it did not see it: undo it here.
+                    _calls.AttachThreadInput(current, thread, false);
+                    return;
+                }
             }
+            if (state.Cancelled) return;
             _calls.SetForegroundWindow(window);
-            _calls.BringWindowToTop(window);
+            if (state.Cancelled) return;
             _calls.SetWindowPos(window, 0, 0, 0, 0, 0, TopPlacement, out _); // HWND_TOP
         }
         finally
         {
+            var attached = state.TakeAttached();
             for (var i = attached.Count - 1; i >= 0; i--) _calls.AttachThreadInput(current, attached[i], false);
+        }
+    }
+
+    /// <summary>
+    /// The attach thread's id and its outstanding attaches, shared by the worker and the caller. Whoever takes the list
+    /// (the worker when it finishes, the caller when it abandons the worker) detaches those threads, so each is detached once.
+    /// </summary>
+    private sealed class AttachState
+    {
+        private readonly Lock _lock = new();
+        private readonly List<uint> _attached = new(2);
+        private uint _thread;
+        private bool _cancelled;
+
+        public bool Cancelled
+        {
+            get { lock (_lock) return _cancelled; }
+        }
+
+        public bool Start(uint thread)
+        {
+            lock (_lock)
+            {
+                _thread = thread;
+                return !_cancelled;
+            }
+        }
+
+        /// <summary>Records a successful attach; false when the caller has already given up.</summary>
+        public bool Record(uint thread)
+        {
+            lock (_lock)
+            {
+                if (_cancelled) return false;
+                _attached.Add(thread);
+                return true;
+            }
+        }
+
+        public List<uint> TakeAttached()
+        {
+            lock (_lock)
+            {
+                var attached = new List<uint>(_attached);
+                _attached.Clear();
+                return attached;
+            }
+        }
+
+        public (uint Thread, List<uint> Attached) Cancel()
+        {
+            lock (_lock)
+            {
+                _cancelled = true;
+                var attached = new List<uint>(_attached);
+                _attached.Clear();
+                return (_thread, attached);
+            }
         }
     }
 }
@@ -189,7 +285,6 @@ internal sealed class Win32ForegroundCalls : IForegroundCalls
 {
     public bool ShowWindowAsync(long window, int command) => PInvoke.ShowWindowAsync(Hwnd(window), (SHOW_WINDOW_CMD)command);
     public bool SetForegroundWindow(long window) => PInvoke.SetForegroundWindow(Hwnd(window));
-    public bool BringWindowToTop(long window) => PInvoke.BringWindowToTop(Hwnd(window));
     public bool AttachThreadInput(uint attach, uint attachTo, bool doAttach) => PInvoke.AttachThreadInput(attach, attachTo, doAttach);
     public bool AllowSetForegroundWindow(uint processId) => PInvoke.AllowSetForegroundWindow(processId);
 
