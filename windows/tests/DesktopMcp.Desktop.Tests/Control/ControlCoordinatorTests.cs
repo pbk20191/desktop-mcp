@@ -1,6 +1,7 @@
 using DesktopMcp.Core.Config;
 using DesktopMcp.Core.Control;
 using DesktopMcp.Desktop.Control;
+using DesktopMcp.Desktop;
 using DesktopMcp.Desktop.Input;
 
 namespace DesktopMcp.Desktop.Tests.Control;
@@ -334,6 +335,203 @@ public class ControlCoordinatorTests
         rig.Advance(6); await rig.Control.RunOnceAsync();
         Assert.Equal(ControlState.Unavailable, rig.Control.Status().State);
         Assert.Equal(1, rig.Monitor.Starts);
+    }
+
+    [Fact]
+    public async Task AChordBetweenBeatsPreemptsTheNextCheckpoint()
+    {
+        var rig = await ControlRig.StartedAsync();
+        using var lease = await rig.Control.BeginCallAsync(default);
+        rig.Chord();
+        using (lease.Enter())
+            Assert.Equal(ControlCodes.ControlPreempted, Assert.Throws<ControlRejectedException>(rig.Control.Checkpoint.Checkpoint).Code);
+    }
+
+    [Fact]
+    public async Task AFailOpenBetweenBeatsPreemptsTheNextCheckpoint()
+    {
+        var rig = await ControlRig.StartedAsync();
+        using var lease = await rig.Control.BeginCallAsync(default);
+        rig.Monitor.Filter.RequestFailOpen();
+        using (lease.Enter())
+            Assert.Equal(ControlCodes.ControlPreempted, Assert.Throws<ControlRejectedException>(rig.Control.Checkpoint.Checkpoint).Code);
+    }
+
+    [Fact]
+    public async Task ALapsedDeadlinePreemptsTheNextCheckpoint()
+    {
+        var rig = await ControlRig.StartedAsync();
+        using var lease = await rig.Control.BeginCallAsync(default);
+        rig.Advance(1.1);
+        using (lease.Enter())
+            Assert.Equal(ControlCodes.ControlPreempted, Assert.Throws<ControlRejectedException>(rig.Control.Checkpoint.Checkpoint).Code);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ATakeoverOrFailOpenDuringBeginsEnableLeavesTheLedgerBlocked(bool chord)
+    {
+        var rig = await ControlRig.StartedAsync();
+        rig.Control.StateChanged += s =>
+        {
+            if (s.State != ControlState.Ai) return;
+            // After Begin entered ai and before it enables the ledger: the hook blocks the ledger without our lock.
+            if (chord) rig.Chord();
+            else rig.Monitor.Filter.RequestFailOpen();
+        };
+        using var lease = await rig.Control.BeginCallAsync(default);
+        Assert.Throws<InputUnavailableException>(() => rig.Control.Ledger.Press("key:ctrl", () => { }, () => { }));
+        Assert.False(rig.Monitor.Filter.Suppressing);
+        using (lease.Enter()) Assert.Throws<ControlRejectedException>(rig.Control.Checkpoint.Checkpoint);
+    }
+
+    [Fact]
+    public async Task InputDuringTheShowRefusesToArm()
+    {
+        var rig = await ControlRig.StartedAsync();
+        rig.Indicator.HoldShow();
+        var begin = rig.Control.BeginCallAsync(default);
+        await rig.Indicator.ShowStarted;
+        Assert.Equal(HookVerdict.Pass, rig.Key(0x41, true));   // not drained: Arm reads the monitor's stamp
+        rig.Indicator.CompleteShow();
+        using var lease = await begin;
+        Assert.False(rig.Monitor.Filter.Suppressing);
+        using (lease.Enter())
+            Assert.Equal(ControlCodes.ControlPreempted, Assert.Throws<ControlRejectedException>(rig.Control.Checkpoint.Checkpoint).Code);
+    }
+
+    [Fact]
+    public async Task BeginCopiesThePendingTakeoverIn()
+    {
+        var rig = await ControlRig.StartedAsync();
+        rig.Chord();
+        foreach (var vk in new[] { 0x08, 0xA4, 0xA0, 0xA2 }) rig.Key(vk, false);
+        Assert.False(rig.Monitor.Filter.Held);
+        var error = await Assert.ThrowsAsync<ControlRejectedException>(() => rig.Control.BeginCallAsync(default));
+        Assert.Equal((ControlCodes.UserControl, ControlState.User), (error.Code, error.Status.State));
+    }
+
+    [Fact]
+    public async Task AStaleShowFailureDoesNotFaultRecoveredControl()
+    {
+        var rig = await ControlRig.StartedAsync();
+        var first = rig.Indicator;
+        first.HoldShow();
+        var begin = rig.Control.BeginCallAsync(default);
+        await first.ShowStarted;
+        first.Healthy = false;
+        rig.Advance(0.3); await rig.Control.RunOnceAsync();
+        Assert.Equal(ControlState.Unavailable, rig.Control.Status().State);
+        rig.Monitor.LastRehook = rig.Stamp() + 1;
+        rig.Advance(0.3); await rig.Control.RunOnceAsync();
+        Assert.Equal(ControlState.User, rig.Control.Status().State);
+        Assert.NotSame(first, rig.Indicator);
+        first.FailShow();
+        first.CompleteShow();
+        Assert.Equal(ControlCodes.ControlUnavailable, (await Assert.ThrowsAsync<ControlRejectedException>(() => begin)).Code);
+        Assert.Equal(ControlState.User, rig.Control.Status().State);
+        Assert.Equal(1, rig.Monitor.Rehooks);
+    }
+
+    [Fact]
+    public async Task AJoinerRetriesAFailedShow()
+    {
+        var rig = await ControlRig.StartedAsync();
+        rig.Indicator.FailRender();
+        await Assert.ThrowsAsync<ControlRejectedException>(() => rig.Control.BeginCallAsync(default));
+        Assert.Equal(ControlState.Ai, rig.Control.Status().State);   // unarmed until the lease runs out
+        using var lease = await rig.Control.BeginCallAsync(default);
+        Assert.Equal(2, rig.Indicator.Shows.Count);
+        Assert.True(rig.Monitor.Filter.Suppressing);
+        using (lease.Enter()) rig.Control.Checkpoint.Checkpoint();
+    }
+
+    [Fact]
+    public async Task ConcurrentCallsKeepTheirOwnLeases()
+    {
+        var rig = await ControlRig.StartedAsync();
+        using var a = await rig.Control.BeginCallAsync(default);
+        using var b = await rig.Control.BeginCallAsync(default);
+        using var barrier = new Barrier(2);
+        Task Flow(ControlLease lease) => Task.Run(async () =>
+        {
+            using (lease.Enter())
+            {
+                Assert.True(barrier.SignalAndWait(TimeSpan.FromSeconds(5)));
+                await Task.Yield();
+                Assert.Same(lease, ControlCall.Current);
+                rig.Control.Checkpoint.RecordStep();
+                Assert.True(barrier.SignalAndWait(TimeSpan.FromSeconds(5)));
+                Assert.Same(lease, ControlCall.Current);
+                rig.Control.Checkpoint.Checkpoint();
+            }
+        });
+        await Task.WhenAll(Flow(a), Flow(b));
+        Assert.Equal((1L, 1L), (a.ExecutedSteps, b.ExecutedSteps));
+        Assert.Null(ControlCall.Current);
+    }
+
+    [Fact]
+    public async Task ACancelledStartStillRetries()
+    {
+        var rig = ControlRig.Create();
+        rig.Monitor.HoldStart();
+        using var cts = new CancellationTokenSource();
+        var start = rig.Control.StartAsync(cts.Token);
+        await rig.Monitor.StartEntered;
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => start);
+        Assert.True(rig.Control.LoopStarted);
+        rig.Monitor.ReleaseStart();
+        rig.Advance(5); await rig.Control.RunOnceAsync();
+        Assert.Equal(ControlState.Ready, rig.Control.Status().State);
+    }
+
+    [Fact]
+    public async Task AStopDuringTheStartIsLoggedNotThrown()
+    {
+        var rig = ControlRig.Create();
+        rig.Monitor.HoldStart();
+        var start = rig.Control.StartAsync(default);
+        await rig.Monitor.StartEntered;
+        rig.Monitor.StopThrows = true;
+        await rig.Control.StopAsync();
+        rig.Monitor.ReleaseStart();
+        await start;
+        Assert.Equal(ControlState.Unavailable, rig.Control.Status().State);
+        Assert.Equal(2, rig.Monitor.Stops);
+        Assert.False(rig.Control.LoopStarted);
+        Assert.Equal(2, rig.Logs.Count(l => l.Level == DesktopLogLevel.Error && l.Message.Contains("failed to stop")));
+    }
+
+    [Fact]
+    public async Task RepeatedStartFailuresWarnOnce()
+    {
+        var rig = ControlRig.Create(monitorStartFailures: 3);
+        await rig.Control.StartAsync(default);
+        for (var i = 0; i < 2; i++) { rig.Advance(5); await rig.Control.RunOnceAsync(); }
+        Assert.Equal(3, rig.Monitor.Starts);
+        Assert.Single(rig.Logs, l => l.Level == DesktopLogLevel.Warning && l.Message.Contains("failed to start"));
+        rig.Advance(5); await rig.Control.RunOnceAsync();
+        Assert.Equal(ControlState.Ready, rig.Control.Status().State);
+    }
+
+    [Fact]
+    public void TheLogThrottleLetsANewErrorOrAnIntervalThrough()
+    {
+        var throttle = new LogThrottle(50);
+        Assert.True(throttle.Allow("a", 0));
+        Assert.False(throttle.Allow("a", 49));
+        Assert.True(throttle.Allow("b", 49));
+        Assert.True(throttle.Allow("a", 50));
+        Assert.False(throttle.Allow("a", 99));
+        Assert.True(throttle.Allow("a", 100));
+        var once = new LogThrottle(long.MaxValue);
+        Assert.True(once.Allow("a", 0));
+        Assert.False(once.Allow("a", long.MaxValue / 2));
+        once.Reset();
+        Assert.True(once.Allow("a", 1));
     }
 
     [Fact]

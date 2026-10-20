@@ -24,6 +24,7 @@ public sealed class ControlCoordinator : IDesktopControl
     private static readonly TimeSpan StartRetryInterval = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan SuppressionWindow = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan BeatLimit = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan LoopErrorInterval = TimeSpan.FromSeconds(5);
     private const int DrainLimit = 128;
 
     private readonly ControlSettings _settings;
@@ -34,6 +35,8 @@ public sealed class ControlCoordinator : IDesktopControl
     private readonly DesktopLog? _log;
     private readonly Action _ensureRuntime;
     private readonly CancellationTokenSource _loopStop = new();
+    private readonly LogThrottle _loopErrors;
+    private readonly LogThrottle _startErrors = new(long.MaxValue); // a start failure warns once per distinct error
 
     // The state machine and every field below it, up to the apply gate.
     private readonly Lock _lock = new();
@@ -47,12 +50,14 @@ public sealed class ControlCoordinator : IDesktopControl
     private long _nextStart;
     private long _nextHealth;
     private long _faultedAt;
+    private long _showing;        // the generation whose indicator show is in flight (0 = none)
+    private bool _loopStarted;
+    private Task _loop = Task.CompletedTask;
     private IControlIndicator _indicator;
 
     // Applies the queued changes one at a time, in generation order (taken outside _lock, never inside it).
     private readonly Lock _applyGate = new();
 
-    private Task _loop = Task.CompletedTask;
     private volatile bool _paused;
 
     internal ControlCoordinator(ControlSettings settings, IInputMonitor monitor, Func<IControlIndicator> indicators, Func<bool> interactiveDesktop,
@@ -71,6 +76,7 @@ public sealed class ControlCoordinator : IDesktopControl
         _log = log;
         _ensureRuntime = ensureRuntime ?? (static () => { });
         _machine = new ControlStateMachine(settings, time);
+        _loopErrors = new LogThrottle(Ticks(LoopErrorInterval));
         Ledger = new InputLedger(UserHolds);
         Ledger.BlockNew(); // until a call enters ai
         Checkpoint = new CallCheckpoint(this);
@@ -104,10 +110,24 @@ public sealed class ControlCoordinator : IDesktopControl
 
     public IActionCheckpoint Checkpoint { get; }
 
+    /// <summary>
+    /// Raised outside the state lock, one change at a time in generation order, on whichever thread applied it (the
+    /// heartbeat or a caller). Handlers must be fast and must not block: the next change waits for them. As upstream, the
+    /// intermediate states inside one Begin or one beat collapse into the final one (its generation may skip).
+    /// </summary>
     public event Action<ControlStatus>? StateChanged;
 
     /// <summary>Tests: false starts no heartbeat loop; the test drives <see cref="RunOnceAsync"/> (preflight F2).</summary>
     internal bool LoopEnabled { get; init; } = true;
+
+    /// <summary>Tests: the heartbeat was started (or would have been, with <see cref="LoopEnabled"/> false).</summary>
+    internal bool LoopStarted
+    {
+        get
+        {
+            lock (_lock) return _loopStarted;
+        }
+    }
 
     /// <summary>Tests: a paused heartbeat does nothing, as a stalled one would.</summary>
     internal bool HeartbeatPaused
@@ -160,6 +180,7 @@ public sealed class ControlCoordinator : IDesktopControl
         try
         {
             ControlStatus? rejected = null;
+            var show = false;
             lock (_lock)
             {
                 if (_machine.Status.Generation == begun.Token)
@@ -167,6 +188,11 @@ public sealed class ControlCoordinator : IDesktopControl
                     try
                     {
                         Ledger.Enable();
+                        // The hook blocks the ledger without this lock on a chord or fail-open; one that landed during Enable
+                        // must leave it blocked (upstream arm_visible re-reads the hook's flags). The fence orders the
+                        // enabling write before the flag reads, as the hook writes its flag before blocking.
+                        Interlocked.MemoryBarrier();
+                        if (filter.TakeoverPending || filter.FailOpenRequested) Ledger.BlockNew();
                     }
                     catch (InvalidOperationException e)
                     {
@@ -174,6 +200,13 @@ public sealed class ControlCoordinator : IDesktopControl
                         QueueChangeLocked();
                         PublishLocked(_time.GetTimestamp());
                         rejected = _machine.Status;
+                    }
+                    // Entering ai shows the indicator; so does joining an unarmed ai with no show in flight (an earlier
+                    // show failed), rather than leaving every call preempted until the lease runs out.
+                    if (rejected is null && (begun.NeedsIndicator || (!_machine.Armed && _showing != begun.Token)))
+                    {
+                        show = true;
+                        _showing = begun.Token;
                     }
                 }
             }
@@ -183,12 +216,25 @@ public sealed class ControlCoordinator : IDesktopControl
                 throw new ControlRejectedException(ControlCodes.ControlUnavailable, rejected);
             }
 
-            if (begun.NeedsIndicator)
+            if (show)
             {
-                await ShowIndicatorAsync(begun.Token, ct).ConfigureAwait(false);
+                try
+                {
+                    await ShowIndicatorAsync(begun.Token, ct).ConfigureAwait(false);
+                }
+                finally
+                {
+                    lock (_lock)
+                    {
+                        if (_showing == begun.Token) _showing = 0;
+                    }
+                }
                 lock (_lock)
                 {
-                    // Only after the indicator is visible (Decisions 15); refused when input came since entering ai.
+                    // Only after the indicator is visible (Decisions 15), with the monitor's live flags and stamp: refused when
+                    // input, a held key or a takeover came since entering ai.
+                    _machine.PhysicalHeld = filter.Held;
+                    _machine.TakeoverPending = filter.TakeoverPending;
                     _machine.Arm(begun.Token, filter.LastPhysical);
                     PublishLocked(_time.GetTimestamp(), renew: true);
                 }
@@ -218,8 +264,32 @@ public sealed class ControlCoordinator : IDesktopControl
             _started = true;
             _retryStart = true;
         }
-        await TryStartAsync(ct).ConfigureAwait(false);
-        if (LoopEnabled) _loop = Task.Run(() => LoopAsync(_loopStop.Token), CancellationToken.None);
+        try
+        {
+            await TryStartAsync(ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            Log(DesktopLogLevel.Warning, "Desktop control start was cancelled; the heartbeat retries in 5 s.", null);
+            throw;
+        }
+        finally
+        {
+            // A cancelled or failed first attempt still leaves the heartbeat running, which retries the start.
+            StartLoop();
+        }
+    }
+
+    private void StartLoop()
+    {
+        lock (_lock)
+        {
+            if (_stopped || _loopStarted) return;
+            _loopStarted = true;
+            if (!LoopEnabled) return;
+            var token = _loopStop.Token;
+            _loop = Task.Run(() => LoopAsync(token), CancellationToken.None);
+        }
     }
 
     /// <summary>
@@ -238,9 +308,11 @@ public sealed class ControlCoordinator : IDesktopControl
         }
         Ledger.BlockNew();
         _loopStop.Cancel();
+        Task loop;
+        lock (_lock) loop = _loop;
         try
         {
-            await _loop.ConfigureAwait(false);
+            await loop.ConfigureAwait(false);
         }
         catch (Exception e)
         {
@@ -272,6 +344,7 @@ public sealed class ControlCoordinator : IDesktopControl
             Log(DesktopLogLevel.Error, "Releasing AI input failed while stopping.", e);
         }
         ApplyChanges(raiseOnly: true);
+        _loopStop.Dispose(); // the loop has ended, and a stopped coordinator never reads the token again
     }
 
     public async ValueTask DisposeAsync() => await StopAsync().ConfigureAwait(false);
@@ -325,7 +398,9 @@ public sealed class ControlCoordinator : IDesktopControl
             }
             catch (Exception e)
             {
-                Log(DesktopLogLevel.Error, "The control heartbeat failed.", e);
+                // A repeating failure logs once per distinct error, or again after 5 s.
+                var level = _loopErrors.Allow(LogThrottle.Key(e), _time.GetTimestamp()) ? DesktopLogLevel.Error : DesktopLogLevel.Debug;
+                Log(level, "The control heartbeat failed.", e);
             }
         }
     }
@@ -363,9 +438,11 @@ public sealed class ControlCoordinator : IDesktopControl
         }
         catch (Exception e)
         {
-            Log(DesktopLogLevel.Warning, "The input monitor failed to start; desktop control stays unavailable and retries in 5 s.", e);
+            var level = _startErrors.Allow(LogThrottle.Key(e), _time.GetTimestamp()) ? DesktopLogLevel.Warning : DesktopLogLevel.Debug;
+            Log(level, "The input monitor failed to start; desktop control stays unavailable and retries in 5 s.", e);
             return;
         }
+        _startErrors.Reset();
 
         bool stale;
         lock (_lock)
@@ -391,7 +468,14 @@ public sealed class ControlCoordinator : IDesktopControl
         if (stale)
         {
             // A stop came while the monitor was starting; it may have stopped the monitor before this start finished.
-            await _monitor.StopAsync().ConfigureAwait(false);
+            try
+            {
+                await _monitor.StopAsync().ConfigureAwait(false);
+            }
+            catch (Exception e)
+            {
+                Log(DesktopLogLevel.Error, "The input monitor failed to stop after a start that a stop overtook.", e);
+            }
             return;
         }
         ApplyChanges();
@@ -510,8 +594,10 @@ public sealed class ControlCoordinator : IDesktopControl
             ControlStatus status;
             lock (_lock)
             {
-                // Only a broken indicator faults control; a render failure or timeout rejects this call alone.
-                if (!indicator.Healthy) FaultLocked(_time.GetTimestamp(), "The AI control indicator failed to show.", e);
+                // Only a broken indicator faults control; a render failure or timeout rejects this call alone. A stale
+                // failure (the indicator was replaced, or the state moved on) never faults control that recovered since.
+                if (!indicator.Healthy && ReferenceEquals(indicator, _indicator) && _machine.Status.Generation == generation)
+                    FaultLocked(_time.GetTimestamp(), "The AI control indicator failed to show.", e);
                 else Log(DesktopLogLevel.Warning, "The AI control indicator could not be shown.", e);
                 QueueChangeLocked();
                 PublishLocked(_time.GetTimestamp());
@@ -669,9 +755,47 @@ public sealed class ControlCoordinator : IDesktopControl
         public void Checkpoint()
         {
             if (ControlCall.Current is not { } lease) return;
-            lock (owner._lock) owner._machine.Checkpoint(lease.Token, lease.ExecutedSteps, lease.Closed);
+            var filter = owner._monitor.Filter;
+            lock (owner._lock)
+            {
+                // The hook's live flags, not the heartbeat's copy (control.py:299-307): a chord, a fail-open or a lapsed
+                // deadline between beats preempts at once.
+                owner._machine.TakeoverPending = filter.TakeoverPending;
+                owner._machine.Checkpoint(lease.Token, lease.ExecutedSteps, lease.Closed);
+                if (filter.FailOpenRequested || !filter.Suppressing || owner._time.GetTimestamp() > filter.Deadline)
+                    throw new ControlRejectedException(ControlCodes.ControlPreempted, owner._machine.Status, lease.ExecutedSteps);
+            }
         }
 
         public void RecordStep() => ControlCall.Current?.RecordStep();
+    }
+}
+
+/// <summary>
+/// Lets a repeating log entry through once per distinct key, or again once <c>interval</c> timestamp ticks have passed
+/// (<see cref="long.MaxValue"/>: once per distinct key until <see cref="Reset"/>). Thread-safe.
+/// </summary>
+internal sealed class LogThrottle(long interval)
+{
+    private readonly Lock _gate = new();
+    private string? _key;
+    private long _at;
+
+    public static string Key(Exception e) => e.GetType().FullName + ": " + e.Message;
+
+    public bool Allow(string key, long now)
+    {
+        lock (_gate)
+        {
+            if (key == _key && now - _at < interval) return false;
+            _key = key;
+            _at = now;
+            return true;
+        }
+    }
+
+    public void Reset()
+    {
+        lock (_gate) _key = null;
     }
 }

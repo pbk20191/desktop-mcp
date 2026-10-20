@@ -16,7 +16,8 @@ internal sealed class ControlRig
     private ControlRig(int monitorStartFailures)
     {
         Monitor = new FakeMonitor(Time, monitorStartFailures, () => Control!.Ledger.BlockNew());
-        Control = new ControlCoordinator(Settings, Monitor, NewIndicator, () => Interactive, Time) { LoopEnabled = false };
+        Control = new ControlCoordinator(Settings, Monitor, NewIndicator, () => Interactive, Time,
+            (level, message, _) => { lock (Logs) Logs.Add((level, message)); }) { LoopEnabled = false };
     }
 
     public ManualTime Time { get; } = new();
@@ -33,6 +34,20 @@ internal sealed class ControlRig
     public bool Interactive { get; set; } = true;
 
     public List<string> Ups { get; } = [];
+
+    public List<(DesktopLogLevel Level, string Message)> Logs { get; } = [];
+
+    /// <summary>
+    /// A chord the hook saw while suppressing: suppression is forced on for it (as if armed), then Ctrl+Shift+Alt+Backspace
+    /// go down. The keys stay down.
+    /// </summary>
+    public void Chord()
+    {
+        var filter = Monitor.Filter;
+        if (!filter.Suppressing) filter.SetSuppression(true, Stamp() + Seconds(10));
+        foreach (var vk in new[] { 0xA2, 0xA0, 0xA4, 0x08 }) Assert.Equal(HookVerdict.Swallow, Key(vk, true));
+        Assert.True(filter.TakeoverPending);
+    }
 
     public static ControlRig Create(int monitorStartFailures = 0) => new(monitorStartFailures);
 
@@ -88,6 +103,8 @@ internal sealed class FakeMonitor : IInputMonitor
     private readonly ManualTime _time;
     private int _startFailures;
     private long? _lastBeat;
+    private TaskCompletionSource? _holdStart;
+    private readonly TaskCompletionSource _startEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     public FakeMonitor(ManualTime time, int startFailures, Action blockLedger)
     {
@@ -113,22 +130,37 @@ internal sealed class FakeMonitor : IInputMonitor
 
     public long LastRehook { get; set; }
 
-    public Task StartAsync(CancellationToken ct)
+    public bool StopThrows { get; set; }
+
+    public Task StartEntered => _startEntered.Task;
+
+    /// <summary>The next starts wait for <see cref="ReleaseStart"/> (or their token).</summary>
+    public void HoldStart() => _holdStart = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public void ReleaseStart()
+    {
+        var hold = _holdStart;
+        _holdStart = null;
+        hold?.TrySetResult();
+    }
+
+    public async Task StartAsync(CancellationToken ct)
     {
         Starts++;
+        _startEntered.TrySetResult();
+        if (_holdStart is { } hold) await hold.Task.WaitAsync(ct);
         if (_startFailures > 0)
         {
             _startFailures--;
-            return Task.FromException(new InvalidOperationException("The input monitor failed to start."));
+            throw new InvalidOperationException("The input monitor failed to start.");
         }
-        return Task.CompletedTask;
     }
 
     public Task StopAsync()
     {
         Stops++;
         Filter.SetSuppression(false, 0);
-        return Task.CompletedTask;
+        return StopThrows ? Task.FromException(new InvalidOperationException("The input monitor failed to stop.")) : Task.CompletedTask;
     }
 
     public void RequestRehook() => Rehooks++;
@@ -161,7 +193,7 @@ internal sealed class FakeIndicator : IControlIndicator
     /// <summary>A dispatcher failure: the show throws and the indicator turns unhealthy.</summary>
     public void FailShow() => _fail = true;
 
-    /// <summary>A render failure (preflight F19): the show throws and the indicator stays healthy.</summary>
+    /// <summary>A render failure (preflight F19): the next show throws and the indicator stays healthy.</summary>
     public void FailRender() => _failRender = true;
 
     public void NeverCompleteShow() => _never = true;
@@ -177,7 +209,11 @@ internal sealed class FakeIndicator : IControlIndicator
             Healthy = false;
             throw new InvalidOperationException("AI control indicator failed");
         }
-        if (_failRender) throw new DesktopMcp.Desktop.Errors.DesktopException("Indicator render failed.");
+        if (_failRender)
+        {
+            _failRender = false;
+            throw new DesktopMcp.Desktop.Errors.DesktopException("Indicator render failed.");
+        }
     }
 
     public void Hide(long generation) => Hides.Add(generation);

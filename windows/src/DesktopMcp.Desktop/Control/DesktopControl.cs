@@ -38,7 +38,10 @@ public interface IDesktopControl : IAsyncDisposable
 
     Task StopAsync();
 
-    /// <summary>Raised off the caller's lock, in generation order, for every state change.</summary>
+    /// <summary>
+    /// Raised off the caller's lock, in generation order, for every state change. Handlers must be fast and must not
+    /// block; intermediate states inside one call or beat collapse into the final one (the generation may skip).
+    /// </summary>
     event Action<ControlStatus>? StateChanged;
 }
 
