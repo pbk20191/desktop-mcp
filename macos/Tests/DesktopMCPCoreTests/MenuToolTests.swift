@@ -1,15 +1,19 @@
 import XCTest
 @testable import DesktopMCPCore
 
-/// An in-memory menu item; `presses` counts how often it was pressed. File-private, as Core has
-/// its own `TreeNode` (the accessibility tree).
+/// An in-memory menu item; `presses` and `cancels` count how often it was pressed and cancelled.
+/// A `lazy` item reports no children until pressed, like a bar item whose menu is built when it
+/// opens. File-private, as Core has its own `TreeNode` (the accessibility tree).
 private struct TreeNode: MenuNode {
     var title: String
     var enabled = true
     var shortcut: String?
     var isSeparator = false
     var kids: [TreeNode] = []
+    var lazy = false
     let presses = Locked(0)
+    let cancels = Locked(0)
+    let populated = Locked(false)
 
     init(_ title: String, enabled: Bool = true, shortcut: String? = nil, _ kids: [TreeNode] = []) {
         self.title = title
@@ -24,7 +28,14 @@ private struct TreeNode: MenuNode {
         return node
     }
 
-    func children() -> [TreeNode] { kids }
+    func children() -> [TreeNode] {
+        if lazy, !populated.current, press(), !kids.isEmpty { populated.current = true }
+        return kids
+    }
+
+    var openedMenu: Bool { populated.current }
+
+    func cancel() { cancels.withLock { $0 += 1 } }
 
     func press() -> Bool {
         presses.withLock { $0 += 1 }
@@ -128,6 +139,48 @@ final class MenuToolTests: XCTestCase {
             _ = try MenuTool.select(["File", "Open Recent"], in: roots)
         }
         XCTAssertEqual(roots[1].kids[3].presses.current, 0)
+    }
+
+    /// File as a bar item that builds its menu only when pressed.
+    private func lazyBar() -> [TreeNode] {
+        var roots = bar()
+        roots[1].lazy = true
+        return roots
+    }
+
+    func testFailureAfterPopulateCancelsOnce() {
+        let roots = lazyBar()
+        assertError("No menu item 'Save' under File. Available: New, Export…, Open Recent") {
+            _ = try MenuTool.select(["File", "Save"], in: roots)
+        }
+        XCTAssertEqual(roots[1].presses.current, 1)
+        XCTAssertEqual(roots[1].cancels.current, 1)
+
+        let disabled = lazyBar()
+        assertError("Menu item File > Export… is disabled.") {
+            _ = try MenuTool.select(["File", "Export…"], in: disabled)
+        }
+        XCTAssertEqual(disabled[1].cancels.current, 1)
+    }
+
+    func testNoCancelWithoutPopulateOrOnSuccess() throws {
+        let roots = bar()
+        assertError("No menu item 'Save' under File. Available: New, Export…, Open Recent") {
+            _ = try MenuTool.select(["File", "Save"], in: roots)
+        }
+        XCTAssertEqual(roots.map { $0.cancels.current }, [0, 0, 0])
+
+        let lazy = lazyBar()
+        XCTAssertEqual(try MenuTool.select(["File", "New"], in: lazy), "Selected File > New.")
+        XCTAssertEqual(lazy[1].presses.current, 1)
+        XCTAssertEqual(lazy[1].kids[0].presses.current, 1)
+        XCTAssertEqual(lazy.map { $0.cancels.current }, [0, 0, 0])
+
+        let top = lazyBar()
+        assertError("No menu item 'View' under the menu bar. Available: Apple, File, Edit") {
+            _ = try MenuTool.select(["View"], in: top)
+        }
+        XCTAssertEqual(top.map { $0.cancels.current }, [0, 0, 0])
     }
 
     func testListIndentsAndMarks() {

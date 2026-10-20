@@ -13,6 +13,11 @@ protocol MenuNode {
     /// The items of this item's menu, separators included; empty for a leaf.
     func children() -> [Self]
     func press() -> Bool
+    /// True when `children()` pressed this bar item to populate its menu and items appeared, so
+    /// the menu is open.
+    var openedMenu: Bool { get }
+    /// Closes the menu this item opened.
+    func cancel()
 }
 
 /// A menu bar item or menu item through the Accessibility API. Holds an `AXUIElement`, so it is
@@ -24,14 +29,14 @@ struct AXMenuNode: MenuNode {
     let shortcut: String?
     let isSeparator: Bool
     /// Set for the bar items of a `select`: a bar item that reports no children is pressed once
-    /// to populate its menu, and this records that a menu was opened.
-    let opened: Locked<Bool>?
-    private let isBarItem: Bool
+    /// to populate its menu.
+    private let populates: Bool
+    /// Whether that press opened a menu with items. Shared by copies of this node.
+    private let opened = Locked(false)
 
-    init(_ element: AXUIElement, isBarItem: Bool = false, opened: Locked<Bool>? = nil) {
+    init(_ element: AXUIElement, populates: Bool = false) {
         self.element = element
-        self.isBarItem = isBarItem
-        self.opened = opened
+        self.populates = populates
         let raw = AX.attributes(element, [
             kAXTitleAttribute, kAXEnabledAttribute, kAXRoleAttribute, kAXRoleDescriptionAttribute,
             AXName.menuCmdChar, AXName.menuCmdModifiers, AXName.menuCmdVirtualKey,
@@ -50,8 +55,8 @@ struct AXMenuNode: MenuNode {
     }
 
     /// The menu bar's items.
-    static func roots(_ menuBar: AXUIElement, opened: Locked<Bool>?) -> [AXMenuNode] {
-        AX.children(menuBar).map { AXMenuNode($0, isBarItem: true, opened: opened) }
+    static func roots(_ menuBar: AXUIElement, populate: Bool) -> [AXMenuNode] {
+        AX.children(menuBar).map { AXMenuNode($0, populates: populate) }
     }
 
     /// The items of the single `AXMenu` child, read without opening the menu.
@@ -66,14 +71,26 @@ struct AXMenuNode: MenuNode {
     func children() -> [AXMenuNode] {
         var found = items()
         // Some apps build a bar item's menu only when it opens.
-        if found.isEmpty, isBarItem, let opened, press() {
-            opened.current = true
+        if found.isEmpty, populates, press() {
             for _ in 0..<10 where found.isEmpty {
                 usleep(50_000)
                 found = items()
             }
+            if !found.isEmpty { opened.current = true }
         }
         return found.map { AXMenuNode($0) }
+    }
+
+    var openedMenu: Bool { opened.current }
+
+    /// Cancels the open menu through this app's AX tree (its `AXMenu` child, else the bar item),
+    /// so no key event reaches whatever app is frontmost.
+    func cancel() {
+        let menu = AX.children(element).first { AX.string(AX.attribute($0, kAXRoleAttribute)) == kAXMenuRole }
+        let result = AXUIElementPerformAction(menu ?? element, kAXCancelAction as CFString)
+        if result != .success, menu != nil {
+            AXUIElementPerformAction(element, kAXCancelAction as CFString)
+        }
     }
 
     func press() -> Bool {
@@ -129,6 +146,12 @@ enum MenuTool {
     /// The items `path` names, from the bar item down. The Apple menu (root 0) is also "Apple".
     static func resolve<N: MenuNode>(_ path: [String], in roots: [N]) throws -> [N] {
         var chain: [N] = []
+        try resolve(path, in: roots, into: &chain)
+        return chain
+    }
+
+    /// `resolve`, appending to `chain` as it goes so a caller sees how far it got on an error.
+    private static func resolve<N: MenuNode>(_ path: [String], in roots: [N], into chain: inout [N]) throws {
         for element in path {
             let node: N
             if let parent = chain.last {
@@ -140,13 +163,23 @@ enum MenuTool {
             }
             chain.append(node)
         }
-        return chain
     }
 
     /// Presses the item `path` names, after checking every item on the way is enabled and the
-    /// last one is a command rather than a submenu.
+    /// last one is a command rather than a submenu. On an error, a bar item menu this call opened
+    /// to populate it is cancelled.
     static func select<N: MenuNode>(_ path: [String], in roots: [N]) throws -> String {
-        let chain = try resolve(path, in: roots)
+        var chain: [N] = []
+        do {
+            try resolve(path, in: roots, into: &chain)
+            return try press(chain)
+        } catch {
+            if let bar = chain.first, bar.openedMenu { bar.cancel() }
+            throw error
+        }
+    }
+
+    private static func press<N: MenuNode>(_ chain: [N]) throws -> String {
         for end in chain.indices where !chain[end].enabled {
             throw ToolError("Menu item \(describe(Array(chain[...end]))) is disabled.", telemetry: "Menu item is disabled")
         }
@@ -180,13 +213,11 @@ enum MenuTool {
     }
 
     /// The app to read: the regular app named `app` (localized name, case-insensitive, or exact
-    /// bundle id), else the frontmost one.
-    private static func targetApp(_ app: String?) throws -> App {
+    /// bundle id), else `menuBarOwner`, the app that owns the menu bar.
+    private static func targetApp(_ app: String?, menuBarOwner: pid_t?) throws -> App {
         guard let app else {
-            guard let front = App.frontmost() else {
-                throw ToolError("No menu bar for the frontmost app.")
-            }
-            return front
+            guard let menuBarOwner else { throw ToolError("No menu bar for the frontmost app.") }
+            return App(pid: menuBarOwner)
         }
         let wanted = app.trimmingCharacters(in: .whitespaces).lowercased()
         guard let running = App.runningApplications().first(where: {
@@ -198,14 +229,14 @@ enum MenuTool {
     }
 
     /// The bar items of the target app's menu bar, the messaging timeout set first.
-    private static func roots(_ app: String?, opened: Locked<Bool>?) throws -> [AXMenuNode] {
-        let target = try targetApp(app)
+    private static func roots(_ app: String?, menuBarOwner: pid_t?, populate: Bool) throws -> [AXMenuNode] {
+        let target = try targetApp(app, menuBarOwner: menuBarOwner)
         AX.setMessagingTimeout(target.element, 0.5)
         guard let menuBar = target.menuBar else {
             throw ToolError("No menu bar for \(app ?? "the frontmost app").", telemetry: "No menu bar")
         }
         AX.setMessagingTimeout(menuBar, 0.5)
-        return AXMenuNode.roots(menuBar, opened: opened)
+        return AXMenuNode.roots(menuBar, populate: populate)
     }
 
     static func tool() -> Tool {
@@ -223,11 +254,17 @@ enum MenuTool {
                 let mode = try args.choice("mode", in: modes, default: "list")
                 let app = try args.string("app")
                 let path = try args.stringList("path") ?? []
+                // The active app owns the menu bar even when it has no window (e.g. Finder with
+                // none open); the frontmost window can belong to another app.
+                let owner: pid_t? = app != nil ? nil : await MainActor.run {
+                    (NSWorkspace.shared.menuBarOwningApplication ?? NSWorkspace.shared.frontmostApplication)?
+                        .processIdentifier
+                }
 
                 if mode == "list" {
                     let depth = try args.int("depth") ?? 2
                     let text = try await offload { () throws -> String in
-                        let bar = try roots(app, opened: nil)
+                        let bar = try roots(app, menuBarOwner: owner, populate: false)
                         guard let parent = try resolve(path, in: bar).last else { return list(bar, depth: depth) }
                         return list(parent.children(), depth: depth)
                     }
@@ -235,17 +272,10 @@ enum MenuTool {
                 }
 
                 guard !path.isEmpty else { throw ToolError("path required for select mode.") }
-                let opened = Locked(false)
-                do {
-                    let text = try await offload { () throws -> String in
-                        try select(path, in: try roots(app, opened: opened))
-                    }
-                    return [.text(text)]
-                } catch {
-                    // Close the menu this call opened to populate a bar item.
-                    if opened.current { try? await Input.keyPress(KeyMap.escape) }
-                    throw error
+                let text = try await offload { () throws -> String in
+                    try select(path, in: try roots(app, menuBarOwner: owner, populate: true))
                 }
+                return [.text(text)]
             })
     }
 }
