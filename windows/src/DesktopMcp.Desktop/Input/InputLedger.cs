@@ -11,14 +11,14 @@ public sealed class InputUnavailableException(string message) : DesktopException
 public sealed class InputLedger(Func<string, bool>? physicalDownDelivered = null)
 {
     private readonly Lock _lock = new();
-    private readonly Dictionary<string, Action> _held = [];
+    private readonly List<(string Name, Action Up)> _held = [];
     private bool _blocked;
 
     public IReadOnlyList<string> Pending
     {
         get
         {
-            lock (_lock) return [.. _held.Keys];
+            lock (_lock) return [.. _held.Select(h => h.Name)];
         }
     }
 
@@ -27,8 +27,8 @@ public sealed class InputLedger(Func<string, bool>? physicalDownDelivered = null
         lock (_lock)
         {
             if (_blocked) throw new InputUnavailableException("AI input is unavailable");
-            if (_held.ContainsKey(name)) throw new InvalidOperationException($"AI input already held: {name}");
-            _held[name] = sendUp;
+            if (_held.Exists(h => h.Name == name)) throw new InvalidOperationException($"AI input already held: {name}");
+            _held.Add((name, sendUp));
             try
             {
                 sendDown();
@@ -58,7 +58,7 @@ public sealed class InputLedger(Func<string, bool>? physicalDownDelivered = null
         lock (_lock)
         {
             Exception? first = null;
-            foreach (var name in _held.Keys.ToArray())
+            foreach (var name in _held.Select(h => h.Name).ToArray())
             {
                 try
                 {
@@ -90,8 +90,9 @@ public sealed class InputLedger(Func<string, bool>? physicalDownDelivered = null
     // A failed up keeps its entry (shutdown tries again); a delivered physical down means the user holds the key.
     private void ReleaseLocked(string name)
     {
-        if (!_held.TryGetValue(name, out var sendUp)) return;
-        if (physicalDownDelivered?.Invoke(name) != true) sendUp();
-        _held.Remove(name);
+        var index = _held.FindIndex(h => h.Name == name);
+        if (index < 0) return;
+        if (physicalDownDelivered?.Invoke(name) != true) _held[index].Up();
+        _held.RemoveAt(index);
     }
 }

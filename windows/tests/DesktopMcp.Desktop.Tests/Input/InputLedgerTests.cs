@@ -60,4 +60,28 @@ public class InputLedgerTests
         Assert.Equal(["b"], released);
         Assert.Equal(["a"], ledger.Pending); // upstream keeps a failed entry for shutdown's second attempt
     }
+
+    [Fact]
+    public void PendingAndReleaseAllKeepInsertionOrder()
+    {
+        var ledger = new InputLedger();
+        var released = new List<string>();
+        foreach (var name in new[] { "a", "b", "c" }) ledger.Press(name, () => { }, () => released.Add(name));
+        ledger.Release("b");
+        ledger.Press("d", () => { }, () => released.Add("d"));
+        Assert.Equal(["a", "c", "d"], ledger.Pending);
+        released.Clear();
+        ledger.ReleaseAll();
+        Assert.Equal(["a", "c", "d"], released);
+    }
+
+    [Fact]
+    public void WhenTheDownAndTheCleanupUpBothThrowTheDownsErrorWinsAndTheEntryStays()
+    {
+        var ledger = new InputLedger();
+        var error = Assert.Throws<InvalidOperationException>(() => ledger.Press("k",
+            () => throw new InvalidOperationException("down"), () => throw new InvalidOperationException("up")));
+        Assert.Equal("down", error.Message);
+        Assert.Equal(["k"], ledger.Pending);
+    }
 }

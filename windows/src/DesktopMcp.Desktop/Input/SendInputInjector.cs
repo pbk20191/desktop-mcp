@@ -19,14 +19,23 @@ public sealed class SendInputInjector : IInputInjector
     private readonly Func<ushort, ushort> _mapVirtualKey;
     private readonly Func<bool> _selfElevated;
     private readonly Func<string?> _foregroundProcessName;
+    private readonly Func<bool?> _foregroundHigherIntegrity;
 
-    public SendInputInjector() : this(NativeSend, MapVirtualKey, () => ProcessIntegrity.CurrentIsElevated, ForegroundProcessName)
+    public SendInputInjector() : this(NativeSend, MapVirtualKey, () => ProcessIntegrity.CurrentIsElevated, ForegroundProcessName,
+        ForegroundHigherIntegrity)
     {
     }
 
     internal SendInputInjector(SendInputCall send, Func<ushort, ushort> mapVirtualKey, Func<bool> selfElevated,
-        Func<string?> foregroundProcessName)
+        Func<string?> foregroundProcessName) : this(send, mapVirtualKey, selfElevated, foregroundProcessName, () => null)
     {
+    }
+
+    /// <param name="foregroundHigherIntegrity">Whether the foreground process outranks this one; null when unknown.</param>
+    internal SendInputInjector(SendInputCall send, Func<ushort, ushort> mapVirtualKey, Func<bool> selfElevated,
+        Func<string?> foregroundProcessName, Func<bool?> foregroundHigherIntegrity)
+    {
+        _foregroundHigherIntegrity = foregroundHigherIntegrity;
         _send = send;
         _mapVirtualKey = mapVirtualKey;
         _selfElevated = selfElevated;
@@ -41,7 +50,8 @@ public sealed class SendInputInjector : IInputInjector
 
         var inserted = _send(native, out var error);
         if (inserted == native.Length) return;
-        if (error == 5 && !_selfElevated())
+        // Access denied without elevation is UIPI unless the foreground process is known not to outrank us (secure desktop).
+        if (error == 5 && !_selfElevated() && _foregroundHigherIntegrity() != false)
             throw new InputBlockedException(InputBlockedException.ElevatedText(_foregroundProcessName()));
         throw new DesktopException(
             $"SendInput inserted {inserted} of {native.Length} input events (Win32 error {error}): the input was blocked, for example by the secure desktop or another application.");
@@ -102,6 +112,17 @@ public sealed class SendInputInjector : IInputInjector
 
     private static ushort MapVirtualKey(ushort virtualKey) =>
         (ushort)PInvoke.MapVirtualKey(virtualKey, MAP_VIRTUAL_KEY_TYPE.MAPVK_VK_TO_VSC);
+
+    private static bool? ForegroundHigherIntegrity()
+    {
+        var windows = new Win32WindowSystem();
+        var window = windows.GetForegroundWindow();
+        var pid = window == 0 ? 0 : windows.GetProcessId(window);
+        if (pid <= 0) return null;
+        var target = ProcessIntegrity.IntegrityRid(pid);
+        var current = ProcessIntegrity.IntegrityRid(Environment.ProcessId);
+        return target is { } t && current is { } c ? t > c : null;
+    }
 
     private static string? ForegroundProcessName()
     {

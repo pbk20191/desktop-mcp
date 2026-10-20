@@ -273,7 +273,9 @@ public static class KeyTables
     public static IReadOnlyDictionary<ushort, ushort> FixedScanCodes { get; } = new Dictionary<ushort, ushort>
     {
         [0xA0] = 0x02A, // VK_LSHIFT
-        [0xA1] = 0x136, // VK_RSHIFT
+        // VK_RSHIFT: not an extended key. Upstream's 0x136 never reached Windows (keybd_event's BYTE bScan truncated it,
+        // uia/core.py:1711); E0 36 is the keyboard's fake-shift code, so 0x136 here would send an extended Right Shift.
+        [0xA1] = 0x036,
         [0xA2] = 0x01D, // VK_LCONTROL
         [0xA3] = 0x11D, // VK_RCONTROL
         [0xA4] = 0x038, // VK_LMENU
