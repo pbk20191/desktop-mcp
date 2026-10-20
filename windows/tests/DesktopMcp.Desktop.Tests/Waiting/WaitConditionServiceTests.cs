@@ -343,6 +343,7 @@ public class FocusedElementTests
         public long GetRoot(long window) => inner.GetRoot(window);
         public string? GetProcessName(int processId) => inner.GetProcessName(processId);
         public uint GetThreadId(long window) => inner.GetThreadId(window);
+        public long GetRootOwner(long window) => inner.GetRootOwner(window);
         public ScreenRect GetBounds(long window) => inner.GetBounds(window);
         public long WindowFromPoint(ScreenPoint point) => inner.WindowFromPoint(point);
         public string GetTitle(long window) => inner.GetTitle(window);

@@ -135,9 +135,69 @@ public class ActionTargetsTests
                 new TargetsRig(interactive: 1, locate: new LocateResult(null, new ScreenPoint(5000, 5), null)).Targets.LabelAsync(0, default))).Message);
 
     [Fact]
-    public async Task AnElevatedWindowUnderALocatedPointIsBlocked() =>
-        await Assert.ThrowsAsync<InputBlockedException>(() =>
-            new TargetsRig(interactive: 1, elevatedAtPoint: true).Targets.LabelAsync(0, default));
+    public async Task AnElevatedLabelWindowIsBlocked() =>
+        Assert.StartsWith("Input blocked: the target window (notepad.exe) runs elevated",
+            (await Assert.ThrowsAsync<InputBlockedException>(() =>
+                new TargetsRig(interactive: 1, elevatedLabelWindow: true).Targets.LabelAsync(0, default))).Message);
+
+    // Decisions 42: the located point's top-level window must be the label's window or its owned popup on its thread.
+    [Fact]
+    public async Task ALabelCoveredByAnotherWindowSendsNothing() =>
+        Assert.Equal("Label 0 (button \"OK\") is covered by another window; no input was sent.",
+            (await Assert.ThrowsAsync<DesktopException>(() =>
+                new TargetsRig(interactive: 1, coveredBy: TargetsRig.PointWindow).Targets.LabelAsync(0, default))).Message);
+
+    [Fact]
+    public async Task ACoveringElevatedWindowIsCoveredNotElevated()
+    {
+        var error = await Assert.ThrowsAsync<DesktopException>(() =>
+            new TargetsRig(interactive: 1, coveredBy: TargetsRig.PointWindow, elevatedAtPoint: true).Targets.LabelAsync(0, default));
+        Assert.IsNotType<InputBlockedException>(error);
+    }
+
+    [Fact]
+    public async Task ALocatedPointOverNoWindowIsCovered() =>
+        Assert.EndsWith("is covered by another window; no input was sent.",
+            (await Assert.ThrowsAsync<DesktopException>(() =>
+                new TargetsRig(interactive: 1, coveredBy: 0).Targets.LabelAsync(0, default))).Message);
+
+    [Fact]
+    public async Task AnOwnedPopupOnTheLabelWindowsThreadIsNotCovering()
+    {
+        var rig = new TargetsRig(interactive: 1, coveredBy: 77);
+        rig.Windows.RootOwners[77] = TargetsRig.NotepadWindow;
+        rig.Windows.Threads[77] = 11;
+        rig.Windows.Threads[TargetsRig.NotepadWindow] = 11;
+        Assert.Equal(new ActionTarget(rig.Interactive[0].Center, TargetsRig.NotepadWindow, "Notepad"), await rig.Targets.LabelAsync(0, default));
+    }
+
+    [Fact]
+    public async Task AnOwnedPopupOnAnotherThreadIsCovering()
+    {
+        var rig = new TargetsRig(interactive: 1, coveredBy: 77);
+        rig.Windows.RootOwners[77] = TargetsRig.NotepadWindow;
+        rig.Windows.Threads[77] = 12;
+        rig.Windows.Threads[TargetsRig.NotepadWindow] = 11;
+        await Assert.ThrowsAsync<DesktopException>(() => rig.Targets.LabelAsync(0, default));
+    }
+
+    [Fact]
+    public async Task AWindowOwnedByAnotherWindowIsCovering()
+    {
+        var rig = new TargetsRig(interactive: 1, coveredBy: 77);
+        rig.Windows.RootOwners[77] = 78;
+        rig.Windows.Threads[77] = 11;
+        rig.Windows.Threads[TargetsRig.NotepadWindow] = 11;
+        await Assert.ThrowsAsync<DesktopException>(() => rig.Targets.LabelAsync(0, default));
+    }
+
+    [Fact]
+    public async Task AnUnreadableThreadIsCovering()
+    {
+        var rig = new TargetsRig(interactive: 1, coveredBy: 77);
+        rig.Windows.RootOwners[77] = TargetsRig.NotepadWindow;
+        await Assert.ThrowsAsync<DesktopException>(() => rig.Targets.LabelAsync(0, default));
+    }
 
     [Fact]
     public void PointsOutsideTheDesktopAreRejected() =>
@@ -197,7 +257,8 @@ internal sealed class TargetsRig
 
     /// <param name="snapshot">Null: nothing is stored (no Snapshot yet).</param>
     public TargetsRig(bool? snapshot = true, int interactive = 0, int scrollable = 0, LocateResult? locate = null, Exception? locateThrows = null,
-        bool identity = true, string name = "OK", bool elevatedAtPoint = false, bool elevatedForeground = false, string? sessionError = null)
+        bool identity = true, string name = "OK", bool elevatedAtPoint = false, bool elevatedForeground = false, string? sessionError = null,
+        long? coveredBy = null, bool elevatedLabelWindow = false)
     {
         Interactive = Enumerable.Range(0, interactive).Select(i => Element(i, identity, name)).ToArray();
         Scrollable = Enumerable.Range(interactive, scrollable).Select(i => Element(i, identity, name)).ToArray();
@@ -220,6 +281,9 @@ internal sealed class TargetsRig
         windows.Processes[PointWindow] = TaskManagerProcess;
         windows.ProcessNames[TaskManagerProcess] = "Taskmgr.exe";
         windows.Processes[NotepadWindow] = NotepadProcess;
+        windows.ProcessNames[NotepadProcess] = "notepad.exe";
+        // A located point lies on the label's window unless coveredBy names another (Decisions 42); other points on PointWindow.
+        windows.WindowAt = point => _located.Contains(point) ? coveredBy ?? NotepadWindow : -1;
         if (elevatedForeground) windows.Foreground.Enqueue(PointWindow);
         var elevated = elevatedAtPoint || elevatedForeground;
 
@@ -227,8 +291,11 @@ internal sealed class TargetsRig
         {
             Locates++;
             if (locateThrows is not null) throw locateThrows;
-            return Task.FromResult(locate ?? new LocateResult(null, center, null));
-        }, windows, () => new ScreenRect(0, 0, 1920, 1080), processId => elevated && processId == TaskManagerProcess, Blocks, () =>
+            var result = locate ?? new LocateResult(null, center, null);
+            _located.Add(result.Point);
+            return Task.FromResult(result);
+        }, windows, () => new ScreenRect(0, 0, 1920, 1080),
+            processId => (elevated && processId == TaskManagerProcess) || (elevatedLabelWindow && processId == NotepadProcess), Blocks, () =>
         {
             SessionChecks++;
             if (sessionError is not null) throw new DesktopException(sessionError);
@@ -241,6 +308,7 @@ internal sealed class TargetsRig
     public int Locates { get; private set; }
     public int SessionChecks { get; private set; }
     public FakeWindowSystem Windows { get; } = new();
+    private readonly HashSet<ScreenPoint> _located = [];
     public HangBlockList Blocks { get; } = new(TimeProvider.System, HangBlockList.DefaultDuration);
 
     private static UiElement Element(int i, bool identity, string name) =>

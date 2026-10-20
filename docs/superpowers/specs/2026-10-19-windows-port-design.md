@@ -619,8 +619,9 @@ into the tests' own windows.
   string; Click with `clicks` of 3 or more reports `Clicked N times` instead of `None`;
   annotation colours are fixed per label; the `initialize` instructions have no leading or
   trailing newline; a label action reports the point it actually used; a label that cannot be
-  acted on gives a specific error (stale, disabled, off screen, or its window not responding)
-  instead of acting at the stored point; Type and each MultiEdit item read the focused element's
+  acted on gives a specific error (stale, disabled, off screen, covered by another window, or its window
+  not responding) instead of acting at the stored point (a label whose point another window covers,
+  other than a popup its own window owns on the same thread, sends nothing: P3 plan, Decisions 42); Type and each MultiEdit item read the focused element's
   value back and add one `Warning: ... does not contain the typed text; it reads '...'.` line on
   a mismatch.
 - **Bug fixes**: scrollable elements report their box centre (upstream picks a random point);

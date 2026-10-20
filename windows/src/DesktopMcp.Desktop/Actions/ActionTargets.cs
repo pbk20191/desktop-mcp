@@ -52,7 +52,11 @@ public static class LabelErrors
 
     public static string NotResponding(string window) => $"{window} is not responding; no input was sent.";
 
-    /// <summary>The <see cref="Stale"/>, <see cref="Disabled"/>, <see cref="OffScreen"/> or <see cref="NotResponding"/> text for the element.</summary>
+    /// <summary>Decisions 42: the located point's top-level window is neither the label's window nor its same-thread popup.</summary>
+    public static string Covered(long label, string type, string name) =>
+        $"Label {label} ({type} \"{name}\") is covered by another window; no input was sent.";
+
+    /// <summary>The <see cref="Stale"/>, <see cref="Disabled"/>, <see cref="OffScreen"/>, <see cref="NotResponding"/> or <see cref="Covered"/> text for the element.</summary>
     public static string For(LocateFailure failure, long label, UiElement element)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -66,6 +70,7 @@ public static class LabelErrors
             LocateFailure.Disabled => Disabled(label, type, name),
             LocateFailure.OffScreen => OffScreen(label, type, name),
             LocateFailure.NotResponding => NotResponding(window),
+            LocateFailure.Covered => Covered(label, type, name),
             _ => throw new ArgumentOutOfRangeException(nameof(failure), failure, null),
         };
     }
@@ -149,8 +154,14 @@ public sealed class ActionTargets : IActionTargets
         }
         if (result.Failure is { } failure) throw new DesktopException(LabelErrors.For(failure, label, element));
 
-        // Decisions 22: the point actually used. The checks are those of a point; the target is the label's window.
-        CheckPoint(result.Point);
+        // Decisions 22: the point actually used, with a point's bounds check. Decisions 42: the top-level window there must be
+        // the label's window (or a popup it owns on its GUI thread), else another window covers the element and would take
+        // the click; only then the integrity check. The target is the label's window.
+        if (MouseCoordinates.OutsideMessage(result.Point, _virtualScreen()) is { } outside) throw new ArgumentException(outside);
+        var root = _windows.WindowFromPoint(result.Point);
+        if (!LabelWindows.IsLabelWindow(_windows, root, identity.Window))
+            throw new DesktopException(LabelErrors.For(LocateFailure.Covered, label, element));
+        CheckIntegrity(root);
         return new ActionTarget(result.Point, identity.Window, element.WindowName);
     }
 

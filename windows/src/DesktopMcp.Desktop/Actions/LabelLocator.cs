@@ -24,8 +24,14 @@ internal interface IElementSource
     long RootAt(ScreenPoint point);
 
     /// <summary>
-    /// The element under the point, or null when there is none or the point's top-level window is not
-    /// <paramref name="window"/> (whose WM_NULL check the caller has made).
+    /// Whether <paramref name="root"/> is a top-level window owned by <paramref name="window"/> (GA_ROOTOWNER) and run by
+    /// its GUI thread, such as a menu or a combo box's drop-down (Decisions 42); Win32 calls, not UIA.
+    /// </summary>
+    bool IsSameThreadOwnedRoot(long root, long window);
+
+    /// <summary>
+    /// The element under the point, or null when there is none or the point's top-level window is neither
+    /// <paramref name="window"/> (whose WM_NULL check the caller has made) nor a popup it owns on its GUI thread.
     /// </summary>
     UiaElementData? ElementAt(ScreenPoint point, long window);
 
@@ -54,6 +60,9 @@ public enum LocateFailure
     Disabled,
     OffScreen,
     NotResponding,
+
+    /// <summary>Another window covers the action point (Decisions 42); <see cref="ActionTargets"/> reports it, the locator never does.</summary>
+    Covered,
 }
 
 /// <summary>The found element and the point to act on, or why there is none (public for the tests, preflight F5).</summary>
@@ -114,8 +123,10 @@ internal sealed class LabelLocator(IElementSource source, IReadOnlyList<ScreenRe
     private UiaElementData? FindUnderPoint(ElementIdentity identity, ScreenPoint point, CancellationToken ct)
     {
         // The point may now lie over another application's window: no UIA call goes into it (no ElementFromPoint, no
-        // parent climb); the bounded walk of the label's own window follows.
-        if (source.RootAt(point) != identity.Window) return null;
+        // parent climb); the bounded walk of the label's own window follows. A popup the window owns on its own GUI thread
+        // (whose WM_NULL check the caller's check of the window stands for) uses this step too (Decisions 42).
+        var root = source.RootAt(point);
+        if (root != identity.Window && !source.IsSameThreadOwnedRoot(root, identity.Window)) return null;
         ct.ThrowIfCancellationRequested();
         var element = source.ElementAt(point, identity.Window);
         for (var level = 0; element is not null; level++)
@@ -219,25 +230,21 @@ internal sealed class LabelLocator(IElementSource source, IReadOnlyList<ScreenRe
 /// <see cref="IElementSource"/> over a <see cref="UiaSession"/>, every element read with <see cref="UiaSession.ActionRequest"/>.
 /// Runs only on the UIA worker thread. Dead elements and UIA timeouts propagate raw (the caller classifies them).
 /// </summary>
-internal sealed unsafe class UiaElementSource(UiaSession session) : IElementSource
+internal sealed unsafe class UiaElementSource(UiaSession session, IWindowSystem windows) : IElementSource
 {
     public WindowResponse CheckWindow(long window) => Win32WindowSystem.CheckResponding(window);
 
     public bool WindowExists(long window) => PInvoke.IsWindow((HWND)(nint)window);
 
-    public long RootAt(ScreenPoint point)
-    {
-        var window = PInvoke.WindowFromPoint(new System.Drawing.Point(point.X, point.Y));
-        if (window.IsNull) return 0;
-        var root = PInvoke.GetAncestor(window, GET_ANCESTOR_FLAGS.GA_ROOT);
-        return root.IsNull ? (nint)window : (nint)root;
-    }
+    public long RootAt(ScreenPoint point) => windows.WindowFromPoint(point);
+
+    public bool IsSameThreadOwnedRoot(long root, long window) => root != window && LabelWindows.IsLabelWindow(windows, root, window);
 
     public UiaElementData? ElementAt(ScreenPoint point, long window)
     {
         // The root is checked again here (cheap; the caller checked it too), so no UIA call goes into another
         // application's window. The WM_NULL check of the label's window (Decisions 38) is the caller's, made just before.
-        if (RootAt(point) != window) return null;
+        if (!LabelWindows.IsLabelWindow(windows, RootAt(point), window)) return null;
         var element = session.Automation.ElementFromPointBuildCache(new System.Drawing.Point(point.X, point.Y), session.ActionRequest);
         return element is null ? null : UiaTreeSource.ReadAction(element);
     }
@@ -293,7 +300,7 @@ internal sealed class UiaLabelLocator(UiaWorker<UiaSession> worker, IDisplayProv
             try
             {
                 return UiaJob.Run("UI Automation label lookup", () =>
-                    new LabelLocator(new UiaElementSource(session), monitors, windowBounds).Locate(identity, storedCenter, token));
+                    new LabelLocator(new UiaElementSource(session, windows), monitors, windowBounds).Locate(identity, storedCenter, token));
             }
             catch (Exception e) when (ComErrors.IsDeadElement(e))
             {

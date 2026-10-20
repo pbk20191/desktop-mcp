@@ -89,6 +89,18 @@ public class LabelLocatorTests
     }
 
     [Fact]
+    public void AnOwnedPopupOnTheSameThreadUnderThePointUsesThePointStep()
+    {
+        var source = FakeElementSource.Window(Button("1.2", new ScreenRect(10, 10, 50, 30)), pointMap: true);
+        source.PointRoot = 555;
+        source.SameThreadOwnedRoots.Add(555);
+        Assert.Equal(new ScreenPoint(30, 20), new LabelLocator(source, [Monitor], Monitor).Locate(Id(), new(30, 20), default).Point);
+        Assert.Contains("ElementAt", source.Calls);
+        Assert.Equal([100L], source.ElementAtWindows);
+        Assert.DoesNotContain("ReadWindow", source.Calls);
+    }
+
+    [Fact]
     public void WindowGoneIsStale()
     {
         var source = FakeElementSource.Window(Button("1.2", new(10, 10, 50, 30)), pointMap: true, windowExists: false);
@@ -304,6 +316,11 @@ internal sealed class FakeElementSource : IElementSource
         return PointRoot;
     }
 
+    /// <summary>Top-level windows owned by the label's window (100) and on its GUI thread.</summary>
+    public HashSet<long> SameThreadOwnedRoots { get; } = [];
+
+    public bool IsSameThreadOwnedRoot(long root, long window) => window == 100 && SameThreadOwnedRoots.Contains(root);
+
     public UiaElementData? ElementAt(ScreenPoint point, long window)
     {
         Calls.Add("ElementAt");
@@ -396,7 +413,7 @@ public sealed partial class LabelLocatorDesktopTests : IDisposable
             var tree = new UiaTreeSource(session, handle);
             var button = tree.GetChildren(tree.ReadWindow(handle), out _).Single(c => c.Name == TestWindow.ButtonText);
             var identity = new ElementIdentity(handle, button.RuntimeId!, button.ControlType, button.AutomationId, button.Name.Trim(), button.ClickablePoint);
-            var source = new UiaElementSource(session);
+            var source = new UiaElementSource(session, new Win32WindowSystem());
             return (identity, button, source.CanScrollIntoView(source.Refresh(button)));
         }, TimeSpan.FromSeconds(20), default);
     }

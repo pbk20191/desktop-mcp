@@ -48,6 +48,7 @@ internal sealed class ForegroundRig
         public long FindWindow(string className) => 0;
         public long GetForegroundWindow() => rig.ForegroundWindow;
         public long GetRoot(long window) => window;
+        public long GetRootOwner(long window) => window;
         public string? GetProcessName(int processId) => "notepad.exe";
 
         public uint GetThreadId(long window) =>
