@@ -19,6 +19,7 @@ internal sealed class RawMcpClient : IAsyncDisposable
 {
     public const string ProtocolVersion = "2025-06-18";
     private static readonly TimeSpan ResponseTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan CleanupGrace = TimeSpan.FromSeconds(1);
     private static readonly ServePlan Plan = new()
     {
         Transport = "stdio", Host = "localhost", Port = 8000, Control = new ControlSettings(false, "relaxed", 10.0, 500, 500),
@@ -125,17 +126,21 @@ internal sealed class RawMcpClient : IAsyncDisposable
     /// The cancelled <paramref name="call"/> gets no response within <paramref name="within"/> (the MCP rule for a
     /// cancelled request) or an error response; a result fails, and so does a server that no longer answers pings. The
     /// call must also have stopped waiting: by the end of <paramref name="within"/> the server has cancelled every
-    /// sampling request still unanswered (<c>notifications/cancelled</c>), so none is outstanding.
+    /// sampling request still unanswered (<c>notifications/cancelled</c>), so none is outstanding. That check polls until
+    /// the end of the window (and at least <see cref="CleanupGrace"/>), since a handler leaves the outstanding set only
+    /// after its cancellation has run.
     /// </summary>
     public async Task AssertNoResponseOrCancelledWithinAsync(PendingCall call, TimeSpan within)
     {
         ArgumentNullException.ThrowIfNull(call);
+        var deadline = DateTime.UtcNow + (within > CleanupGrace ? within : CleanupGrace);
         var finished = await Task.WhenAny(call.Response, Task.Delay(within, _stop.Token));
         if (finished == call.Response)
         {
             var response = await call.Response;
             Assert.True(response.ContainsKey("error"), $"A cancelled call returned a result: {response.ToJsonString()}");
         }
+        while (!_serverRequests.IsEmpty && DateTime.UtcNow < deadline) await Task.Delay(20, _stop.Token);
         Assert.True(_serverRequests.IsEmpty, "The server still waits for a sampling request after the call was cancelled.");
         Assert.Equal("ok", await PingAsync());
     }
@@ -221,7 +226,11 @@ internal sealed class RawMcpClient : IAsyncDisposable
                 }
                 else if (method is not null && hasId)
                 {
-                    _ = Task.Run(() => AnswerAsync(method, message["id"]!.DeepClone(), message["params"]?.DeepClone() as JsonObject ?? []));
+                    var id = message["id"]!.DeepClone();
+                    // Registered before the next line is read, so a notifications/cancelled for it always finds it.
+                    var cancellation = method == McpSampling.CreateMessageMethod ? CancellationTokenSource.CreateLinkedTokenSource(_stop.Token) : null;
+                    if (cancellation is not null) _serverRequests[IdKey(id)] = cancellation;
+                    _ = Task.Run(() => AnswerAsync(method, id, message["params"]?.DeepClone() as JsonObject ?? [], cancellation));
                 }
                 else if (method == "notifications/cancelled"
                     && _serverRequests.TryGetValue(IdKey(message["params"]?["requestId"]), out var cancelled))
@@ -246,18 +255,17 @@ internal sealed class RawMcpClient : IAsyncDisposable
     }
 
     // A request from the server: sampling goes to the handlers, ping is answered, anything else is method-not-found.
-    private async Task AnswerAsync(string method, JsonNode id, JsonObject parameters)
+    private async Task AnswerAsync(string method, JsonNode id, JsonObject parameters, CancellationTokenSource? cancellation)
     {
         JsonObject response;
         if (method == "ping")
         {
             response = Result(id, new JsonObject());
         }
-        else if (method == "sampling/createMessage")
+        else if (cancellation is not null)
         {
+            using var owned = cancellation;
             lock (_samplingRequests) _samplingRequests.Add((JsonObject)parameters.DeepClone());
-            using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token);
-            _serverRequests[IdKey(id)] = cancellation;
             JsonNode? result;
             try
             {

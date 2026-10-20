@@ -18,7 +18,7 @@ public static class McpSampling
     public const string CreateMessageMethod = "sampling/createMessage";
 
     /// <summary>How long the best-effort <c>notifications/cancelled</c> for an abandoned request may take to send.</summary>
-    private static readonly TimeSpan CancelNoticeTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan CancelNoticeTimeout = TimeSpan.FromSeconds(1);
 
     /// <summary>Whether the client of <paramref name="server"/> declared the <c>sampling</c> capability.</summary>
     public static bool ClientCanSample(McpServer server)
