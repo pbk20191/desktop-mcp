@@ -62,6 +62,24 @@ internal sealed class UiaSession
         UIA_PATTERN_ID.UIA_WindowPatternId,
     ];
 
+    // Label actions (P3 Decisions 1-4): the traversal set plus the element's own window handle (preflight F11) and what the
+    // locator's ScrollIntoView and Type's read-back need.
+    private static readonly UIA_PROPERTY_ID[] ActionProperties =
+    [
+        .. TraversalProperties,
+        UIA_PROPERTY_ID.UIA_NativeWindowHandlePropertyId,
+        UIA_PROPERTY_ID.UIA_IsScrollItemPatternAvailablePropertyId,
+        UIA_PROPERTY_ID.UIA_IsValuePatternAvailablePropertyId,
+        UIA_PROPERTY_ID.UIA_ValueValuePropertyId,
+    ];
+
+    private static readonly UIA_PATTERN_ID[] ActionPatterns =
+    [
+        .. TraversalPatterns,
+        UIA_PATTERN_ID.UIA_ScrollItemPatternId,
+        UIA_PATTERN_ID.UIA_ValuePatternId,
+    ];
+
     // What the window list needs from each top-level window (upstream desktop/service.py:1192-1245).
     private static readonly UIA_PROPERTY_ID[] ProbeProperties =
     [
@@ -83,6 +101,7 @@ internal sealed class UiaSession
         // properties (upstream tree/cache_utils.py:173-186). The tree walk no longer uses it (it makes the provider build
         // every child; Decisions 37); the probes' AOT check and measurements still do.
         ChildrenRequest = CreateRequest(automation, TraversalProperties, TraversalPatterns, TreeScope.TreeScope_Children);
+        ActionRequest = CreateRequest(automation, ActionProperties, ActionPatterns, TreeScope.TreeScope_Element);
         ProbeRequest = CreateRequest(automation, ProbeProperties, [UIA_PATTERN_ID.UIA_WindowPatternId], TreeScope.TreeScope_Element);
         ControlView = automation.get_ControlViewWalker();
         RawView = automation.get_RawViewWalker();
@@ -92,6 +111,10 @@ internal sealed class UiaSession
     public IUIAutomationCacheRequest ElementRequest { get; }
     public IUIAutomationCacheRequest ChildrenRequest { get; }
     public IUIAutomationCacheRequest ProbeRequest { get; }
+
+    /// <summary>One element for a label action: <see cref="ElementRequest"/>'s set plus the native window handle, the
+    /// ScrollItem and Value patterns and the value (read with <see cref="UiaTreeSource.ReadAction"/>).</summary>
+    public IUIAutomationCacheRequest ActionRequest { get; }
     public IUIAutomationTreeWalker ControlView { get; }
 
     /// <summary>The raw view, for the window probe's children check only (upstream uia/core.py:77 walks it there).</summary>

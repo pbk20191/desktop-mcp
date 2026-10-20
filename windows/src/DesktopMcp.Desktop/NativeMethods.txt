@@ -33,6 +33,9 @@ IUIAutomationTreeWalker
 IUIAutomationTextPattern
 IUIAutomationTextRange
 IUIAutomationTextRangeArray
+// Label actions (P3 Decisions 1-4): ScrollIntoView before a click, the Value read-back after Type
+IUIAutomationScrollItemPattern
+IUIAutomationValuePattern
 UIA_PROPERTY_ID
 UIA_PATTERN_ID
 UIA_CONTROLTYPE_ID

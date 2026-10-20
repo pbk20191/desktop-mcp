@@ -47,6 +47,13 @@ internal sealed record UiaElementData
     public double? RangeValue { get; init; }
     public double? RangeMinimum { get; init; }
     public double? RangeMaximum { get; init; }
+
+    /// <summary>
+    /// The element's own window (UIA NativeWindowHandle), or 0 when it has none or the request did not cache it (only
+    /// <c>UiaSession.ActionRequest</c> does; preflight F11).
+    /// </summary>
+    public long NativeWindowHandle { get; init; }
+
     public object? Handle { get; init; }
 }
 

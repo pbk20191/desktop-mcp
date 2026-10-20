@@ -202,6 +202,10 @@ internal sealed unsafe class UiaTreeSource(UiaSession session, long window = 0) 
     private static IUIAutomationElement Element(UiaElementData data) =>
         data.Handle as IUIAutomationElement ?? throw new InvalidOperationException("The element has no UIA handle.");
 
+    /// <summary><see cref="Read"/> for an element fetched with <see cref="UiaSession.ActionRequest"/>, which also caches the native window handle.</summary>
+    internal static UiaElementData ReadAction(IUIAutomationElement element) =>
+        Read(element) with { NativeWindowHandle = (nint)element.get_CachedNativeWindowHandle() };
+
     // upstream tree/service.py reads these through Cached* accessors and GetCachedPropertyValue.
     internal static UiaElementData Read(IUIAutomationElement element) => new()
     {
