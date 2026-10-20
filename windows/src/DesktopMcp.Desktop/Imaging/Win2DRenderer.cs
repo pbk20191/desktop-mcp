@@ -38,23 +38,20 @@ public sealed class Win2DRenderer : IImageRenderer
     private readonly Func<CapturedImage, RenderOptions, Task<byte[]>> _render;
     private readonly GpuGate _gate;
 
-    public Win2DRenderer() : this(AppRuntime.EnsureInitialized, RenderOnSharedDeviceAsync, GpuGate.Shared)
+    public Win2DRenderer() : this(AppRuntime.EnsureInitialized, GpuGate.Shared, RenderOnSharedDeviceAsync)
     {
     }
 
-    internal Win2DRenderer(Action ensureRuntime) : this(ensureRuntime, RenderOnSharedDeviceAsync, GpuGate.Shared)
+    internal Win2DRenderer(Action ensureRuntime, GpuGate gate) : this(ensureRuntime, gate, RenderOnSharedDeviceAsync)
     {
     }
 
-    /// <summary>
-    /// Tests replace the Win2D work (everything after the runtime is initialised) with a fake, and pass their own gate
-    /// (none: a private one, so a test's abandoned render does not block the others).
-    /// </summary>
-    internal Win2DRenderer(Action ensureRuntime, Func<CapturedImage, RenderOptions, Task<byte[]>> render, GpuGate? gate = null)
+    /// <summary>Tests replace the Win2D work (everything after the runtime is initialised) with a fake and pass their own gate.</summary>
+    internal Win2DRenderer(Action ensureRuntime, GpuGate gate, Func<CapturedImage, RenderOptions, Task<byte[]>> render)
     {
         _ensureRuntime = ensureRuntime;
+        _gate = gate;
         _render = render;
-        _gate = gate ?? new GpuGate();
     }
 
     /// <summary>
@@ -71,7 +68,7 @@ public sealed class Win2DRenderer : IImageRenderer
         ? png
         : throw new DesktopException($"{Operation} failed: the PNG stream returned {png.Length} of {size} bytes.");
 
-    public async Task<byte[]> RenderPngAsync(CapturedImage image, RenderOptions options)
+    public async Task<byte[]> RenderPngAsync(CapturedImage image, RenderOptions options, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(image);
         ArgumentNullException.ThrowIfNull(options);
@@ -79,15 +76,29 @@ public sealed class Win2DRenderer : IImageRenderer
             throw new ArgumentOutOfRangeException(nameof(options), options.Scale, "Scale must be in (0, 1].");
         if (image.Width <= 0 || image.Height <= 0 || image.Bgra.Length != (long)image.Width * image.Height * 4)
             throw new ArgumentException($"A {image.Width}x{image.Height} image needs {(long)image.Width * image.Height * 4} bytes of BGRA, not {image.Bgra.Length}.", nameof(image));
-        Task<byte[]>? work = null;
-        // One slot for the shared device: a render that timed out keeps it until its thread-pool work ends.
-        using var lease = await _gate.EnterAsync(Operation, Timeout, CancellationToken.None).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
         try
         {
             _ensureRuntime();
+        }
+        catch (Exception e) when (ComErrors.ShouldTranslate(e))
+        {
+            throw ComErrors.Translate(Operation, e);
+        }
+
+        // One slot for the shared device: a render that timed out keeps it until its thread-pool work ends. The wait counts
+        // against Timeout, and a caller that gave up never takes the slot.
+        var started = Time.GetTimestamp();
+        using var lease = await _gate.EnterAsync(Operation, Timeout, cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        var remaining = Timeout - Time.GetElapsedTime(started);
+        if (remaining <= TimeSpan.Zero) throw new DesktopException($"{Operation} failed: Win2D did not finish within {Timeout.TotalSeconds:0.###} s.");
+        Task<byte[]>? work = null;
+        try
+        {
             // Task.Run: the synchronous Win2D calls (device, bitmap, drawing) are bounded too, not only the awaited ones.
             work = Task.Run(() => _render(image, options));
-            return await work.WaitAsync(Timeout, Time).ConfigureAwait(false);
+            return await work.WaitAsync(remaining, Time).ConfigureAwait(false);
         }
         catch (TimeoutException e) when (work is not null && work.Exception?.InnerException != e)
         {

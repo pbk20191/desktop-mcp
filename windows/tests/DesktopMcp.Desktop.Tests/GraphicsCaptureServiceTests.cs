@@ -122,7 +122,7 @@ public class GraphicsCaptureServiceTests
     [Fact]
     public async Task TheRuntimeIsInitialisedFirstAndItsInstallHintIsNotWrapped()
     {
-        var service = new GraphicsCaptureService(() => throw new InvalidOperationException("install the runtime"));
+        var service = new GraphicsCaptureService(() => throw new InvalidOperationException("install the runtime"), new GpuGate());
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             service.CaptureAsync(new ScreenRect(0, 0, 10, 10), [new ScreenRect(0, 0, 10, 10)], default));
         Assert.Equal("install the runtime", error.Message);
@@ -130,13 +130,13 @@ public class GraphicsCaptureServiceTests
 
     [Fact]
     public async Task AnEmptyAreaIsRejected() =>
-        await Assert.ThrowsAsync<ArgumentException>(() => new GraphicsCaptureService(() => { }).CaptureAsync(new ScreenRect(5, 5, 5, 9), [], default));
+        await Assert.ThrowsAsync<ArgumentException>(() => new GraphicsCaptureService(() => { }, new GpuGate()).CaptureAsync(new ScreenRect(5, 5, 5, 9), [], default));
 
     [Fact]
     public async Task OnlyOverlappingMonitorsAreCapturedEachCroppedToTheArea()
     {
         var requests = new List<(ScreenRect, ScreenRect)>();
-        var service = new GraphicsCaptureService(() => { }, Allowed, (monitor, area, token) =>
+        var service = new GraphicsCaptureService(() => { }, new GpuGate(), Allowed, (monitor, area, token) =>
         {
             requests.Add((monitor, area));
             return CropFake(monitor, area, token);
@@ -152,7 +152,7 @@ public class GraphicsCaptureServiceTests
     public async Task AFrameThatCoversTheWholeAreaIsReturnedWithoutACopy()
     {
         var frame = Solid(4, 2, 9);
-        var service = new GraphicsCaptureService(() => { }, Allowed,
+        var service = new GraphicsCaptureService(() => { }, new GpuGate(), Allowed,
             (_, area, _) => Task.FromResult<(ScreenRect, CapturedImage)?>((area, frame)));
         Assert.Same(frame, await service.CaptureAsync(new ScreenRect(1, 1, 5, 3), [new ScreenRect(0, 0, 10, 10)], default));
     }
@@ -160,7 +160,7 @@ public class GraphicsCaptureServiceTests
     [Fact]
     public async Task AnAreaNoMonitorCoversIsBlack()
     {
-        var service = new GraphicsCaptureService(() => { }, Allowed, CropFake);
+        var service = new GraphicsCaptureService(() => { }, new GpuGate(), Allowed, CropFake);
         var image = await service.CaptureAsync(new ScreenRect(0, 0, 1, 1), [new ScreenRect(5, 5, 6, 6)], default);
         Assert.Equal([0, 0, 0, 255], image.Bgra);
     }
@@ -169,7 +169,7 @@ public class GraphicsCaptureServiceTests
     public async Task AMonitorCaptureThatHangsFailsAtItsDeadlineAndIsCancelled()
     {
         var abandoned = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var service = new GraphicsCaptureService(() => { }, Allowed, (_, _, token) =>
+        var service = new GraphicsCaptureService(() => { }, new GpuGate(), Allowed, (_, _, token) =>
         {
             token.Register(() => abandoned.TrySetResult());
             return new TaskCompletionSource<(ScreenRect, CapturedImage)?>().Task;
@@ -187,7 +187,7 @@ public class GraphicsCaptureServiceTests
     {
         var finish = new TaskCompletionSource<(ScreenRect, CapturedImage)?>();
         var first = true;
-        var service = new GraphicsCaptureService(() => { }, Allowed, (_, _, _) =>
+        var service = new GraphicsCaptureService(() => { }, new GpuGate(), Allowed, (_, _, _) =>
             Interlocked.Exchange(ref first, false) ? finish.Task : Task.FromResult<(ScreenRect, CapturedImage)?>(null))
         { MonitorTimeout = TimeSpan.FromMilliseconds(50) };
         var area = new ScreenRect(0, 0, 1, 1);
@@ -195,7 +195,24 @@ public class GraphicsCaptureServiceTests
         var error = await Assert.ThrowsAsync<DesktopException>(() => service.CaptureAsync(area, [area], default));
         Assert.Equal("Screen capture failed: an earlier graphics call is still running after its deadline; try again later.", error.Message);
         finish.SetResult(null);
+        await Task.Yield();
         Assert.NotNull(await service.CaptureAsync(area, [area], default));
+    }
+
+    [Fact]
+    public async Task TheMonitorBudgetIncludesTheWaitAtTheGate()
+    {
+        var gate = new GpuGate();
+        var service = new GraphicsCaptureService(() => { }, gate, Allowed, (_, _, _) => new TaskCompletionSource<(ScreenRect, CapturedImage)?>().Task)
+        { MonitorTimeout = TimeSpan.FromMilliseconds(600) };
+        var area = new ScreenRect(0, 0, 1, 1);
+        var held = await gate.EnterAsync("Other", TimeSpan.FromSeconds(5), default);
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var call = Assert.ThrowsAsync<DesktopException>(() => service.CaptureAsync(area, [area], default));
+        await Task.Delay(400);
+        held.Dispose();
+        await call;
+        Assert.True(clock.Elapsed < TimeSpan.FromMilliseconds(900), $"the capture took {clock.Elapsed}");
     }
 
     [Fact]
@@ -204,7 +221,7 @@ public class GraphicsCaptureServiceTests
         // The abandoned job's cleanup (here a token callback standing in for FrameArrived -= and the session's Dispose)
         // blocks; the caller must still get its error at the deadline, not after the cleanup.
         using var release = new ManualResetEventSlim();
-        var service = new GraphicsCaptureService(() => { }, Allowed, (_, _, token) =>
+        var service = new GraphicsCaptureService(() => { }, new GpuGate(), Allowed, (_, _, token) =>
         {
             token.Register(() => release.Wait(TimeSpan.FromSeconds(10)));
             return new TaskCompletionSource<(ScreenRect, CapturedImage)?>().Task;
@@ -246,7 +263,7 @@ public class GraphicsCaptureServiceTests
     public async Task ACallThatBlocksSynchronouslyIsBoundedToo()
     {
         using var release = new ManualResetEventSlim();
-        var service = new GraphicsCaptureService(() => { }, Allowed, (_, _, _) =>
+        var service = new GraphicsCaptureService(() => { }, new GpuGate(), Allowed, (_, _, _) =>
         {
             release.Wait(TimeSpan.FromSeconds(10));
             return Task.FromResult<(ScreenRect, CapturedImage)?>(null);
@@ -268,7 +285,7 @@ public class GraphicsCaptureServiceTests
     {
         var abandoned = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var cancel = new CancellationTokenSource();
-        var service = new GraphicsCaptureService(() => { }, Allowed, (_, _, token) =>
+        var service = new GraphicsCaptureService(() => { }, new GpuGate(), Allowed, (_, _, token) =>
         {
             token.Register(() => abandoned.TrySetResult());
             cancel.Cancel();
@@ -282,7 +299,7 @@ public class GraphicsCaptureServiceTests
     [Fact]
     public async Task AComFailureBecomesADesktopException()
     {
-        var service = new GraphicsCaptureService(() => { }, Allowed,
+        var service = new GraphicsCaptureService(() => { }, new GpuGate(), Allowed,
             (_, _, _) => throw new COMException("boom", unchecked((int)0x887A0005)));
         var error = await Assert.ThrowsAsync<DesktopException>(() =>
             service.CaptureAsync(new ScreenRect(0, 0, 1, 1), [new ScreenRect(0, 0, 1, 1)], default));
@@ -294,7 +311,7 @@ public class GraphicsCaptureServiceTests
     {
         GraphicsCaptureService.ResetAccessRequest();
         var requests = 0;
-        var service = new GraphicsCaptureService(() => { }, () =>
+        var service = new GraphicsCaptureService(() => { }, new GpuGate(), () =>
         {
             requests++;
             return new TaskCompletionSource<string>().Task;
@@ -306,7 +323,7 @@ public class GraphicsCaptureServiceTests
         Assert.StartsWith("TimeoutException", GraphicsCaptureService.BorderlessAccess);
         await service.CaptureAsync(area, [area], default).WaitAsync(TimeSpan.FromSeconds(5));
         // Once per process: another instance does not ask again.
-        await new GraphicsCaptureService(() => { }, () =>
+        await new GraphicsCaptureService(() => { }, new GpuGate(), () =>
         {
             requests++;
             return Allowed();

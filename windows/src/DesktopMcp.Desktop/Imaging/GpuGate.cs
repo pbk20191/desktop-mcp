@@ -9,8 +9,13 @@ namespace DesktopMcp.Desktop.Imaging;
 /// </summary>
 internal sealed class GpuGate
 {
+    private const string AbandonedText = "an earlier graphics call is still running after its deadline; try again later.";
+
     private readonly SemaphoreSlim _slot = new(1, 1);
-    private volatile Task? _abandoned;
+    private readonly object _sync = new();
+    // Cancelled when a holder is abandoned, so waiters already queued fail at once; replaced once that holder ends.
+    private CancellationTokenSource _generation = new();
+    private Task? _abandoned;
 
     /// <summary>The gate rendering and capture share in the server process.</summary>
     public static GpuGate Shared { get; } = new();
@@ -18,22 +23,45 @@ internal sealed class GpuGate
     public async Task<GpuLease> EnterAsync(string operation, TimeSpan wait, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(operation);
-        if (_abandoned is { IsCompleted: false })
-            throw new DesktopException($"{operation} failed: an earlier graphics call is still running after its deadline; try again later.");
-        if (!await _slot.WaitAsync(wait, ct).ConfigureAwait(false))
+        CancellationTokenSource generation;
+        lock (_sync)
+        {
+            if (_abandoned is { IsCompleted: false }) throw new DesktopException($"{operation} failed: {AbandonedText}");
+            generation = _generation;
+        }
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, generation.Token);
+        bool entered;
+        try
+        {
+            entered = await _slot.WaitAsync(wait, linked.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested && generation.IsCancellationRequested)
+        {
+            throw new DesktopException($"{operation} failed: {AbandonedText}");
+        }
+        if (!entered)
             throw new DesktopException($"{operation} failed: the graphics device stayed busy for {wait.TotalSeconds:0.###} s.");
         return new GpuLease(this);
     }
 
     internal void Abandon(Task stillRunning)
     {
-        _abandoned = stillRunning;
+        CancellationTokenSource old;
+        lock (_sync)
+        {
+            _abandoned = stillRunning;
+            old = _generation;
+        }
+        // CancelAsync: the queued waiters' continuations must not run on the abandoning caller's thread.
+        _ = old.CancelAsync();
         // The continuation observes a failure too, so the abandoned work's exception is not left unobserved.
         stillRunning.ContinueWith(static (task, state) =>
         {
             _ = task.Exception;
-            ((SemaphoreSlim)state!).Release();
-        }, _slot, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            var gate = (GpuGate)state!;
+            lock (gate._sync) gate._generation = new CancellationTokenSource();
+            gate._slot.Release();
+        }, this, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
     }
 
     internal void Free() => _slot.Release();

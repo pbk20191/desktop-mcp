@@ -37,17 +37,17 @@ public sealed class GraphicsCaptureService : IScreenCapture
 
     private readonly GpuGate _gate;
 
-    public GraphicsCaptureService() : this(AppRuntime.EnsureInitialized, gate: GpuGate.Shared)
+    public GraphicsCaptureService() : this(AppRuntime.EnsureInitialized, GpuGate.Shared)
     {
     }
 
     /// <summary>
     /// Tests replace the runtime initialisation, the access request and the per-monitor capture with fakes, and pass their
-    /// own gate (none: a private one, so a test's abandoned capture does not block the others).
+    /// own gate.
     /// </summary>
-    internal GraphicsCaptureService(Action ensureRuntime, Func<Task<string>>? requestAccess = null, MonitorCapture? captureMonitor = null, GpuGate? gate = null)
+    internal GraphicsCaptureService(Action ensureRuntime, GpuGate gate, Func<Task<string>>? requestAccess = null, MonitorCapture? captureMonitor = null)
     {
-        _gate = gate ?? new GpuGate();
+        _gate = gate;
         _ensureRuntime = ensureRuntime;
         _requestAccess = requestAccess ?? RequestBorderlessAccessAsync;
         _captureMonitor = captureMonitor ?? CaptureMonitorAsync;
@@ -111,7 +111,11 @@ public sealed class GraphicsCaptureService : IScreenCapture
     private async Task<(ScreenRect Origin, CapturedImage Frame)?> CaptureMonitorBoundedAsync(ScreenRect monitor, ScreenRect area, CancellationToken cancellationToken)
     {
         // One slot for the shared device: a monitor that timed out keeps it until its work ends.
+        // The wait counts against MonitorTimeout.
+        var started = System.Diagnostics.Stopwatch.GetTimestamp();
         using var lease = await _gate.EnterAsync(Operation, MonitorTimeout, cancellationToken).ConfigureAwait(false);
+        var remaining = MonitorTimeout - System.Diagnostics.Stopwatch.GetElapsedTime(started);
+        if (remaining <= TimeSpan.Zero) throw MonitorTimedOut(monitor);
         var abandon = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var work = Task.Run(() => _captureMonitor(monitor, area, abandon.Token), CancellationToken.None);
         // CancelAsync, not Cancel: Cancel runs the token's callbacks on this thread, and an abandoned job's continuation
@@ -119,14 +123,13 @@ public sealed class GraphicsCaptureService : IScreenCapture
         Task? cancelling = null;
         try
         {
-            return await work.WaitAsync(MonitorTimeout, cancellationToken).ConfigureAwait(false);
+            return await work.WaitAsync(remaining, cancellationToken).ConfigureAwait(false);
         }
         catch (TimeoutException)
         {
             cancelling = abandon.CancelAsync();
             lease.AbandonUntil(work);
-            throw new DesktopException(
-                $"{Operation} failed: Windows.Graphics.Capture did not deliver the monitor {monitor.ToXyxy()} within {MonitorTimeout.TotalSeconds:0.###} s.");
+            throw MonitorTimedOut(monitor);
         }
         catch (OperationCanceledException) when (!work.IsCompleted)
         {
@@ -146,6 +149,9 @@ public sealed class GraphicsCaptureService : IScreenCapture
             }, abandon, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         }
     }
+
+    private DesktopException MonitorTimedOut(ScreenRect monitor) => new(
+        $"{Operation} failed: Windows.Graphics.Capture did not deliver the monitor {monitor.ToXyxy()} within {MonitorTimeout.TotalSeconds:0.###} s.");
 
     private Task<(ScreenRect Origin, CapturedImage Frame)?> CaptureMonitorAsync(ScreenRect monitor, ScreenRect area, CancellationToken cancellationToken)
     {

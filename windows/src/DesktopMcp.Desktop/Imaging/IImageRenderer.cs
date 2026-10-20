@@ -20,6 +20,7 @@ public interface IImageRenderer
     /// <summary>
     /// Scales the image by <see cref="RenderOptions.Scale"/> (0 &lt; scale ≤ 1, output size truncated like PIL's resize),
     /// draws the grid, the annotations and the cursor marker, and encodes PNG. Initialises the Windows App SDK runtime.
+    /// A cancelled token ends the wait for the shared graphics slot, and a render whose caller gave up never starts.
     /// </summary>
-    Task<byte[]> RenderPngAsync(CapturedImage image, RenderOptions options);
+    Task<byte[]> RenderPngAsync(CapturedImage image, RenderOptions options, CancellationToken cancellationToken = default);
 }

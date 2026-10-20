@@ -221,7 +221,7 @@ public sealed class SnapshotService : IDesktopSnapshots
             originalSize = new PixelSize(image.Width, image.Height);
             scale = SnapshotSettings.ImageScale(_machine.Environment(SnapshotSettings.ScreenshotScaleVariable), image.Width, image.Height);
             var options = request.UseAnnotation ? Annotate(tree, cursor, area, request, scale.Value) : RenderOptions.Plain(scale.Value);
-            png = await WithRuntimeAsync(() => BoundedAsync(_ => _machine.Renderer.RenderPngAsync(image, options), RenderTimeout,
+            png = await WithRuntimeAsync(() => BoundedAsync(token => _machine.Renderer.RenderPngAsync(image, options, token), RenderTimeout,
                 "Image rendering", cancellationToken)).ConfigureAwait(false);
             Stage("screenshot_render");
         }

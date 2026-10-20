@@ -62,4 +62,20 @@ public class GpuGateTests
         running.SetResult();
         (await gate.EnterAsync("Render", TimeSpan.FromSeconds(5), default)).Dispose();
     }
+
+    [Fact]
+    public async Task WaitersAlreadyQueuedFailAtOnceWhenTheHolderIsAbandoned()
+    {
+        var gate = new GpuGate();
+        var running = new TaskCompletionSource();
+        var holder = await gate.EnterAsync("Screen capture", TimeSpan.FromSeconds(5), default);
+        var waiting = gate.EnterAsync("Image rendering", TimeSpan.FromSeconds(30), default);
+        Assert.False(waiting.IsCompleted);
+        holder.AbandonUntil(running.Task);
+        var error = await Assert.ThrowsAsync<DesktopException>(() => waiting.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Equal("Image rendering failed: an earlier graphics call is still running after its deadline; try again later.", error.Message);
+        running.SetResult();
+        await Task.Yield();
+        (await gate.EnterAsync("Image rendering", TimeSpan.FromSeconds(5), default)).Dispose();
+    }
 }

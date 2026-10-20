@@ -79,7 +79,7 @@ public class SnapshotServiceTests
     private sealed class FakeRenderer : IImageRenderer
     {
         public RenderOptions? Options { get; private set; }
-        public Task<byte[]> RenderPngAsync(CapturedImage image, RenderOptions options)
+        public Task<byte[]> RenderPngAsync(CapturedImage image, RenderOptions options, CancellationToken cancellationToken = default)
         {
             Options = options;
             return Task.FromResult<byte[]>([0x89, 0x50]);
@@ -117,7 +117,7 @@ public class SnapshotServiceTests
 
     private sealed class HungRenderer : IImageRenderer
     {
-        public Task<byte[]> RenderPngAsync(CapturedImage image, RenderOptions options) => new TaskCompletionSource<byte[]>().Task;
+        public Task<byte[]> RenderPngAsync(CapturedImage image, RenderOptions options, CancellationToken cancellationToken = default) => new TaskCompletionSource<byte[]>().Task;
     }
 
     /// <summary>Takes its time, like a walk over many slow windows, then finishes.</summary>
@@ -166,7 +166,7 @@ public class SnapshotServiceTests
 
     private sealed class ThrowingRenderer(Exception error) : IImageRenderer
     {
-        public Task<byte[]> RenderPngAsync(CapturedImage image, RenderOptions options) => throw error;
+        public Task<byte[]> RenderPngAsync(CapturedImage image, RenderOptions options, CancellationToken cancellationToken = default) => throw error;
     }
 
     private readonly FakeWindows _windows = new(new WindowScan([11, 12, 13], [Notepad, Paint], Notepad));

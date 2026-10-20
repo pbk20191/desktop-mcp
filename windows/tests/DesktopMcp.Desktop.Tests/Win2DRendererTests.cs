@@ -53,7 +53,7 @@ public class Win2DRendererValidationTests
     [Fact]
     public async Task ABufferOfTheWrongLengthIsRejectedBeforeAnyWin2DCall()
     {
-        var renderer = new Win2DRenderer(() => throw new InvalidOperationException("must not initialise"));
+        var renderer = new Win2DRenderer(() => throw new InvalidOperationException("must not initialise"), new GpuGate());
         await Assert.ThrowsAsync<ArgumentException>(() => renderer.RenderPngAsync(new CapturedImage(10, 10, new byte[399]), RenderOptions.Plain(1)));
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => renderer.RenderPngAsync(new CapturedImage(1, 1, new byte[4]), RenderOptions.Plain(1.5)));
     }
@@ -67,7 +67,7 @@ public class Win2DRendererBoundsTests
     public async Task TheRuntimeIsInitialisedBeforeTheRender()
     {
         var calls = new List<string>();
-        var renderer = new Win2DRenderer(() => calls.Add("runtime"), (_, _) =>
+        var renderer = new Win2DRenderer(() => calls.Add("runtime"), new GpuGate(), (_, _) =>
         {
             calls.Add("render");
             return Task.FromResult(new byte[] { 1 });
@@ -80,7 +80,7 @@ public class Win2DRendererBoundsTests
     public async Task ARenderThatBlocksItsThreadIsAbandonedAtTheDeadline()
     {
         using var release = new ManualResetEventSlim();
-        var renderer = new Win2DRenderer(() => { }, (_, _) =>
+        var renderer = new Win2DRenderer(() => { }, new GpuGate(), (_, _) =>
         {
             release.Wait(); // a WinRT call that blocks instead of failing (NativeAOT)
             return Task.FromResult(Array.Empty<byte>());
@@ -101,7 +101,7 @@ public class Win2DRendererBoundsTests
     {
         var finish = new TaskCompletionSource<byte[]>();
         var first = true;
-        var renderer = new Win2DRenderer(() => { }, (_, _) =>
+        var renderer = new Win2DRenderer(() => { }, new GpuGate(), (_, _) =>
         {
             if (!Interlocked.Exchange(ref first, false)) return Task.FromResult(new byte[] { 7 });
             return finish.Task;
@@ -110,7 +110,49 @@ public class Win2DRendererBoundsTests
         var error = await Assert.ThrowsAsync<DesktopException>(() => renderer.RenderPngAsync(Pixel, RenderOptions.Plain(1)));
         Assert.Equal("Image rendering failed: an earlier graphics call is still running after its deadline; try again later.", error.Message);
         finish.SetResult([1]);
+        await Task.Yield();
         Assert.Equal([7], await renderer.RenderPngAsync(Pixel, RenderOptions.Plain(1)));
+    }
+
+    [Fact]
+    public async Task TheRenderBudgetIncludesTheWaitAtTheGate()
+    {
+        var gate = new GpuGate();
+        var renderer = new Win2DRenderer(() => { }, gate, (_, _) => new TaskCompletionSource<byte[]>().Task)
+        { Timeout = TimeSpan.FromMilliseconds(600) };
+        var held = await gate.EnterAsync("Other", TimeSpan.FromSeconds(5), default);
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var call = Assert.ThrowsAsync<DesktopException>(() => renderer.RenderPngAsync(Pixel, RenderOptions.Plain(1)));
+        await Task.Delay(400);
+        held.Dispose();
+        await call;
+        Assert.True(clock.Elapsed < TimeSpan.FromMilliseconds(900), $"the render took {clock.Elapsed}");
+    }
+
+    [Fact]
+    public async Task ACancelledCallersRenderNeverTakesTheSlotOrStartsWork()
+    {
+        var gate = new GpuGate();
+        var started = false;
+        var renderer = new Win2DRenderer(() => { }, gate, (_, _) =>
+        {
+            started = true;
+            return Task.FromResult(new byte[] { 1 });
+        });
+        using var cancelled = new CancellationTokenSource();
+        await cancelled.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => renderer.RenderPngAsync(Pixel, RenderOptions.Plain(1), cancelled.Token));
+        Assert.False(started);
+        (await gate.EnterAsync("Next", TimeSpan.FromMilliseconds(50), default)).Dispose();
+
+        // A caller that gives up while waiting at the gate leaves without rendering either.
+        using var cancel = new CancellationTokenSource();
+        var held = await gate.EnterAsync("Other", TimeSpan.FromSeconds(5), default);
+        var waiting = renderer.RenderPngAsync(Pixel, RenderOptions.Plain(1), cancel.Token);
+        await cancel.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiting);
+        held.Dispose();
+        Assert.False(started);
     }
 
     /// <summary>
@@ -133,7 +175,7 @@ public class Win2DRendererBoundsTests
     {
         using var started = new ManualResetEventSlim();
         var finished = new TaskCompletionSource<byte[]>();
-        var renderer = new Win2DRenderer(() => { }, (_, _) =>
+        var renderer = new Win2DRenderer(() => { }, new GpuGate(), (_, _) =>
         {
             started.Set();
             return finished.Task;
@@ -161,7 +203,7 @@ public class Win2DRendererBoundsTests
     [Fact]
     public async Task ALostDeviceIsReportedInFixedEnglish()
     {
-        var renderer = new Win2DRenderer(() => { }, (_, _) => throw new COMException("lost", unchecked((int)0x887A0005)));
+        var renderer = new Win2DRenderer(() => { }, new GpuGate(), (_, _) => throw new COMException("lost", unchecked((int)0x887A0005)));
         var error = await Assert.ThrowsAsync<DesktopException>(() => renderer.RenderPngAsync(Pixel, RenderOptions.Plain(1)));
         Assert.Equal("Image rendering failed: the graphics device was lost (HRESULT 0x887A0005)", error.Message);
     }
