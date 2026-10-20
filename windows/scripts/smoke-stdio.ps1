@@ -6,7 +6,9 @@
 #    dwrite, d3dcompiler_47. The empty file keeps a developer's ~/.desktop-mcp/config.toml out of the check. A
 #    PowerShell call starts a ping that must die with the server (the kill-on-close Job Object, spec §5).
 #    The read-only desktop tools follow: DisplayInventory and Snapshot without vision before the graphics check (neither
-#    may load the graphics stack), then Screenshot and Snapshot with vision, which need the Windows App SDK runtime and
+#    may load the graphics stack), then the act tools (Click, Type, Shortcut, Move, MultiSelect, MultiEdit, App, WaitFor)
+#    with calls that inject nothing and activate nothing: each fails before any input or names no app or window (P3
+#    plan, Decisions 12), then Screenshot and Snapshot with vision, which need the Windows App SDK runtime and
 #    an interactive session; -SkipCapture leaves those two out (Windows Sandbox has no runtime). The desktop calls
 #    need an unlocked interactive desktop session: on a locked screen, a secure desktop or in session 0 they fail.
 #    Snapshot must show a named virtual desktop (not the "Default Desktop" fallback) and at least one tree element.
@@ -194,6 +196,41 @@ try {
         if ($read.Elements -lt 1) { throw "Snapshot has no UI tree elements: $snapshotText" }
         $script:desktopRead = "DisplayInventory ($($displays.structuredContent.result.Count) displays) and Snapshot without vision OK (active desktop '$($read.ActiveDesktop)', $($read.Elements) tree elements, $($read.Labelled) labelled)"
 
+        # The act tools under NativeAOT, with calls that inject nothing and activate nothing (P3 plan, Decisions 12): each
+        # fails its argument, bounds or label check before any input, or names nobody, so App reads the AppsFolder
+        # enumeration and the window scan, WaitFor reads the foreground window and walks the windows Snapshot walks, and
+        # nothing is launched, switched to, resized or sent. No app or window name scores 70 against $nobody.
+        $nobody = 'qxqxqxqxqxqxqxqx'
+        $actCases = @(
+            @{ Name = 'Click'; Arguments = @{}; Text = "Error calling tool 'Click': Either loc or label must be provided."; Match = 'Exact'; IsError = $true },
+            @{ Name = 'Click'; Arguments = @{ loc = @(-1000000, -1000000) }; Text = 'are outside the desktop bounds'; Match = 'Contains'; IsError = $true },
+            @{ Name = 'Click'; Arguments = @{ label = 1000000 }; Text = "Error calling tool 'Click': Failed to find element with label 1000000: Label 1000000 out of range"; Match = 'Exact'; IsError = $true },
+            @{ Name = 'Type'; Arguments = @{ text = 'x'; loc = '[1' }; Text = "Error calling tool 'Type': Location must be a list of exactly 2 integers [x, y]"; Match = 'Exact'; IsError = $true },
+            @{ Name = 'Shortcut'; Arguments = @{ shortcut = 'ctrl+' }; Text = "Error calling tool 'Shortcut': Invalid shortcut 'ctrl+': empty key name"; Match = 'Exact'; IsError = $true },
+            @{ Name = 'Move'; Arguments = @{ loc = @(0, 0); duration = 1 }; Text = "Error calling tool 'Move': from_loc and duration require drag=True"; Match = 'Exact'; IsError = $true },
+            @{ Name = 'MultiSelect'; Arguments = @{}; Text = "Error calling tool 'MultiSelect': Either locs or labels must be provided."; Match = 'Exact'; IsError = $true },
+            @{ Name = 'MultiEdit'; Arguments = @{ locs = @(, @(1, 2)) }; Text = "Error calling tool 'MultiEdit': Each loc item must be [x, y, text]. Invalid: [1,2]"; Match = 'Exact'; IsError = $true },
+            @{ Name = 'App'; Arguments = @{ mode = 'launch'; name = $nobody }; Text = 'Qxqxqxqxqxqxqxqx not found in start menu.'; Match = 'Exact'; IsError = $false; TimeoutSeconds = 30 },
+            @{ Name = 'App'; Arguments = @{ mode = 'switch'; name = $nobody }; Text = "Error calling tool 'App': Application Qxqxqxqxqxqxqxqx not found."; Match = 'Exact'; IsError = $true },
+            @{ Name = 'App'; Arguments = @{ mode = 'resize'; name = $nobody }; Text = 'Application Qxqxqxqxqxqxqxqx not found.'; Match = 'Exact'; IsError = $false },
+            @{ Name = 'WaitFor'; Arguments = @{ condition = 'active_window'; window_name = $nobody; timeout = 0.5; interval = 0.25 }; Text = "Error calling tool 'WaitFor': Timed out after 0.50s waiting for 'active_window': active window was "; Match = 'Prefix'; IsError = $true },
+            @{ Name = 'WaitFor'; Arguments = @{ condition = 'element_exists'; text = $nobody; timeout = 0.6; interval = 0.3 }; Text = "Error calling tool 'WaitFor': Timed out after 0.60s waiting for 'element_exists'"; Match = 'Prefix'; IsError = $true; TimeoutSeconds = 60 }
+        )
+        $id = 50
+        foreach ($case in $actCases) {
+            $result = Invoke-Tool ($id++) $case.Name $case.Arguments $(if ($case.TimeoutSeconds) { $case.TimeoutSeconds } else { 15 })
+            $text = $result.content[0].text
+            $matched = switch ($case.Match) {
+                'Exact' { $text -ceq $case.Text }
+                'Prefix' { $text.StartsWith($case.Text, [StringComparison]::Ordinal) }
+                'Contains' { $text.Contains($case.Text, [StringComparison]::Ordinal) }
+            }
+            if ([bool]$result.isError -ne $case.IsError -or -not $matched) {
+                throw "$($case.Name) $($case.Arguments | ConvertTo-Json -Compress -Depth 5): unexpected result (isError=$($result.isError)): $text"
+            }
+        }
+        $script:actChecks = "$($actCases.Count) act-tool checks OK (no input sent)"
+
         # A grandchild of the server: the kill-on-close job must stop it when the server exits.
         Send @{ jsonrpc = '2.0'; id = 4; method = 'tools/call'; params = @{ name = 'PowerShell'; arguments = @{ command = "(Start-Process -FilePath ping.exe -ArgumentList '-n','120','127.0.0.1' -WindowStyle Hidden -PassThru).Id"; timeout = 20 } } }
         $call = Receive 4
@@ -204,7 +241,7 @@ try {
         $script:process.Refresh()
         $graphics = @($script:process.Modules | Where-Object { $_.ModuleName -in 'd2d1.dll', 'd3d11.dll', 'dwrite.dll', 'd3dcompiler_47.dll' } | ForEach-Object ModuleName)
         if ($graphics.Count -gt 0) { throw "headless run loaded the graphics stack: $($graphics -join ', ')" }
-        $script:full = "$($init.result.serverInfo.name) $($init.result.serverInfo.version), $($list.result.tools.Count) tools match spec/windows/tools.json, Wait and $($cases.Count) headless tools OK, $script:desktopRead, graphics stack not loaded ($($script:process.Modules.Count) modules)"
+        $script:full = "$($init.result.serverInfo.name) $($init.result.serverInfo.version), $($list.result.tools.Count) tools match spec/windows/tools.json, Wait and $($cases.Count) headless tools OK, $script:desktopRead, $script:actChecks, graphics stack not loaded ($($script:process.Modules.Count) modules)"
 
         # Capture under NativeAOT: Win2D and Windows.Graphics.Capture through the static activation. From here on the
         # graphics stack is expected to load.

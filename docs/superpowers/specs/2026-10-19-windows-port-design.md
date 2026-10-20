@@ -188,6 +188,7 @@ fallback, a `MsgWaitForMultipleObjectsEx` loop with its own work queue, was not 
 Gated tools (per the control policy, §7) wait on one global desktop lock (`SemaphoreSlim(1)`),
 re-check the control state every 0.1 s while waiting, and keep a 15 s lease after the call ends.
 Ungated tools run concurrently without the lock. With `--no-control`, every call takes the lock.
+Until P4, the input tools hold one input lock for their whole call (P3 plan, Decisions 18).
 
 ### Cancellation
 
@@ -274,12 +275,21 @@ displays, desktops, focused window, opened windows, UI tree). Cleanups:
 
 All injection goes through `SendInput`: absolute mouse coordinates normalised over the virtual
 desktop (`MOUSEEVENTF_VIRTUALDESK`), wheel events, virtual-key events with scan codes, and text as
-`KEYEVENTF_UNICODE` with surrogate pairs. Every injected event carries a fixed `dwExtraInfo`
-signature so the input monitor can ignore it. Timings, step counts, drag durations, the paste path
-(20 or more characters without `\n`, `\t`, `{`, `}`: save clipboard, set, Ctrl+V, restore if
-unchanged) and Type's `clear`/`caret_position`/`press_enter` follow upstream. Shortcut parsing
-ports upstream's `SpecialKeyNames` table and aliases. `InputLedger` records keys and buttons held
-by the AI and releases them on preemption, cancellation or shutdown.
+`KEYEVENTF_UNICODE` with surrogate pairs. Every injected event carries the `dwExtraInfo` signature
+`0x444D4350` ("DMCP") so the input monitor can ignore it. Cursor moves are absolute `SendInput`
+moves, never `SetCursorPos` (which cannot carry the signature); a click sends the move, waits 50 ms
+(skipped when the cursor is already there), then sends the press and release, so Windows Forms
+controls see the hover first. `KEYEVENTF_EXTENDEDKEY` is set only on extended keys, so `alt` and
+`ctrl` are the left keys, not AltGr or the Korean Han/Eng key. The count `SendInput` returns is
+checked on every call, and before mouse input the window under the point, and before keyboard input
+the foreground window, is checked for a higher integrity level (UIPI), so input blocked by an
+elevated window gives an error instead of silently going nowhere. Otherwise timings, step counts,
+drag durations, the paste path (20 or more code points without `\n`, `\t`, `{`, `}`: save
+clipboard, set, Ctrl+V, restore if unchanged; a clipboard holding only non-text data is never
+replaced, the text is typed instead) and Type's `clear`/`caret_position`/`press_enter` follow
+upstream (P3 plan, Decisions 8, 13, 14, 21). Shortcut parsing ports upstream's `SpecialKeyNames`
+table and aliases. `InputLedger` records keys and buttons held by the AI and releases them on
+preemption, cancellation or shutdown.
 
 ### Capture and imaging (`Desktop/Capture`, `Desktop/Imaging`)
 
@@ -469,15 +479,27 @@ uses System.Text.Json source generation.
   sampling and without DOM: use_dom returns upstream's "No DOM information found" text, and
   sampling returns the raw content, as upstream does for a client that cannot sample.
 - **App**:
-  - `launch` enumerates the Shell `AppsFolder` namespace (`IShellItem`, covering Win32 shortcuts
-    and packaged apps with their localised names) instead of `Get-StartApps`, picks the best fuzzy
-    match (cutoff 70), and launches packaged apps with `IApplicationActivationManager` and paths
-    with `ShellExecuteEx`. It then waits up to 10 s for a window of the new process, and up to
-    10 s more for a title match.
-  - `launch_executable`, `switch` (restore, `AllowSetForegroundWindow`, `AttachThreadInput`,
-    `SetForegroundWindow`, `BringWindowToTop`, 1 s verification) and `resize` (`MoveWindow`) keep
-    upstream's semantics and strings.
-- **WaitFor**: polls snapshots with upstream's conditions, aliases, limits and messages;
+  - `launch` enumerates the Shell `AppsFolder` namespace once (`SHCreateItemFromParsingName` of
+    `shell:AppsFolder`, `BHID_EnumItems`, display and parsing name per item, on an STA thread
+    bounded at 10 s; Win32 shortcuts and packaged apps with their localised names) instead of
+    `Get-StartApps`, and picks the best fuzzy match of the lower-cased display names (`WRatio`,
+    cutoff 70). A packaged app (`<family>!<app>`) is activated with
+    `IApplicationActivationManager.ActivateApplication`, which returns its PID; anything else is
+    started with `ShellExecuteEx` of `shell:AppsFolder\<parsing name>` and
+    `SEE_MASK_NOCLOSEPROCESS` (a PID when a process handle comes back). The launch call is
+    abandoned after 10 s. It then polls every 0.5 s: up to 10 s for a visible top-level window of
+    the PID, then up to 10 s more for a visible window whose title contains the name. Apps the
+    server starts itself stay in its kill-on-close job and close with it (§12; P3 plan, Open
+    question 1 and Decisions 31).
+  - `launch_executable` (`CreateProcess`, inside the job) and `switch` (WM_NULL check, restore
+    with `ShowWindowAsync`, `AllowSetForegroundWindow`, `SetForegroundWindow`, then the `AttachThreadInput` sequence on its
+    own thread bounded at 2 s without `BringWindowToTop`, 1 s verification; P3 plan, Decisions 7
+    and 33) keep upstream's semantics and strings. `resize` uses `SetWindowPos` with
+    `SWP_ASYNCWINDOWPOS` after the WM_NULL check, never a synchronous cross-process `MoveWindow`,
+    and reports a failed call (P3 plan, Decisions 32).
+- **WaitFor**: polls only what each condition needs (the foreground window, the focused element,
+  or the window scan plus an early-exit walk of the windows Snapshot walks), never a full Snapshot
+  (P3 plan, Decisions 6), with upstream's conditions, aliases, limits and messages;
   `element_enabled` checks `IsEnabled`.
 - **Wait**, **MultiSelect**, **MultiEdit**: upstream semantics on top of Input and Tree.
 
@@ -518,7 +540,7 @@ logs focus changes at debug level.
 | Core unit | config precedence and strict TOML types; ServePlan validation messages; SSRF rules; HTML to Markdown; OAuth/PKCE flows; PowerShell runner against real pwsh (encoding, timeout, tree kill); FileSystem formats; Shortcut parsing; table formatter; Snapshot text rendering from synthetic `UiElement` records and `SemanticNode` trees; fuzzy matching; control state machine with a fake `TimeProvider` (takeover, idle return, lease, policy classification) | always |
 | Server | ContractTests (`tools/list` equals `spec/windows/tools.json` as JSON); in-memory Kestrel tests of middleware order, 401/403 bodies, CORS, OPTIONS, trusted host, `/health`; stdio initialize, tools/list and call | always |
 | Desktop integration | Notepad: Snapshot finds the edit control, Type, Shortcut, App switch and resize; capture and annotation; hooks, overlay, takeover; input-lock safety (heartbeat stops, input returns within 1 s) | `Category=Desktop`, run by hand in an interactive session |
-| AOT smoke | `build-release.ps1` publishes win-x64 and win-arm64, launches the x64 exe and runs initialize, tools/list and the headless tools that leave the desktop alone over stdio, then DisplayInventory and Snapshot without vision (a named virtual desktop and at least one tree element; the graphics stack must still be unloaded), then Screenshot and Snapshot with vision (valid PNGs); `DESKTOP_MCP_EXCLUDE_PROCESSES` keeps Code.exe out of the walk (§12). It then runs the probe's `imaging` step (the AOT activation check) and `uia` step (the AOT UIA check); any IL2xxx/IL3xxx warning fails the build. The desktop calls need an unlocked interactive session; `smoke-stdio.ps1 -SkipCapture` leaves out the two capture calls | every release build |
+| AOT smoke | `build-release.ps1` publishes win-x64 and win-arm64, launches the x64 exe and runs initialize, tools/list and the headless tools that leave the desktop alone over stdio, then DisplayInventory and Snapshot without vision (a named virtual desktop and at least one tree element; the graphics stack must still be unloaded), then Screenshot and Snapshot with vision (valid PNGs); `DESKTOP_MCP_EXCLUDE_PROCESSES` can keep processes out of the walk (§12). Before the graphics check it also calls the act tools (Click, Type, Shortcut, Move, MultiSelect, MultiEdit, App, WaitFor) with arguments that inject nothing and activate nothing: argument errors, an out-of-range label and point, a shortcut parse error, App lookups of a name no app or window has, and WaitFor timeouts (P3 plan, Decisions 12). It then runs the probe's `imaging` step (the AOT activation check) and `uia` step (the AOT UIA check); any IL2xxx/IL3xxx warning fails the build. The desktop calls need an unlocked interactive session; `smoke-stdio.ps1 -SkipCapture` leaves out the two capture calls | every release build |
 
 xUnit runs under the JIT, so AOT-only failures are caught by the smoke step.
 
@@ -570,6 +592,18 @@ Clipboard probe as in P1; toast probe: shown. Desktop tests need a PerMonitorV2 
 (`TestDpi`) and use their own test window. Tests that touch user state: the clipboard tests save
 and restore the clipboard text, and the toast test leaves a notification.
 
+P3 results (2026-10-20, Windows build 10.0.26220.9739): default suite 1645 (Core 962, Server 199,
+Desktop non-desktop 484); Desktop suite by hand: not run yet (pending with the user; the commands
+are in the follow-ups' P3 section); build-release: win-x64 18,688,512 bytes, win-arm64 19,916,288
+bytes, each dist folder holding only the exe and its pdb, no publish warnings; stdio smoke OK under
+NativeAOT with 13 act-tool checks and no input sent (1 display, active desktop "Desktop 1", 85 tree
+elements of which 58 labelled; graphics stack not loaded, 86 modules; a 1728x1080 Screenshot PNG
+and the 200x120 region PNG; the PowerShell grandchild died with the server, which exited 29 ms
+after stdin closed; the excluding config listed 20 tools); AOT activation and UIA checks OK;
+by-hand act session: not run (pending with the user, with the App launch, `launch_executable`
+and job checks in the follow-ups' P3 section). Input tests inject only through GuardedInjector
+into the tests' own windows.
+
 ## 10. Differences from upstream (for the Windows README)
 
 - **Naming**: `desktop-mcp`, `~/.desktop-mcp`, `DESKTOP_MCP_*`. No Python, uv, PowerShell 5.1,
@@ -583,10 +617,20 @@ and restore the clipboard text, and the toast test leaves a notification.
   without `loc` reports `Scrolled ... at current cursor position (x,y).` instead of an empty
   string; Click with `clicks` of 3 or more reports `Clicked N times` instead of `None`;
   annotation colours are fixed per label; the `initialize` instructions have no leading or
-  trailing newline.
+  trailing newline; a label action reports the point it actually used; a label that cannot be
+  acted on gives a specific error (stale, disabled, off screen, or its window not responding)
+  instead of acting at the stored point; Type and each MultiEdit item read the focused element's
+  value back and add one `Warning: ... does not contain the typed text; it reads '...'.` line on
+  a mismatch.
 - **Bug fixes**: scrollable elements report their box centre (upstream picks a random point);
   WaitFor `element_enabled` checks the enabled state; telemetry events are sent when enabled (opt-in, see Telemetry); `/health` exists;
-  Process CPU% is measured; the unreachable `takeover_pending` state is gone.
+  Process CPU% is measured; the unreachable `takeover_pending` state is gone; label actions
+  look the element up again and act at its ClickablePoint instead of the stored centre; WaitFor
+  and App leave the label map alone, so labels keep resolving against the last Snapshot; points
+  outside the virtual desktop are rejected for every pointer action (Move, drag, Scroll,
+  MultiSelect), not only Click and Type; a shortcut is validated before anything is sent (upstream
+  could leave Ctrl held); `clicks` below 0 is an error; non-ASCII app and window names (Korean,
+  Japanese) can match in App.
 - **Protocol**: the legacy SSE message endpoint is `/message` (clients follow the `endpoint`
   event); no FastMCP `_meta` on tools; JSON serialisation details are the MCP C# SDK's.
 - **Implementation**: capture uses Windows.Graphics.Capture, so `DESKTOP_MCP_SCREENSHOT_BACKEND`
@@ -602,6 +646,11 @@ and restore the clipboard text, and the toast test leaves a notification.
   (`docs/superpowers/plans/2026-10-19-windows-p2-desktop-read.md`): the text layout and labels,
   `Screenshot Backend: wgc`, regions clipped to the screen, window order, the UIA hang breaker,
   `use_dom` (no DOM mode, Decisions 39), no word elements for Chromium content, and at most 300 children per parent.
+- **P3 decisions**: P3's departures from upstream for the input and act tools (SendInput only with
+  the signature, the 50 ms click pause, extended keys, the label re-find and gate, the read-back,
+  WaitFor without full Snapshots, the bounded foreground switch, App's AppsFolder launch, async
+  resize and fuzzy matching, the argument shapes) are listed in the P3 plan's "Decisions on
+  upstream ambiguities" (`docs/superpowers/plans/2026-10-20-windows-p3-desktop-act.md`).
 
 ## 11. Phases
 
@@ -614,7 +663,7 @@ work first.
 | P0b Single exe | Windows 11 22H2 minimum; self-bootstrap of the system Windows App SDK 2.5 through the Dynamic Dependencies API; dispatcher and display ids on the Windows App SDK; Win2D linked statically from the pinned fork release; publish output trimmed to one exe | `dist/<rid>/desktop-mcp.exe` runs alone in an empty folder |
 | P1 Server core and headless tools | CLI, config, ServePlan, stdio; Wait, PowerShell, FileSystem, Clipboard, Process, Registry, Notification, Scrape without sampling | A useful server without desktop access (done; results in §9) |
 | P2 Desktop read | Dispatcher (fixed in P2, first started in P4: P2 plan, Decisions 21), UIA wrapper, Tree, Snapshot without DOM, capture, imaging, Screenshot, DisplayInventory, virtual desktops | The agent can see the screen (done except a rerun of the WinRT clipboard test and the three Desktop tests left out of the final run; results in §9) |
-| P3 Desktop act | Input, InputLedger, Click, Type, Scroll, Move, Shortcut, MultiSelect, MultiEdit, App, WaitFor | Upstream's core workflows |
+| P3 Desktop act | Input, InputLedger, Click, Type, Scroll, Move, Shortcut, MultiSelect, MultiEdit, App, WaitFor | Upstream's core workflows (done; results in §9) |
 | P4 Desktop control | InputMonitor, state machine, overlay, capture flash, gate, notifier, ControlStatus | Protection against fighting the user |
 | P5 HTTP | Kestrel, Streamable HTTP and SSE, middleware, TLS, OAuth, `/health`, Scrape sampling, telemetry | Remote use |
 | P6 Finish | Install, uninstall, auth, release script for x64 and arm64 (started in P0b, which already trims the output to one exe), Windows README, root README update | `windows-v0.1.0` |
@@ -641,5 +690,5 @@ P0 probe results were measured on Windows build 10.0.26220 (Insider).
 | LL hooks swallow input and lock the user out | Heartbeat-renewed suppression deadline, `LowLevelHooksTimeout`, integration tests |
 | UIA calls into hung apps | IUIAutomation2 timeouts, per-job deadlines, a replaceable UIA worker and a 90 s block of hung windows (P2 plan, Decisions 2) |
 | Snapshot's UIA walk hangs a Chromium app (cause measured; mitigated by P2 Decisions 36-38) | Windows logged an AppHang for VS Code (Code.exe 1.142) twice on 2026-10-20, the second during the P2 smoke's Snapshot, and VS Code closed. P2 Task 21 measured the cause on Edge with a page of N sibling buttons: the walker's word read on the page's DocumentControl. `GetCurrentPattern(TextPattern)` plus `GetVisibleRanges` alone blocks the UI thread for 5.2 s at 1,000 buttons, about 46 s at 3,000, and more than 65 s at 10,000 (roughly quadratic). Neither the cache request size nor accessibility first-enable nor the window-list probe causes it. Mitigated in Task 22 (P2 Decisions 36-38): no word read on content whose FrameworkId is `Chrome`; children by sibling navigation, at most 300 per parent; and a WM_NULL check (250 ms) before the window is read and before each children or word read: a timeout leaves the window out of that Snapshot, and only a window Windows considers hung (`IsHungAppWindow`) is blocked with its process for 90 s; a cut child list adds its own note after the tree. Measured after the change (JIT probe, product walk): on a 10,000-button Edge page, 370 elements in 0.35 s with no failed ping; on a 1,000-button page, 0.35-0.37 s with no failed ping; on a fresh VS Code with a 50,000-line file, 0.15-0.23 s with no failed ping. The hang itself was never reproduced on VS Code. On 2026-10-20 the user ran the AOT smoke with no exclusion and their VS Code open (86 tree elements) and the three real-window Desktop tests: all passed, VS Code stayed responsive, and no AppHang was logged during the runs. So the smoke's Code.exe exclusion and `build-release.ps1`'s skip of the probe's `uia` step were removed. (One AppHang from `old_mscopilot_proxy.exe` 156.0.4314.29, an Edge Beta component, was logged at 14:35 that day, about 12 minutes after the final build-release run; its cause is unknown.) The guard cannot interrupt a call already inside a provider. |
-| The Job Object kills every process the server started when the server exits, including apps started through the PowerShell tool (Start-Process) | Spec §5 behaviour, kept in P1; upstream has no job. Revisit if users report it; JOB_OBJECT_LIMIT_BREAKAWAY_OK plus CREATE_BREAKAWAY_FROM_JOB would let chosen launches escape. |
+| The Job Object kills every process the server started when the server exits, including apps started through the PowerShell tool (Start-Process) and by App `launch` and `launch_executable` | Spec §5 behaviour, kept in P1 and, for launched apps, in P3 (user decision, 2026-10-20; P3 plan, Open question 1); upstream has no job, so its launched apps survive. Launched apps die with the server, with unsaved work, except packaged apps (activated by the system through `IApplicationActivationManager`) and apps that hand off to a broker or an existing instance, which the system starts outside the job. Revisit if users report it; JOB_OBJECT_LIMIT_BREAKAWAY_OK plus CREATE_BREAKAWAY_FROM_JOB would let chosen launches escape. |
 | Under NativeAOT, a WinRT clipboard call on an MTA thread blocks | Known issue. P1 observed the block (where it saw the JIT throw) and WinRT then blocking on STA in the same process. P2 measured that under the JIT the MTA read succeeds, and that under NativeAOT the `GetTextAsync` operation's `Completed` handler never fires; a live main STA does not help. The root cause stays open, and the STA block is unverified. `SystemClipboard` calls WinRT only on its STA thread, bounds it by 5 s and falls back to the Win32 clipboard, bounded by its own 5 s. |

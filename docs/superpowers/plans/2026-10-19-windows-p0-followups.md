@@ -71,29 +71,51 @@ Minor review findings deferred from the P2 tasks, one line per task (from the SD
 
 ## P3 (desktop act)
 
-Ideas from the desk-mcp analysis (`DigitalDog1/desk-mcp` at e6d42fc, Apache-2.0). Re-implement them; do not copy code.
+All P3 items are done (see docs/superpowers/plans/2026-10-20-windows-p3-desktop-act.md), except:
 
-- Before acting on a label, look the element up again by RuntimeId and use its current centre. Return a "stale label" error if it is gone, and note it if it is disabled.
-- Check the count `SendInput` returns. When input is blocked (UIPI, elevated target), return a clear "input blocked: the target window runs elevated" error.
-- Add a short pause between moving the cursor and pressing the button, because WinForms has been seen dropping instant clicks. Add a WinForms target to the desktop tests.
-- `Coercion.JsonList` returns non-arrays: the `loc`/`region` callers must check `ValueKind`, or `JsonList` must reject them.
-- WaitFor and the label-based tools: add the metadata P2 does not read (IsEnabled for element_enabled, selection state) to UiaElementData and UiElement (P2 plan, Decisions 6).
-
-Ideas from the terminator analysis (`mediar-ai/terminator` at 73a381c, MIT; its UIA crate `uiautomation` 0.22.2 is Apache-2.0; read only, never built or run). Re-implement them; do not copy code. Its speed comes from scoping every search to one app and stopping at the first match, and from a whole-subtree cache read that P2 Decisions 37 rejected (it hangs Chromium); its click is a SendInput click like ours. Not reusable directly: no C interface, a large Rust dependency tree, telemetry on by default, and none of our hang guards.
-
-- Before a label action (after the RuntimeId lookup above): require non-zero bounds on a monitor and IsEnabled; click at the cached ClickablePoint, falling back to the centre; return specific stale, disabled and off-screen errors. ClickablePoint differs from upstream's centre click: list it in spec §10.
-- A label whose element is gone: search again in the same window by ControlType + AutomationId + Name and use it only when exactly one matches (a note in the result is a contract change: user decision).
-- Off-screen target: `ScrollItemPattern.ScrollIntoView`, read the bounds again, fail rather than click outside.
-- After Type: read the value back (not for password fields) and warn on a mismatch (result text change: user decision).
-- WaitFor: per poll, check only what the condition needs (foreground window, focused element, or a first-match search scoped to one window), never a full Snapshot or a whole-subtree search; keep Decisions 36-38.
-- Before keyboard input: bring the window to the foreground reliably (restore, `SetForegroundWindow`, `AttachThreadInput` fallback) and confirm it; check the window is not hung first, because `AttachThreadInput` can block on a hung target.
 - After an action: report a foreground window or title change (result text change: user decision).
 - Highlight the target briefly before acting, with the P4 overlay, off by default.
 - Later options, all contract changes: selector targeting (`process:X >> role:Button name:OK`), tree diffs in action results, pattern-based MultiSelect.
 
+Pending checks that need the user (P3 Task 16). None of these ran during P3, because they inject input, take the foreground or launch apps on the user's machine. Run them in an interactive session with hands off the mouse and keyboard, from `windows/` (the AOT exe is `dist/win-x64/desktop-mcp.exe` after `pwsh scripts/build-release.ps1`):
+
+- The whole Desktop suite: `dotnet test tests/DesktopMcp.Desktop.Tests -p:RunSettingsFilePath=`. Test windows and the WinForms target appear, take the foreground and receive input; the paste test saves and restores the clipboard text. A test that fails because the foreground was taken sent nothing (`GuardedInjector`); rerun it. It includes the P3 tests that never ran:
+  - Task 4, the 5 `InputDesktopTests` (the signature on injected mouse events, a button click, typing into the edit through the clipboard, every WinForms ToolStrip click taken, pixel-exact coordinates): `dotnet test tests/DesktopMcp.Desktop.Tests -p:RunSettingsFilePath= --filter "FullyQualifiedName~InputDesktopTests"`. The signature test reads a low-level hook, so the remote mouse must stay idle. If `TypeWritesIntoTheTestWindowsEdit` leaves "hello world" in front of the text, the plain EDIT ignored Ctrl+A: fix the test target, not `DesktopInput`.
+  - Task 5: `dotnet test tests/DesktopMcp.Desktop.Tests -p:RunSettingsFilePath= --filter "FullyQualifiedName~SwitchesToTheTestWindowFromAnotherTestWindow"`.
+  - Task 10: `dotnet test tests/DesktopMcp.Desktop.Tests -p:RunSettingsFilePath= --filter "FullyQualifiedName~TypeSequenceDesktopTests"`.
+  - Tests that read the user's real windows and were left out of P3's runs: `--filter "FullyQualifiedName~UiaSessionTests|FullyQualifiedName~SnapshotServiceDesktopTests"`.
+- By-hand act session through the AOT exe over stdio (as P2 Task 19 Step 5; the user saves their work and watches). Expected results in brackets:
+  1. `App {mode: 'launch', name: 'notepad'}` [`Notepad launched.`; the first real `IApplicationActivationManager.ActivateApplication`, and the first NativeAOT activation of `ApplicationActivationManager`].
+  2. `Snapshot` [the Notepad edit has a label].
+  3. `Type {label: <edit>, text: 'héllo 😀 and a twenty-plus character tail'}` [no `Warning:` line; the paste path runs, and the user's clipboard text is back afterwards].
+  4. `Shortcut {shortcut: 'ctrl+a'}`.
+  5. `App {mode: 'resize', name: 'notepad', window_loc: [100, 100], window_size: [800, 600]}` [`... resized to 800x600 at 100,100.`].
+  6. `App {mode: 'switch', name: 'notepad'}` after focusing another window [`Switched to ... window.`].
+  7. `WaitFor {condition: 'focused_element', text: <part of the edit's name>, timeout: 5}` [satisfied; the first real focused-element read, Task 14].
+  8. `Click {label: <File menu>}` [the menu opens], then `Shortcut {shortcut: 'esc'}`.
+  9. `App {mode: 'launch_executable', executable: 'C:\Windows\System32\charmap.exe'}` [JSON with the pid; the first successful `CreateProcess` with the handle list].
+  10. Close the server (close stdin). Expected (spec §12; preflight F19): Notepad (packaged, started by the system) is still running; Character Map (non-packaged, `launch_executable`) closes with the server. The user closes Notepad without saving.
+  11. A non-packaged Start-menu app through App `launch` (a Win32 shortcut, or an app whose AppsFolder parsing name is a `{KNOWNFOLDER}\...\x.exe` path, for example `App {mode: 'launch', name: 'character map'}` if it is listed): record whether `ShellExecuteEx` of `shell:AppsFolder\<parsing name>` returns a process handle (Task Manager shows whether the app is the server's child) and whether the app dies with the server. If no handle comes back, the system started the app outside the job and it survives: record that in spec §12.
+  12. Note (Task 13 review, minor 4): a launch slower than the 10 s abandon still runs on its STA thread, so the app can appear after the `Failed to launch <name>: it did not start within 10 s.` result. If it happens, record the app and the time.
+- `pwsh scripts/build-release.ps1` again on the final branch (the act-tool smoke checks, the AOT activation and UIA checks), as for every release build.
+
+## P3 leftovers
+
+Minor review findings deferred from the P3 tasks, one line per task (from the SDD ledger). Lines marked "final review" are for the final P3 review to triage.
+
+- Task 1: minor (deferred): test gaps (ctrl+ctrl+c lastKey bump, ctrl+f4, Up->Down and Up->char pauses, table sizes and spot values, `( ) { }` inside a hold, lone surrogates).
+- Task 2: minor (deferred): the Pair/LabelList shape message only for string-held non-lists; unused `name` in `Point`; `TimeSpan` tick rounding of the interval.
+- Task 4: minor (deferred): the guard's denormalisation may be 1 px off near window edges; unused `WinFormsTarget` members; the structural rule test misses a target-typed `SendInputInjector x = new();`; the guard's `Track` is skipped when the inner `Send` throws (bookkeeping drift).
+- Task 5: minor (deferred): the cancelled check and `SetForegroundWindow` are not atomic (one harmless call); `Abandon`'s detach runs on the caller's thread (win32k, not bounded).
+- Task 7: minor (deferred): no test pins the point-over-hung-window null path; no test for IsOffscreen plus ScrollItem then ScrollIntoView, or for a RuntimeId winning over an earlier identity match; `windowBounds` is read before the job and not refreshed after a scroll; a duplicated `Element(UiaElementData)` helper and fake predicate; no WM_NULL re-check before `ReadWindow`.
+- Task 8: minor (deferred; final review): owned popups shown inside the owner's tree skip the point step (the walk may hit the 2,000 cap and report stale) and the fallback point clips to the owner's rect; a possible relaxation to `GA_ROOTOWNER == identity.Window` is a ruling change for the final review to judge.
+- Task 9: minor (deferred): Move and Click with `loc: []` and no label give the shape error (upstream's falsy check gives "Either loc or label must be provided.").
+- Task 10: minor (deferred): real sleeps in Server unit tests (the auto-advancing clock came with Task 14); Type's argument-error order differs from upstream on doubly invalid input (same convention as Click).
+- Task 13: minor (deferred; final review should fix 1-2): (1) Decisions 31 should say a failed or timed-out AppsFolder enumeration is an `isError` result with no shortcut fallback; (2) narrow `LaunchAsync`'s catch-all to `DesktopException`/`Win32Exception`; (3) the `Activating the app failed:` double prefix; (4) a launch can still appear after the 10 s abandon (in the pending by-hand checks above).
+
 ## P4 (desktop control)
 
-- **One gate for the GPU work (P3/P4, from the P2 final review).** Abandoned renders can pile up behind a wedged device lock (P2 Task 14), and a capture wedged in `device.Lock` leaks a thread per call (P2 Task 15). Add one shared single-slot gate for `Win2DRenderer` and `GraphicsCaptureService` before P4's capture flash.
+- Replace DesktopInputLock with the control gate's desktop lock; supply IActionCheckpoint and InputLedger's physical-input predicate from InputMonitor (P3 plan, Decisions 18-20).
 - **Kill-on-close job inheritance (low priority; user decision, 2026-10-20).** In Windows Sandbox (build 26100), `AssignProcessToJobObject` on the server succeeds, but processes it starts afterwards do not join the job. This holds for `Process.Start` with or without a console and with or without redirection. So PowerShell children and their descendants outlive the server, and the smoke script's ping check fails there. On the dev host (build 26220) and on any host where the job is inherited, the check passes.
   - Still unknown:
     - whether this happens on ordinary 24H2 (26100) machines or only in the Sandbox;
