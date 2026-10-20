@@ -190,6 +190,136 @@ public class ControlIndicatorTests
         Assert.Equal(renders, rig.Art.Renders);
     }
 
+    // ---- fix round 1 ----
+
+    [Fact]
+    public async Task AShowCancelledWhileTheDispatcherIsBusyNeverAppearsLater()
+    {
+        var held = new HeldDispatcher();
+        var rig = new IndicatorRig(monitors: [new ScreenRect(0, 0, 1920, 1080)], dispatcher: held);
+        using var cancel = new CancellationTokenSource();
+        var show = rig.Indicator.ShowAsync(1, cancel.Token);
+        await held.Queued(1);                                  // the apply waits behind other dispatcher work
+        cancel.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => show);
+
+        held.RunAll();                                         // the dispatcher catches up
+        Assert.DoesNotContain(rig.Layers, l => l.IsVisible);
+        Assert.DoesNotContain(held.Timers, t => !t.Stopped);
+        Assert.True(rig.Indicator.Healthy);
+    }
+
+    [Fact]
+    public async Task AFailedRebuildLeavesNoOldLayerOnScreen()
+    {
+        var rig = new IndicatorRig(monitors: [new ScreenRect(0, 0, 1920, 1080)]);
+        await rig.Indicator.ShowAsync(1, default);
+        rig.Factory.FailShow = true;
+        rig.Monitors = [new ScreenRect(-1280, 0, 0, 1024), new ScreenRect(0, 0, 1920, 1080)];
+        rig.TickRefresh();
+        Assert.False(rig.Indicator.Healthy);
+        Assert.DoesNotContain(rig.Layers, l => l.IsVisible);
+    }
+
+    [Fact]
+    public async Task AShowThatFaultsWhileRenderingDoesNotReportSuccess()
+    {
+        var rig = new IndicatorRig(monitors: [new ScreenRect(0, 0, 1920, 1080)]);
+        await rig.Indicator.ShowAsync(1, default);
+        rig.Monitors = [new ScreenRect(0, 0, 2560, 1440)];     // a new layout: the next show renders
+        rig.Art.Hold = new TaskCompletionSource();
+        var show = rig.Indicator.ShowAsync(2, default);
+        rig.CursorFails = true;
+        rig.Dispatcher.TickAll();                              // the refresh faults while the show renders
+        rig.Art.Hold.SetResult();
+        Assert.Equal("AI control indicator failed", (await Assert.ThrowsAsync<InvalidOperationException>(() => show)).Message);
+    }
+
+    [Fact]
+    public async Task TheLayoutIsCheckedEveryHalfSecondNotEveryRefresh()
+    {
+        var rig = new IndicatorRig(monitors: [new ScreenRect(0, 0, 1920, 1080)]);
+        await rig.Indicator.ShowAsync(1, default);
+        rig.TickRefresh();                                     // the first refresh after a show checks
+        var reads = rig.MonitorReads;
+        rig.Advance(0.05); rig.TickRefresh();
+        rig.Advance(0.05); rig.TickRefresh();
+        Assert.Equal(reads, rig.MonitorReads);
+        rig.Advance(0.4); rig.TickRefresh();
+        Assert.Equal(reads + 1, rig.MonitorReads);
+    }
+
+    [Fact]
+    public async Task AFaultIsLoggedOnce()
+    {
+        var rig = new IndicatorRig(monitors: [new ScreenRect(0, 0, 1920, 1080)], failShow: true);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => rig.Indicator.ShowAsync(1, default));
+        Assert.Single(rig.Log, e => e.Level == DesktopLogLevel.Error);
+    }
+
+    /// <summary>A dispatcher whose work waits until the test runs it, in order (a busy dispatcher thread).</summary>
+    private sealed class HeldDispatcher : IDesktopDispatcher
+    {
+        private readonly List<Action> _queue = [];
+        private readonly List<FakeDispatcher.FakeTimer> _timers = [];
+
+        public bool HasThreadAccess => false;
+        public int ManagedThreadId => -1;
+        public event Action<Exception>? UnhandledException { add { } remove { } }
+        public IReadOnlyList<FakeDispatcher.FakeTimer> Timers { get { lock (_queue) return _timers.ToArray(); } }
+
+        public async Task Queued(int count)
+        {
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+            while (DateTime.UtcNow < deadline)
+            {
+                lock (_queue) if (_queue.Count >= count) return;
+                await Task.Delay(10);
+            }
+            throw new TimeoutException("Nothing was queued on the dispatcher.");
+        }
+
+        public void RunAll()
+        {
+            while (true)
+            {
+                Action next;
+                lock (_queue)
+                {
+                    if (_queue.Count == 0) return;
+                    next = _queue[0];
+                    _queue.RemoveAt(0);
+                }
+                next();
+            }
+        }
+
+        public Task InvokeAsync(Action action) => InvokeAsync(() => { action(); return true; });
+
+        public Task<T> InvokeAsync<T>(Func<T> func)
+        {
+            var done = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
+            lock (_queue)
+                _queue.Add(() =>
+                {
+                    try { done.SetResult(func()); }
+                    catch (Exception e) { done.SetException(e); }
+                });
+            return done.Task;
+        }
+
+        public Task InvokeAsync(Func<Task> func) => InvokeAsync<Task>(func).Unwrap();
+
+        public Task<IDisposable> StartTimerAsync(TimeSpan interval, Action tick) => InvokeAsync<IDisposable>(() =>
+        {
+            var timer = new FakeDispatcher.FakeTimer(interval, tick);
+            lock (_queue) _timers.Add(timer);
+            return timer;
+        });
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
     /// <summary>A dispatcher that accepts work and never runs it (a stalled dispatcher thread).</summary>
     private sealed class StalledDispatcher : IDesktopDispatcher
     {
@@ -207,6 +337,7 @@ public class ControlIndicatorTests
 internal sealed class IndicatorRig
 {
     private long _now = 1_000_000;
+    private int _monitorReads;
 
     public IndicatorRig(IReadOnlyList<ScreenRect> monitors, bool failShow = false, TimeSpan? showLimit = null,
         IDesktopDispatcher? dispatcher = null)
@@ -214,7 +345,7 @@ internal sealed class IndicatorRig
         Monitors = monitors;
         Factory = new FakeLayerFactory { FailShow = failShow };
         IDesktopDispatcher used = dispatcher ?? Dispatcher;
-        Indicator = new ControlIndicator(new DispatcherHost(() => used), Factory, Art, () => Monitors,
+        Indicator = new ControlIndicator(new DispatcherHost(() => used), Factory, Art, () => { Interlocked.Increment(ref _monitorReads); return Monitors; },
             () => CursorFails ? throw new InvalidOperationException("GetCursorPos failed") : Cursor, () => Volatile.Read(ref _now),
             (level, message, error) => { lock (Log) Log.Add((level, message, error)); })
         {
@@ -229,6 +360,7 @@ internal sealed class IndicatorRig
     public IReadOnlyList<ScreenRect> Monitors { get; set; }
     public ScreenPoint Cursor { get; set; } = new(100, 100);
     public bool CursorFails { get; set; }
+    public int MonitorReads => Volatile.Read(ref _monitorReads);
     public List<(DesktopLogLevel Level, string Message, Exception? Error)> Log { get; } = [];
 
     public IReadOnlyList<FakeLayer> Layers => Factory.Created;

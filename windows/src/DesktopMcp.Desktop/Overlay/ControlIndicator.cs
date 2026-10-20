@@ -39,6 +39,8 @@ internal sealed class ControlIndicator : IControlIndicator
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromMilliseconds(50);
     private static readonly TimeSpan StaleRefresh = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan StopLimit = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan LayoutCheckInterval = TimeSpan.FromMilliseconds(500);
+    private const string Failed = "AI control indicator failed";
 
     private readonly DispatcherHost _host;
     private readonly IOverlayLayerFactory _layers;
@@ -48,6 +50,7 @@ internal sealed class ControlIndicator : IControlIndicator
     private readonly Func<long> _now;
     private readonly DesktopLog? _log;
     private readonly CancellationTokenSource _lifetime = new();
+    private readonly CancellationToken _lifetimeToken; // read once, so work outliving the disposal never touches the source
 
     // Any thread, under _gate: the wanted state.
     private readonly Lock _gate = new();
@@ -58,6 +61,7 @@ internal sealed class ControlIndicator : IControlIndicator
 
     // Any thread.
     private volatile bool _faulted;
+    private int _faultLogged;
     private volatile bool _visible;
     private long _lastRefresh;
     private long _sequence;
@@ -72,6 +76,7 @@ internal sealed class ControlIndicator : IControlIndicator
     private readonly List<IOverlayLayer> _retired = [];
     private Task<IDisposable>? _timer;
     private long _breathStart;
+    private long _lastLayoutCheck;
 
     public ControlIndicator(DispatcherHost host, IOverlayLayerFactory layers, IOverlayArt art, Func<IReadOnlyList<ScreenRect>> monitors,
         Func<ScreenPoint> cursor, Func<long> now, DesktopLog? log = null)
@@ -89,6 +94,7 @@ internal sealed class ControlIndicator : IControlIndicator
         _cursor = cursor;
         _now = now;
         _log = log;
+        _lifetimeToken = _lifetime.Token;
     }
 
     /// <summary>The bound of the dispatcher part of a show (Decisions 15, <c>control_overlay.py:269-283</c>).</summary>
@@ -114,7 +120,7 @@ internal sealed class ControlIndicator : IControlIndicator
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             if (generation < _generation) return;
-            if (_faulted) throw new InvalidOperationException("AI control indicator failed");
+            if (_faulted) throw new InvalidOperationException(Failed);
             _generation = generation;
             _wanted = true;
         }
@@ -124,6 +130,7 @@ internal sealed class ControlIndicator : IControlIndicator
         lock (_gate)
         {
             if (generation != _generation || !_wanted || _disposed) return; // a newer hide or show came while rendering
+            if (_faulted) throw new InvalidOperationException(Failed);      // the indicator broke while this show rendered
         }
 
         using var bound = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -136,13 +143,40 @@ internal sealed class ControlIndicator : IControlIndicator
         catch (OperationCanceledException e) when (bound.IsCancellationRequested && !ct.IsCancellationRequested)
         {
             var timeout = new TimeoutException("AI control indicator did not acknowledge state change", e);
+            Withdraw(generation);
             Fault(timeout);
             throw timeout;
         }
-        catch (Exception e) when (e is not OperationCanceledException)
+        catch (Exception e)
+        {
+            // The apply may still be queued (a cancelled or timed-out wait) or may already have shown: this show is over.
+            Withdraw(generation);
+            if (e is not OperationCanceledException) Fault(e);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// A show that threw in its dispatcher phase is withdrawn, unless a newer show or hide replaced it: its queued apply then
+    /// finds nothing wanted, and a hide queued behind it takes down whatever an apply that already ran has shown.
+    /// </summary>
+    private void Withdraw(long generation)
+    {
+        IDesktopDispatcher? dispatcher;
+        lock (_gate)
+        {
+            if (generation != _generation || !_wanted) return;
+            _wanted = false;
+            dispatcher = _dispatcher;
+        }
+        if (dispatcher is null) return;
+        try
+        {
+            Observe(dispatcher.InvokeAsync(HideLayers));
+        }
+        catch (Exception e)
         {
             Fault(e);
-            throw;
         }
     }
 
@@ -178,6 +212,7 @@ internal sealed class ControlIndicator : IControlIndicator
             dispatcher = _dispatcher;
         }
         await _lifetime.CancelAsync().ConfigureAwait(false);
+        _lifetime.Dispose();
         if (dispatcher is not null)
         {
             try
@@ -219,7 +254,8 @@ internal sealed class ControlIndicator : IControlIndicator
         return set;
     }
 
-    // Started by the refresh tick, one at a time: reads the monitors and rebuilds the layers when they changed.
+    // Started by the refresh tick (the first after a show, then every 500 ms), one at a time: reads the monitors and rebuilds
+    // the layers when they changed.
     private void StartLayoutCheck()
     {
         if (Interlocked.CompareExchange(ref _checking, 1, 0) != 0) return;
@@ -241,13 +277,13 @@ internal sealed class ControlIndicator : IControlIndicator
                 dispatcher = _dispatcher;
             }
             if (dispatcher is null) return;
-            var set = await RenderAsync(monitors, _lifetime.Token).ConfigureAwait(false);
+            var set = await RenderAsync(monitors, _lifetimeToken).ConfigureAwait(false);
             await dispatcher.InvokeAsync(() => Apply(generation, set)).ConfigureAwait(false);
         }
         catch (Exception e)
         {
             // A failed render is tried again on a later tick; a failure on the dispatcher has already faulted the indicator.
-            if (!_lifetime.IsCancellationRequested) Log(DesktopLogLevel.Debug, "AI control indicator could not follow the monitor layout", e);
+            if (!_lifetimeToken.IsCancellationRequested) Log(DesktopLogLevel.Debug, "AI control indicator could not follow the monitor layout", e);
         }
         finally
         {
@@ -264,8 +300,10 @@ internal sealed class ControlIndicator : IControlIndicator
     {
         lock (_gate)
         {
-            if (generation != _generation || !_wanted || _disposed || _faulted) return;
+            if (generation != _generation || !_wanted || _disposed) return;
         }
+        // A faulted indicator never shows, and its show must not report success.
+        if (_faulted) throw new InvalidOperationException(Failed);
         try
         {
             var wasVisible = _visible;
@@ -277,7 +315,11 @@ internal sealed class ControlIndicator : IControlIndicator
                 if (previous is not null) Retire(previous); // disposed once the new layers show
             }
             var now = _now();
-            if (!wasVisible) _breathStart = now; // a rebuild keeps the breathing phase (control_overlay.py:318-319)
+            if (!wasVisible)
+            {
+                _breathStart = now; // a rebuild keeps the breathing phase (control_overlay.py:318-319)
+                _lastLayoutCheck = long.MinValue; // the render may have waited behind a capture: check on the next tick
+            }
             Refresh(now);
             foreach (var (_, layer) in _built.Layers) layer.Show();
             _built.Ring.Show();
@@ -344,6 +386,9 @@ internal sealed class ControlIndicator : IControlIndicator
             Fault(e);
             return;
         }
+        var now = _now();
+        if (_lastLayoutCheck != long.MinValue && now - _lastLayoutCheck < LayoutCheckInterval.TotalSeconds * Stopwatch.Frequency) return;
+        _lastLayoutCheck = now;
         StartLayoutCheck();
     }
 
@@ -428,8 +473,8 @@ internal sealed class ControlIndicator : IControlIndicator
     /// </summary>
     private void Fault(Exception error)
     {
-        if (!_faulted) Log(DesktopLogLevel.Error, "AI control indicator failed", error);
         _faulted = true;
+        if (Interlocked.Exchange(ref _faultLogged, 1) == 0) Log(DesktopLogLevel.Error, Failed, error);
         IDesktopDispatcher? dispatcher;
         lock (_gate) dispatcher = _dispatcher;
         if (dispatcher is null) return;
@@ -452,6 +497,7 @@ internal sealed class ControlIndicator : IControlIndicator
     {
         _visible = false;
         StopTimer();
+        DisposeRetired(); // a rebuild that failed to show would otherwise leave the replaced layers on screen
         if (_built is not { } built) return;
         foreach (var layer in built.Layers.Select(l => l.Layer).Append(built.Ring))
         {

@@ -177,10 +177,11 @@ internal sealed unsafe class LayeredWindow : IOverlayLayer
         HBITMAP dib = default;
         try
         {
-            if (screen.IsNull || memory.IsNull) throw Failure("CreateCompatibleDC");
+            if (screen.IsNull) throw ContentFailure("GetDC");
+            if (memory.IsNull) throw ContentFailure("CreateCompatibleDC");
             void* bits;
             dib = PInvoke.CreateDIBSection(memory, &info, DIB_USAGE.DIB_RGB_COLORS, &bits, HANDLE.Null, 0);
-            if (dib.IsNull) throw Failure("CreateDIBSection");
+            if (dib.IsNull) throw ContentFailure("CreateDIBSection");
             bitmap.Pixels.CopyTo(new Span<byte>(bits, bitmap.Pixels.Length));
             var selected = PInvoke.SelectObject(memory, dib);
             var destination = new System.Drawing.Point(Bounds.Left, Bounds.Top);
@@ -191,7 +192,7 @@ internal sealed unsafe class LayeredWindow : IOverlayLayer
                 UPDATE_LAYERED_WINDOW_FLAGS.ULW_ALPHA);
             var error = Marshal.GetLastPInvokeError();
             PInvoke.SelectObject(memory, selected);
-            if (!updated) throw new InvalidOperationException($"UpdateLayeredWindow failed (Win32 error {error}).");
+            if (!updated) throw new InvalidOperationException($"The overlay layer's content could not be set: UpdateLayeredWindow failed (Win32 error {error}).");
             Bounds = new ScreenRect(Bounds.Left, Bounds.Top, Bounds.Left + bitmap.Width, Bounds.Top + bitmap.Height);
             _hasContent = true;
         }
@@ -289,6 +290,9 @@ internal sealed unsafe class LayeredWindow : IOverlayLayer
     {
         if (previous.Value != null) PInvoke.SetThreadDpiAwarenessContext(previous);
     }
+
+    private static InvalidOperationException ContentFailure(string call) =>
+        new($"The overlay layer's content could not be set: {call} failed (Win32 error {Marshal.GetLastPInvokeError()}).");
 
     private static InvalidOperationException Failure(string call) =>
         new($"The overlay layer could not be created: {call} failed (Win32 error {Marshal.GetLastPInvokeError()}).");
