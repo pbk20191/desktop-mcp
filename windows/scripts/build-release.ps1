@@ -45,10 +45,19 @@ if ($Runtimes -contains 'win-x64' -and [Runtime.InteropServices.RuntimeInformati
     }
     finally { Remove-Item $png -ErrorAction SilentlyContinue }
     # UI Automation through CsWin32's [GeneratedComInterface] interfaces, which only NativeAOT can prove (P2 Task 1).
-    & (Join-Path $probeOut 'desktop-mcp-probe.exe') uia
-    if ($LASTEXITCODE -ne 0) { throw "AOT UIA check failed: desktop-mcp-probe uia exited with $LASTEXITCODE" }
-    Write-Host 'AOT UIA check OK: the NativeAOT probe read the desktop''s cached children through UI Automation'
+    # The probe caches every top-level window and walks the foreground window with no process exclusion, and a UIA
+    # walk has hung VS Code (a Chromium app); while VS Code runs, the step is skipped until P2 Task 21 settles it.
+    if (Get-Process -Name Code -ErrorAction SilentlyContinue) {
+        Write-Warning 'AOT UIA check skipped: VS Code (Code.exe) is running, and a UIA walk can hang Chromium apps (P2 Task 21)'
+        $uiaSkipped = $true
+    }
+    else {
+        & (Join-Path $probeOut 'desktop-mcp-probe.exe') uia
+        if ($LASTEXITCODE -ne 0) { throw "AOT UIA check failed: desktop-mcp-probe uia exited with $LASTEXITCODE" }
+        Write-Host 'AOT UIA check OK: the NativeAOT probe read the desktop''s cached children through UI Automation'
+    }
 }
 else {
     Write-Host 'AOT activation and UIA checks skipped: they need win-x64 in -Runtimes and an x64 host'
 }
+if ($uiaSkipped) { Write-Warning 'Summary: the AOT UIA check was skipped because VS Code was running (P2 Task 21); rerun with VS Code closed' }

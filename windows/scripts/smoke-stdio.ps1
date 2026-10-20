@@ -12,7 +12,8 @@
 #    Snapshot must show a named virtual desktop (not the "Default Desktop" fallback) and at least one tree element.
 #    Both sessions run with DESKTOP_MCP_EXCLUDE_PROCESSES set to -ExcludeProcesses (default Code.exe): Snapshot's UIA
 #    walk hung VS Code, a Chromium app, twice on 2026-10-20 (see the P2 leftovers), and a developer runs this script from
-#    VS Code. The exclusion keeps those processes out of the tree walk; the window list still names their windows.
+#    VS Code. The exclusion keeps those processes out of the tree walk; the window list still probes their
+#    top-level windows through UIA.
 # 2. `serve --config <file excluding Registry>`: tools/list equals the spec less Registry, which proves the NativeAOT
 #    exe parsed the TOML file.
 param(
@@ -103,6 +104,8 @@ function Invoke-Session([string]$ConfigPath, [scriptblock]$Body, [int]$ExitSecon
             $script:exitFailure = "server did not exit within $ExitSeconds s after stdin closed"
         }
         $script:exitMilliseconds = $exitClock.ElapsedMilliseconds
+        # The capture session allows 30 s; a slow exit must still be visible so the allowance cannot hide a regression.
+        if ($script:exitMilliseconds -gt 5000) { Write-Warning "server took $($script:exitMilliseconds) ms to exit after stdin closed" }
     }
     if ($script:exitFailure) { $failure = $script:exitFailure; $script:exitFailure = $null; throw $failure }
 }
