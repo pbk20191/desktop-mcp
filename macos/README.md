@@ -58,6 +58,7 @@ Run `desktop-mcp permissions` to check the current state and trigger the system 
 | `Spotlight` | Searches the Spotlight index by words or a raw query, newest first, optionally by kind and folder |
 | `Window` | Lists app windows with ids and frames; focuses, moves, resizes, minimizes, restores or closes one by id |
 | `Menu` | Lists an app's menu bar as a tree with shortcuts; selects a menu item by its path (`["File", "Export…"]`) |
+| `OCR` | Opt-in (`--include-tools OCR`): reads the text in a screen region (default the focused window) with on-device recognition, one line per text line with its centre in `Click` coordinates |
 
 ## Commands and options
 
@@ -84,6 +85,7 @@ desktop-mcp connect [--url] [--socket] [--auth-key]   # stdio bridge to the agen
 | `--allow-insecure-remote` | | Allow binding a non-loopback address without auth (not recommended); otherwise refused |
 | `--config` | | Config file path (default `~/.desktop-mcp/config.toml`) |
 | `--exclude-tools` | `DESKTOP_MCP_EXCLUDE_TOOLS` | Tools to disable, added to `[tools] exclude` |
+| `--include-tools` | `DESKTOP_MCP_INCLUDE_TOOLS` | Opt-in tools to enable (`OCR`), added to `[tools] include`; `exclude` wins |
 | `--max-timeout` | `DESKTOP_MCP_MAX_TIMEOUT` | Upper limit for the Shell timeout in seconds (default 240, 0 = unlimited) |
 | `--session-timeout` | | Seconds a session may stay idle before it is dropped (default 1800, 0 = never evict). An open `GET` stream does not count as activity, and a session with a running tool call is never evicted |
 | `--debug` | | Verbose logging (over HTTP also one line per session created or ended, with the reason, and per `GET` stream opened or closed) |

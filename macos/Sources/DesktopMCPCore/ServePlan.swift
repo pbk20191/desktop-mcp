@@ -12,6 +12,8 @@ public struct ServePlan: Equatable, Sendable {
     public var tls: (certificate: String, privateKey: String)?
     public var oauth: (clientID: String, clientSecret: String)?
     public var excludedTools: [String]
+    /// Opt-in tools to register (`exclude` still wins).
+    public var includedTools: [String] = []
     /// Seconds an HTTP session may stay idle before it is dropped; 0 keeps sessions until the
     /// client ends them. Command line only.
     public var sessionTimeout: TimeInterval = 1800
@@ -29,7 +31,8 @@ public struct ServePlan: Equatable, Sendable {
         sslKeyfile: "DESKTOP_MCP_SSL_KEYFILE",
         oauthClientID: "DESKTOP_MCP_OAUTH_CLIENT_ID",
         oauthClientSecret: "DESKTOP_MCP_OAUTH_CLIENT_SECRET",
-        excludeTools: "DESKTOP_MCP_EXCLUDE_TOOLS"
+        excludeTools: "DESKTOP_MCP_EXCLUDE_TOOLS",
+        includeTools: "DESKTOP_MCP_INCLUDE_TOOLS"
     )
 
     /// What was given on the command line; nil means "not given".
@@ -45,6 +48,7 @@ public struct ServePlan: Equatable, Sendable {
         public var oauthClientID: String?
         public var oauthClientSecret: String?
         public var excludeTools: String?
+        public var includeTools: String?
         public var sessionTimeout: Int?
         public var socketPath: String?
 
@@ -94,6 +98,10 @@ public struct ServePlan: Equatable, Sendable {
         for name in (cli.excludeTools ?? env[keys.excludeTools]).map(list) ?? [] where !excluded.contains(name) {
             excluded.append(name)
         }
+        var included = config.tools.include
+        for name in (cli.includeTools ?? env[keys.includeTools]).map(list) ?? [] where !included.contains(name) {
+            included.append(name)
+        }
 
         guard (certificate == nil) == (privateKey == nil) else {
             throw ConfigErrorText("--ssl-certfile and --ssl-keyfile must be provided together.")
@@ -122,6 +130,7 @@ public struct ServePlan: Equatable, Sendable {
             allowInsecureRemote: allowInsecureRemote, ipAllowlist: allowlist,
             tls: certificate.flatMap { c in privateKey.map { (c, $0) } },
             oauth: oauth, excludedTools: excluded)
+        plan.includedTools = included
         plan.warnings = warnings
         plan.socketPath = socketPath
         if let sessionTimeout = cli.sessionTimeout { plan.sessionTimeout = TimeInterval(sessionTimeout) }
@@ -139,7 +148,8 @@ public struct ServePlan: Equatable, Sendable {
             && lhs.ipAllowlist == rhs.ipAllowlist
             && lhs.tls?.certificate == rhs.tls?.certificate && lhs.tls?.privateKey == rhs.tls?.privateKey
             && lhs.oauth?.clientID == rhs.oauth?.clientID && lhs.oauth?.clientSecret == rhs.oauth?.clientSecret
-            && lhs.excludedTools == rhs.excludedTools && lhs.sessionTimeout == rhs.sessionTimeout
+            && lhs.excludedTools == rhs.excludedTools && lhs.includedTools == rhs.includedTools
+            && lhs.sessionTimeout == rhs.sessionTimeout
             && lhs.socketPath == rhs.socketPath && lhs.warnings == rhs.warnings
     }
 }

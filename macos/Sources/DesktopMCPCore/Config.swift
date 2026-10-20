@@ -20,6 +20,8 @@ public struct DesktopMCPConfig: Equatable, Sendable {
 
     public struct Tools: Equatable, Sendable {
         public var exclude: [String] = []
+        /// Opt-in tools (`DesktopMCP.optInTools`) to register.
+        public var include: [String] = []
     }
 
     public var server = Server()
@@ -100,6 +102,7 @@ public struct DesktopMCPConfig: Equatable, Sendable {
         if let value = security["oauth_client_id"] { config.security.oauthClientID = value.text.nilIfEmpty }
         if let value = security["oauth_client_secret"] { config.security.oauthClientSecret = value.text.nilIfEmpty }
         if let value = tools["exclude"] { config.tools.exclude = try strings(value, "tools.exclude") }
+        if let value = tools["include"] { config.tools.include = try strings(value, "tools.include") }
         config.sourcePath = url.path
         return config
     }
@@ -146,9 +149,10 @@ public struct DesktopMCPConfig: Equatable, Sendable {
         if let v = self.security.oauthClientSecret { security.append("oauth_client_secret = \(quoted(v))") }
         if !security.isEmpty { lines += ["[security]"] + security + [""] }
 
-        if !tools.exclude.isEmpty {
-            lines += ["[tools]", "exclude = [\(tools.exclude.map(quoted).joined(separator: ", "))]", ""]
-        }
+        var toolLines: [String] = []
+        if !tools.exclude.isEmpty { toolLines.append("exclude = [\(tools.exclude.map(quoted).joined(separator: ", "))]") }
+        if !tools.include.isEmpty { toolLines.append("include = [\(tools.include.map(quoted).joined(separator: ", "))]") }
+        if !toolLines.isEmpty { lines += ["[tools]"] + toolLines + [""] }
         return lines.joined(separator: "\n")
     }
 

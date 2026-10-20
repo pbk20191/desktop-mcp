@@ -89,6 +89,11 @@ struct Serve: AsyncParsableCommand {
                                discussion: "Added to [tools] exclude. Or $DESKTOP_MCP_EXCLUDE_TOOLS."))
     var excludeTools: String?
 
+    @Option(name: .customLong("include-tools"),
+            help: ArgumentHelp("Comma-separated opt-in tools to enable, e.g. \"OCR\".",
+                               discussion: "Added to [tools] include. Or $DESKTOP_MCP_INCLUDE_TOOLS."))
+    var includeTools: String?
+
     @Option(name: .customLong("max-timeout"),
             help: ArgumentHelp("Upper bound in seconds for Shell timeouts (0 = no cap).",
                                discussion: "Or $\(Shell.maxTimeoutEnv); default 240."))
@@ -127,6 +132,7 @@ struct Serve: AsyncParsableCommand {
         values.oauthClientID = oauthClientID
         values.oauthClientSecret = oauthClientSecret
         values.excludeTools = excludeTools
+        values.includeTools = includeTools
         values.sessionTimeout = sessionTimeout
         values.socketPath = socket
         do {
@@ -153,7 +159,7 @@ struct Serve: AsyncParsableCommand {
         let analytics = PostHogAnalytics.isEnabled() ? PostHogAnalytics(verbose: debug) : nil
         let debug = self.debug
         let stdio = plan.transport == "stdio"
-        let registry = await DesktopMCP.makeRegistry(excluding: plan.excludedTools)
+        let registry = await DesktopMCP.makeRegistry(excluding: plan.excludedTools, including: plan.includedTools)
         await registry.setObserver(analytics)
         let socket = await listenOnSocket(registry, plan: plan, debug: debug)
         // Set once `serve` stops the socket itself, so its accept loop ending then is not news.

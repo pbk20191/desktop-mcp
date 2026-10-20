@@ -184,13 +184,27 @@ public enum DesktopMCP {
     enabling operation of the desktop on the user's behalf.
     """
 
-    /// A registry with every tool registered except those named in `excluding`.
-    public static func makeRegistry(desktop: Desktop = Desktop(), excluding excluded: [String] = []) async -> ToolRegistry {
+    /// Tools registered only when named in `include` (`[tools] include`, `--include-tools`).
+    public static let optInTools: Set<String> = ["OCR"]
+
+    /// A registry with every on-by-default tool, plus the opt-in tools named in `including`,
+    /// minus those named in `excluding` (exclude wins).
+    public static func makeRegistry(desktop: Desktop = Desktop(), excluding excluded: [String] = [],
+                                    including included: [String] = []) async -> ToolRegistry {
         let registry = ToolRegistry(name: "desktop-mcp", version: version, instructions: instructions)
-        for tool in tools(desktop) {
+        let all = tools(desktop)
+        for tool in all where !optInTools.contains(tool.name) || included.contains(tool.name) {
             await registry.register(tool)
         }
-        for name in excluded where !(await registry.remove(tool: name)) {
+        for name in included where !optInTools.contains(name) {
+            if all.contains(where: { $0.name == name }) {
+                log("Tool '\(name)' is on by default; include ignored")
+            } else {
+                log("Could not include tool '\(name)' — not found")
+            }
+        }
+        // An opt-in tool that was not included is already absent; excluding it is not an error.
+        for name in excluded where !(await registry.remove(tool: name)) && !optInTools.contains(name) {
             log("Could not exclude tool '\(name)' — not found")
         }
         return registry
@@ -450,6 +464,7 @@ public enum DesktopMCP {
             SpotlightTool.tool(),
             WindowTool.tool(),
             MenuTool.tool(),
+            OCRTool.tool(),
         ]
     }
 }

@@ -135,6 +135,28 @@ final class ConfigTests: XCTestCase {
 
     // MARK: Merging
 
+    func testIncludeMergesLikeExclude() throws {
+        var config = DesktopMCPConfig()
+        config.tools.include = ["OCR"]
+        let env = [ServePlan.environmentKeys.includeTools: "OCR, Shell"]
+        let plan = try ServePlan.resolve(ServePlan.CommandLineValues(), environment: env, config: config)
+        XCTAssertEqual(plan.includedTools, ["OCR", "Shell"])
+
+        var cli = ServePlan.CommandLineValues()
+        cli.includeTools = "Menu"
+        XCTAssertEqual(try ServePlan.resolve(cli, environment: env, config: config).includedTools, ["OCR", "Menu"])
+        XCTAssertNotEqual(try ServePlan.resolve(cli, environment: env, config: config), plan)
+
+        XCTAssertEqual(config.serialized(), "[tools]\ninclude = [\"OCR\"]\n")
+        let url = directory.appendingPathComponent("config.toml")
+        try config.write(to: url)
+        var loaded = try DesktopMCPConfig.load(url)
+        loaded.sourcePath = nil
+        XCTAssertEqual(loaded, config)
+        XCTAssertEqual(loaded.tools.include, ["OCR"])
+        XCTAssertThrowsError(try DesktopMCPConfig.load(try file("[tools]\ninclude = \"OCR\"\n")))
+    }
+
     func testPlanPrecedenceCommandLineThenEnvironmentThenConfig() throws {
         var config = DesktopMCPConfig()
         config.server.transport = "streamable-http"

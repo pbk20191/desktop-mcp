@@ -41,6 +41,25 @@ final class ToolRegistryTests: XCTestCase {
         XCTAssertFalse(names.contains("Scrape"))
     }
 
+    func testOCRIsOffByDefault() async {
+        let names = await DesktopMCP.makeRegistry().toolNames
+        XCTAssertFalse(names.contains("OCR"))
+        XCTAssertEqual(DesktopMCP.optInTools, ["OCR"])
+    }
+
+    func testIncludeEnablesOCR() async {
+        let defaults = await DesktopMCP.makeRegistry().toolNames
+        let included = await DesktopMCP.makeRegistry(including: ["OCR"]).toolNames
+        XCTAssertEqual(included.last, "OCR")
+        XCTAssertEqual(included, defaults + ["OCR"])
+        // Exclude wins over include.
+        let both = await DesktopMCP.makeRegistry(excluding: ["OCR"], including: ["OCR"]).toolNames
+        XCTAssertFalse(both.contains("OCR"))
+        // Including an on-by-default or unknown tool changes nothing.
+        let noop = await DesktopMCP.makeRegistry(including: ["Shell", "Nope"]).toolNames
+        XCTAssertEqual(noop, defaults)
+    }
+
     func testToolCallSuccessAndErrors() async throws {
         let (client, started) = try await connect(await DesktopMCP.makeRegistry())
         defer { Task { await started.shutdown() } }

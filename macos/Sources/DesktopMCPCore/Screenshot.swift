@@ -37,38 +37,35 @@ public enum Screenshot {
     }
 
     private static func captureEach(_ displays: [DisplayInfo]) async -> [CGImage?] {
+        await withTaskGroup(of: (Int, CGImage?).self) { group in
+            for (i, display) in displays.enumerated() {
+                group.addTask { (i, await capture(display)) }
+            }
+            var images = [CGImage?](repeating: nil, count: displays.count)
+            for await (i, image) in group { images[i] = image }
+            return images
+        }
+    }
+
+    /// One display at native resolution (its `pixelWidth` × `pixelHeight`), or nil when it
+    /// could not be captured (no Screen Recording permission, display gone).
+    static func capture(_ display: DisplayInfo) async -> CGImage? {
         if #available(macOS 14.0, *) {
             do {
                 let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-                return await withTaskGroup(of: (Int, CGImage?).self) { group in
-                    for (i, display) in displays.enumerated() {
-                        guard let found = content.displays.first(where: { $0.displayID == display.id }) else { continue }
-                        // SCDisplay is an immutable description; ScreenCaptureKit accepts it from any thread.
-                        let scDisplay = UncheckedSendable(found)
-                        group.addTask {
-                            let filter = SCContentFilter(display: scDisplay.value, excludingWindows: [])
-                            let config = SCStreamConfiguration()
-                            config.width = display.pixelWidth
-                            config.height = display.pixelHeight
-                            config.showsCursor = false
-                            let image = try? await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
-                            return (i, image)
-                        }
-                    }
-                    var images = [CGImage?](repeating: nil, count: displays.count)
-                    for await (i, image) in group { images[i] = image }
-                    return images
-                }
+                guard let found = content.displays.first(where: { $0.displayID == display.id }) else { return nil }
+                let filter = SCContentFilter(display: found, excludingWindows: [])
+                let config = SCStreamConfiguration()
+                config.width = display.pixelWidth
+                config.height = display.pixelHeight
+                config.showsCursor = false
+                return try? await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
             } catch {
                 log("ScreenCaptureKit capture failed: \(error)")
             }
         }
         // macOS 13, or ScreenCaptureKit refused: the system screencapture tool.
-        var images: [CGImage?] = []
-        for display in displays {
-            images.append(await captureWithTool(display))
-        }
-        return images
+        return await captureWithTool(display)
     }
 
     private static func captureWithTool(_ display: DisplayInfo) async -> CGImage? {
