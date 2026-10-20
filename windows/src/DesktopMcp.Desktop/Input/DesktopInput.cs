@@ -484,9 +484,10 @@ public sealed class DesktopInput : IDesktopInput
         {
             // upstream: a clipboard that cannot be read is not restored
         }
-        await _clipboard.SetTextAsync(text, ct).ConfigureAwait(false);
         try
         {
+            // The write is inside the try: a cancellation or failure after the text reached the clipboard still restores.
+            await _clipboard.SetTextAsync(text, ct).ConfigureAwait(false);
             await WaitAsync(InputTiming.PasteSettle, ct).ConfigureAwait(false);
             await PressKeysAsync(Paste, InputTiming.ShortcutInterval, InputTiming.KeyWait, ct).ConfigureAwait(false);
         }

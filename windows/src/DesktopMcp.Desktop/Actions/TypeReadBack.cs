@@ -148,7 +148,7 @@ public sealed class UiaTypeReadBack : ITypeReadBack
         ct.ThrowIfCancellationRequested();
         if (Win32WindowSystem.CheckResponding(window) != WindowResponse.Responding) return null;
         ct.ThrowIfCancellationRequested();
-        var element = session.Automation.GetFocusedElementBuildCache(session.ActionRequest);
+        var element = session.Automation.GetFocusedElementBuildCache(session.ReadBackRequest);
         if (element is null || element.get_CachedIsPassword()) return null;
         if (UiaValues.CachedBool(element, UIA_PROPERTY_ID.UIA_IsValuePatternAvailablePropertyId) != true) return null;
         return UiaValues.CachedString(element, UIA_PROPERTY_ID.UIA_ValueValuePropertyId);

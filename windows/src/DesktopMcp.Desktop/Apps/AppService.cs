@@ -171,8 +171,9 @@ public sealed class AppService : IAppService
         {
             return new AppResult($"Failed to launch {title}: it did not start within 10 s.", false);
         }
-        catch (Exception e) when (e is not OperationCanceledException)
+        catch (Exception e) when (e is DesktopException or Win32Exception)
         {
+            // The launcher's own failures (a translated COM error, ShellExecuteEx); anything else is a bug and propagates.
             return new AppResult($"Failed to launch {title}: {e.Message}", false);
         }
 

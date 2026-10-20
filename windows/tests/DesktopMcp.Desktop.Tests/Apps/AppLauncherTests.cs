@@ -219,6 +219,22 @@ public class AppLauncherTests
     }
 
     [Fact]
+    public async Task AShellExecuteFailureIsUpstreamsText()
+    {
+        var rig = new LaunchRig(apps: [new("Notepad", "x")]);
+        rig.Launcher.Error = new Win32Exception(2, "not found");
+        Assert.Equal(new AppResult("Failed to launch Notepad: not found", false), await rig.Service.LaunchAsync("notepad", default));
+    }
+
+    [Fact]
+    public async Task AnUnexpectedLaunchExceptionPropagates()
+    {
+        var rig = new LaunchRig(apps: [new("Notepad", "x")]);
+        rig.Launcher.Error = new InvalidOperationException("bug");
+        Assert.Equal("bug", (await Assert.ThrowsAsync<InvalidOperationException>(() => rig.Service.LaunchAsync("notepad", default))).Message);
+    }
+
+    [Fact]
     public async Task AHangingLaunchIsAbandonedAfterTenSeconds()
     {
         var rig = new LaunchRig(apps: [new("Notepad", "x")]);

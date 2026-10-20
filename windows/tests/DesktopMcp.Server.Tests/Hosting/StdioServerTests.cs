@@ -62,5 +62,7 @@ public sealed class StdioServerTests
         Assert.Equal(0, await serving);
         Assert.Empty(ledger.Pending);
         Assert.Equal(1, ups);
+        // Decisions 19: nothing new can be pressed once shutdown has released the held input.
+        Assert.Throws<InputUnavailableException>(() => ledger.Press("key:shift", () => { }, () => { }));
     }
 }

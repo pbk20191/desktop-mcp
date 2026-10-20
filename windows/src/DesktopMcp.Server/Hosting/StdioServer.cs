@@ -52,11 +52,13 @@ public static class StdioServer
         var logger = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("desktop-mcp");
         foreach (var warning in plan.Warnings) logger.LogWarning("{Warning}", warning);
         // Decisions 19: whatever key or button the input still holds is released when the host stops, and again after
-        // it returns in case the transport ended without ApplicationStopping (a second release finds nothing held).
+        // it returns in case the transport ended without ApplicationStopping (a second release finds nothing held). New
+        // presses are blocked first, so a call still running cannot hold a key again after the release.
         void ReleaseHeldInput()
         {
             try
             {
+                services.Ledger.BlockNew();
                 services.Ledger.ReleaseAll();
             }
             catch (Exception e)
