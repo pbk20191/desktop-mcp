@@ -5,3 +5,9 @@ xcuserdata/
 DerivedData/
 dist/
 .DS_Store
+bin/
+obj/
+.vs/
+*.user
+windows/probes/out/
+windows/.deps/

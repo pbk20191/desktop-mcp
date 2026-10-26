@@ -1,0 +1,50 @@
+<Project>
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows10.0.22621.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.22621.0</SupportedOSPlatformVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <Version>0.1.0</Version>
+    <Authors>desktop-mcp contributors</Authors>
+    <!-- Tomlyn: no reflection fallback in any build (Tomlyn's targets only switch it off for PublishAot), so the JIT
+         tests run the same source-generated path as the NativeAOT exe. -->
+    <TomlynIsReflectionEnabledByDefault>false</TomlynIsReflectionEnabledByDefault>
+    <!-- Win2D ships a per-architecture native DLL and warns (WIN2D0001) on AnyCPU builds; default to the RID of the dotnet/MSBuild process (not the OS, which may be emulating it). -->
+    <DefaultProcessRid>win-$([System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString().ToLowerInvariant())</DefaultProcessRid>
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">$(DefaultProcessRid)</RuntimeIdentifier>
+    <!-- Windows App SDK: unpackaged, framework-dependent; AppRuntime.EnsureInitialized bootstraps it explicitly. -->
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>false</WindowsAppSDKSelfContained>
+    <WindowsAppSdkBootstrapInitialize>false</WindowsAppSdkBootstrapInitialize>
+    <!-- No MRT resources (no XAML, no .resw): do not generate the empty <Project>.pri files that the SDK's MSIX
+         build tools (through Microsoft.WindowsAppSDK.Base) would otherwise put next to every output. -->
+    <AppxGeneratePriEnabled>false</AppxGeneratePriEnabled>
+  </PropertyGroup>
+
+  <!--
+    Win2D (Microsoft.Graphics.Win2D, linked statically into the NativeAOT exes) depends on WinUI, which brings
+    Foundation (the bootstrap DLL, its auto-initializer and projections) and WebView2 (WebView2Loader.dll and
+    its projection). None of them is used; Win2D's projection only needs WinUI types for its XAML controls,
+    which we never touch. Exclude their assets in every project that sees DesktopMcp.Desktop: NuGet takes the
+    union of asset flags across dependency paths, so the exclusion must be on a direct reference in each project.
+  -->
+  <ItemGroup Condition="'$(MSBuildProjectName)' != 'DesktopMcp.Core' and '$(MSBuildProjectName)' != 'DesktopMcp.Core.Tests'">
+    <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" ExcludeAssets="all" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.Foundation" ExcludeAssets="all" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.Web.WebView2" ExcludeAssets="all" PrivateAssets="all" />
+  </ItemGroup>
+
+  <PropertyGroup Condition="!$(MSBuildProjectName.EndsWith('.Tests'))">
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="$(MSBuildProjectName.EndsWith('.Tests'))">
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <RunSettingsFilePath>$(MSBuildThisFileDirectory)tests\default.runsettings</RunSettingsFilePath>
+  </PropertyGroup>
+</Project>

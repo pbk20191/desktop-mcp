@@ -1,4 +1,4 @@
 desktop-mcp is a port of CursorTouch/MacOS-MCP and CursorTouch/Windows-MCP
 (https://github.com/CursorTouch), Copyright (c) 2026 Jeomon George, released
-under the MIT License. Their notice applies to the tool contract (spec/tools.json)
+under the MIT License. Their notice applies to the tool contract (spec/macos/tools.json, spec/windows/tools.json)
 and to any text derived from them.

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Default run settings for every test project (wired in Directory.Build.props).
+  Tests that need a real desktop session carry [Trait("Category", "Desktop")], and slow stress tests carry
+  [Trait("Category", "Stress")]; both are skipped by default. To run them, clear the setting for that run
+  (a command-line filter would be ANDed with this one and match nothing):
+    dotnet test tests/DesktopMcp.Desktop.Tests -p:RunSettingsFilePath=
+    dotnet test tests/DesktopMcp.Core.Tests -p:RunSettingsFilePath= (with the test filter Category=Stress)
+-->
+<RunSettings>
+  <RunConfiguration>
+    <TestCaseFilter>Category!=Desktop&amp;Category!=Stress</TestCaseFilter>
+  </RunConfiguration>
+</RunSettings>

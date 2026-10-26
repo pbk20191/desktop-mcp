@@ -1,0 +1,678 @@
+using System.Runtime.InteropServices;
+using DesktopMcp.Core.Snapshots;
+using DesktopMcp.Desktop.Errors;
+using DesktopMcp.Desktop.Tree;
+
+namespace DesktopMcp.Desktop.Tests.Tree;
+
+public class TreeWalkerTests
+{
+    private static readonly ScreenRect Screen = new(0, 0, 1920, 1080);
+    private static readonly WindowContext App = new("App", IsBrowser: false, new ScreenRect(0, 0, 800, 600), Screen);
+
+    private static readonly COMException DeadElement = new("gone", unchecked((int)0x80040201)); // UIA_E_ELEMENTNOTAVAILABLE
+    private static readonly COMException UiaTimeout = new("slow", unchecked((int)0x80131505)); // UIA_E_TIMEOUT
+
+    /// <summary>An in-memory UIA tree; children and words are keyed by element instance.</summary>
+    private sealed class FakeSource : ITreeSource
+    {
+        public Dictionary<UiaElementData, UiaElementData[]> Children { get; } = new(ReferenceEqualityComparer.Instance);
+        public Dictionary<UiaElementData, WordBox[]> Words { get; } = new(ReferenceEqualityComparer.Instance);
+        public int Released { get; private set; }
+        public int Fetched { get; private set; }
+
+        /// <summary>Elements whose children were read, in visit order.</summary>
+        public List<UiaElementData> ChildrenRead { get; } = [];
+
+        /// <summary>Runs before an element's children are read; it may throw to fail the read.</summary>
+        public Action<UiaElementData>? BeforeChildren { get; set; }
+
+        /// <summary>Runs before an element's words are read; it may throw to fail the read.</summary>
+        public Action<UiaElementData>? BeforeWords { get; set; }
+
+        /// <summary>Answers each responsiveness check; the window answers by default.</summary>
+        public Func<WindowResponse> Responding { get; set; } = () => WindowResponse.Responding;
+
+        /// <summary>How many responsiveness checks the walk made.</summary>
+        public int Checks { get; private set; }
+
+        /// <summary>Parents whose child list the source cut at its cap.</summary>
+        public HashSet<UiaElementData> Capped { get; } = new(ReferenceEqualityComparer.Instance);
+
+        /// <summary>Every check, children read and word read in order: "check", "children:Name", "words:Name".</summary>
+        public List<string> Log { get; } = [];
+
+        /// <summary>Elements whose words were read, in order.</summary>
+        public List<UiaElementData> WordsRead { get; } = [];
+
+        public IReadOnlyList<UiaElementData> GetChildren(UiaElementData parent, out bool capped)
+        {
+            Log.Add($"children:{parent.Name}");
+            capped = Capped.Contains(parent);
+            ChildrenRead.Add(parent);
+            BeforeChildren?.Invoke(parent);
+            var children = Children.GetValueOrDefault(parent, []);
+            Fetched += children.Length;
+            return children;
+        }
+
+        public IReadOnlyList<WordBox> GetWords(UiaElementData element, int maxWords)
+        {
+            Log.Add($"words:{element.Name}");
+            WordsRead.Add(element);
+            BeforeWords?.Invoke(element);
+            return Words.GetValueOrDefault(element, []).Take(maxWords).ToArray();
+        }
+
+        public void Release(UiaElementData element) => Released++;
+
+        public WindowResponse CheckWindow()
+        {
+            Log.Add("check");
+            Checks++;
+            return Responding();
+        }
+
+        public UiaElementData Add(UiaElementData parent, params UiaElementData[] children)
+        {
+            Children[parent] = children;
+            return parent;
+        }
+    }
+
+    private static int _ids;
+
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<UiaElementData, UiaElementData[]> Declared = new();
+
+    private static UiaElementData Window(string name = "App", UiaElementData[]? children = null)
+    {
+        var window = new UiaElementData { Name = name, ControlType = TreeConfig.Window, LocalizedControlType = "window", Bounds = new ScreenRect(0, 0, 800, 600), RuntimeId = $"w{++_ids}" };
+        if (children is not null) Declared.Add(window, children);
+        return window;
+    }
+
+    private static UiaElementData Element(
+        string localizedType, int controlType, string? runtimeId, string automationId = "", string name = "", ScreenPoint? clickable = null,
+        bool verticallyScrollable = false, bool enabled = true, bool? selected = null, bool focusable = false, WordBox[]? words = null)
+    {
+        var data = new UiaElementData
+        {
+            Name = name, AutomationId = automationId, LocalizedControlType = localizedType, ControlType = controlType, RuntimeId = runtimeId,
+            ClickablePoint = clickable, VerticallyScrollable = verticallyScrollable, IsEnabled = enabled, IsSelected = selected,
+            IsKeyboardFocusable = focusable, LegacyRole = controlType == TreeConfig.Edit ? 0x2A : controlType == TreeConfig.ListItem ? 0x22 : 0x2B,
+            Bounds = new ScreenRect(10, 10, 60, 30),
+        };
+        if (words is not null) Pending.Add(data, words);
+        return data;
+    }
+
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<UiaElementData, WordBox[]> Pending = new();
+
+    /// <summary>Walks a tree declared with <see cref="Window"/> children, as window <paramref name="handle"/>.</summary>
+    private static WindowWalk Walk(UiaElementData root, long handle)
+    {
+        var source = new FakeSource();
+        void Fill(UiaElementData node)
+        {
+            if (Pending.TryGetValue(node, out var words)) source.Words[node] = words;
+            if (!Declared.TryGetValue(node, out var children)) return;
+            source.Children[node] = children;
+            foreach (var child in children) Fill(child);
+        }
+        Fill(root);
+        return new TreeWalker(source, new ElementBudget(500), Counter()).Walk(root, App with { Handle = handle });
+    }
+
+    private static UiaElementData Button(string name, int x = 10) => new()
+    {
+        Name = name, ControlType = TreeConfig.Button, LocalizedControlType = "button", LegacyRole = 0x2B,
+        Bounds = new ScreenRect(x, 10, x + 50, 30), RuntimeId = $"b{++_ids}",
+    };
+
+    private static UiaElementData Pane(string name, bool scrollable = false) => new()
+    {
+        Name = name, ControlType = TreeConfig.Pane, LocalizedControlType = "pane", Bounds = new ScreenRect(0, 0, 400, 300),
+        VerticallyScrollable = scrollable, VerticalScrollPercent = 33.333, RuntimeId = $"p{++_ids}",
+    };
+
+    private static UiaElementData Text(string name) => new()
+    {
+        Name = name, ControlType = TreeConfig.Edit, LocalizedControlType = "edit", LegacyRole = 0x2A, Bounds = new ScreenRect(0, 0, 300, 40),
+    };
+
+    private static Func<int> Counter()
+    {
+        var next = -1;
+        return () => Interlocked.Increment(ref next);
+    }
+
+    private static (WindowWalk Walk, ElementBudget Budget) Walk(FakeSource source, UiaElementData root, int limit = 500, WindowContext? context = null, int maxDepth = TreeWalker.MaxDepth)
+    {
+        var budget = new ElementBudget(limit);
+        return (new TreeWalker(source, budget, Counter(), maxDepth).Walk(root, context ?? App), budget);
+    }
+
+    [Fact]
+    public void InteractiveAndScrollableElementsCarryTheirIdentity()
+    {
+        var button = Element("button", TreeConfig.Button, runtimeId: "42.1.2", automationId: "ok", name: " OK ", clickable: new ScreenPoint(15, 15));
+        var list = Element("list", 50008, runtimeId: "42.1.3", verticallyScrollable: true, enabled: false, selected: true);
+        var disabled = Element("button", TreeConfig.Button, runtimeId: "42.1.4", name: "off", enabled: false);
+        var walk = Walk(Window(children: [button, list, disabled]), handle: 4242);
+        var element = Assert.Single(walk.Interactive);
+        Assert.Equal(new ElementIdentity(4242, "42.1.2", TreeConfig.Button, "ok", "OK", new ScreenPoint(15, 15)), element.Identity);
+        var scrollable = Assert.Single(walk.Scrollable);
+        Assert.Equal("42.1.3", scrollable.Identity!.RuntimeId);
+        Assert.False(scrollable.Metadata.IsEnabled);
+        Assert.True(scrollable.Metadata.IsSelected);
+        // A disabled element is never interactive (upstream), so interactive metadata is always enabled.
+        Assert.True(element.Metadata.IsEnabled);
+    }
+
+    [Fact]
+    public void TheWindowWalkerRecordsTheWalkedWindowInEachIdentity()
+    {
+        var source = new FakeSource();
+        var button = Element("button", TreeConfig.Button, runtimeId: "1.2", name: "OK");
+        var root = Window(children: [button]);
+        source.Children[root] = [button];
+        var walk = UiaWindowWalker.Walk(source, () => root, false, Screen, new ElementBudget(500), Counter(), CancellationToken.None, 77);
+        Assert.Equal(77, Assert.Single(walk.Interactive).Identity!.Window);
+    }
+
+    [Fact]
+    public void WordsAndElementsWithoutARuntimeIdHaveNoIdentity()
+    {
+        var edit = Element("edit", TreeConfig.Edit, runtimeId: "9", name: "doc", words: [new WordBox("hello", new ScreenRect(1, 1, 20, 10))]);
+        var bare = Element("button", TreeConfig.Button, runtimeId: null, name: "bare");
+        var walk = Walk(Window(children: [edit, bare]), handle: 1);
+        Assert.Equal(3, walk.Interactive.Count);
+        Assert.Equal("9", walk.Interactive.Single(e => e.Name == "doc").Identity!.RuntimeId);
+        Assert.Null(walk.Interactive.Single(e => e.Name == "bare").Identity);
+        Assert.Null(walk.Interactive.Single(e => e.ControlType == "Word").Identity);
+    }
+
+    [Fact]
+    public void SelectionStateIsInTheMetadata()
+    {
+        var item = Element("list item", TreeConfig.ListItem, runtimeId: "7", name: "a", selected: true, focusable: true);
+        Assert.True(Assert.Single(Walk(Window(children: [item]), handle: 1).Interactive).Metadata.IsSelected);
+    }
+
+    [Fact]
+    public void ChildrenAreNumberedRightToLeftButTheTreeKeepsDocumentOrder()
+    {
+        var source = new FakeSource();
+        var root = source.Add(Window(), Button("A", 10), Button("B", 100));
+        var (walk, _) = Walk(source, root);
+        Assert.Equal(["B", "A"], walk.Interactive.Select(e => e.Name));
+        Assert.Equal([0, 1], walk.Interactive.Select(e => e.Id));
+        Assert.Equal(["A", "B"], walk.Window.Children.Select(c => c.Name));
+        Assert.Equal(new ScreenPoint(35, 20), walk.Interactive[1].Center);
+        Assert.Equal(3, source.Released);
+    }
+
+    [Fact]
+    public void ElementsThatAreHiddenDisabledEmptyOrNotInteractiveAreLeftOut()
+    {
+        var source = new FakeSource();
+        var root = source.Add(Window(),
+            Button("Offscreen") with { IsOffscreen = true },
+            Button("Disabled") with { IsEnabled = false },
+            Button("Flat") with { Bounds = new ScreenRect(10, 10, 60, 10) },
+            Button("No role") with { LegacyRole = 0x0A },
+            Button("   "),
+            Button("Kept"));
+        Assert.Equal(["Kept"], Walk(source, root).Walk.Interactive.Select(e => e.Name));
+    }
+
+    [Fact]
+    public void AnOffscreenEditIsStillListedWithItsValue()
+    {
+        var source = new FakeSource();
+        var edit = new UiaElementData
+        {
+            Name = "Search", ControlType = TreeConfig.Edit, LocalizedControlType = "edit", IsOffscreen = true, LegacyRole = 0x2A,
+            LegacyValue = "  query ", Bounds = new ScreenRect(0, 0, 100, 20), HasKeyboardFocus = true,
+        };
+        var element = Assert.Single(Walk(source, source.Add(Window(), edit)).Walk.Interactive);
+        Assert.Equal(new UiMetadata { HasFocus = true, Value = "query" }, element.Metadata);
+    }
+
+    [Fact]
+    public void ScrollablePanesAreListedAtTheirCentreAndDoNotBecomeStructuralNodes()
+    {
+        var source = new FakeSource();
+        var pane = source.Add(Pane("", scrollable: true) with { AutomationId = "", LocalizedControlType = "PANE" }, Button("Inside"));
+        var (walk, _) = Walk(source, source.Add(Window(), pane));
+        var scrollable = Assert.Single(walk.Scrollable);
+        Assert.Equal(("Pane", new ScreenPoint(200, 150)), (scrollable.Name, scrollable.Center));
+        Assert.Equal(new UiMetadata { VerticallyScrollable = true, VerticalScrollPercent = 33.33 }, scrollable.Metadata);
+        // The pane's children hang off the window, not the pane, and the window's children come back in reverse visit order.
+        Assert.Equal([SemanticKind.Interactive, SemanticKind.Scrollable], walk.Window.Children.Select(c => c.Kind));
+    }
+
+    [Fact]
+    public void AnAxisThatCannotScrollReportsZeroPercentNotNoScroll()
+    {
+        // UIA reports UIA_ScrollPatternNoScroll (-1) for an axis that cannot scroll; upstream (tree/service.py:498-500) uses 0.
+        var source = new FakeSource();
+        var pane = Pane("List", scrollable: true) with { HorizontallyScrollable = false, HorizontalScrollPercent = -1 };
+        var scrollable = Assert.Single(Walk(source, source.Add(Window(), pane)).Walk.Scrollable);
+        Assert.Equal(new UiMetadata { VerticallyScrollable = true, VerticalScrollPercent = 33.33 }, scrollable.Metadata);
+
+        var both = Pane("Grid", scrollable: true) with { HorizontallyScrollable = true, HorizontalScrollPercent = 12.345 };
+        var element = Assert.Single(Walk(source, source.Add(Window(), both)).Walk.Scrollable);
+        Assert.Equal((true, 12.35), (element.Metadata.HorizontallyScrollable, element.Metadata.HorizontalScrollPercent));
+    }
+
+    [Fact]
+    public void NamedContainersGroupTheirChildren()
+    {
+        var source = new FakeSource();
+        var toolbar = source.Add(new UiaElementData { Name = "Tools", ControlType = 50021, LocalizedControlType = "tool bar", Bounds = new ScreenRect(0, 0, 10, 10) }, Button("Save"));
+        var unnamed = source.Add(Pane(""), Button("Open"));
+        var (walk, _) = Walk(source, source.Add(Window(), toolbar, unnamed));
+        Assert.Equal(["Tools", "Open"], walk.Window.Children.Select(c => c.Name));
+        Assert.Equal("Save", Assert.Single(walk.Window.Children[0].Children).Name);
+    }
+
+    [Fact]
+    public void AModalDialogDiscardsTheElementsFoundBeforeIt()
+    {
+        var source = new FakeSource();
+        var dialog = source.Add(Window("Confirm") with { WindowIsModal = true }, Button("Yes"));
+        // Visited right to left: "Behind" first, then the dialog.
+        var (walk, _) = Walk(source, source.Add(Window(), dialog, Button("Behind")));
+        Assert.Equal(["Yes"], walk.Interactive.Select(e => e.Name));
+    }
+
+    [Fact]
+    public void ABranchRepeatingAnAncestorsRuntimeIdIsCut()
+    {
+        var source = new FakeSource();
+        var root = Window();
+        var pane = Pane("Loop");
+        source.Add(root, pane);
+        source.Add(pane, Button("OK"), root with { Name = "Again" });
+        var (walk, _) = Walk(source, root);
+        Assert.Equal(["OK"], walk.Interactive.Select(e => e.Name));
+    }
+
+    [Fact]
+    public void ElementsBelowTheDepthCapAreNotVisited()
+    {
+        var source = new FakeSource();
+        var root = Window();
+        var current = root;
+        for (var depth = 1; depth <= 10; depth++)
+        {
+            var next = depth == 10 ? Button("Deep") : Pane("");
+            source.Add(current, next);
+            current = next;
+        }
+        Assert.Empty(Walk(source, root, maxDepth: 5).Walk.Interactive);
+        // Elements at the cap are visited but their children are not read: depths 0-4 only.
+        Assert.Equal(5, source.ChildrenRead.Count);
+        source.ChildrenRead.Clear();
+        Assert.Single(Walk(source, root, maxDepth: 10).Walk.Interactive);
+        Assert.Equal(10, source.ChildrenRead.Count);
+    }
+
+    [Fact]
+    public void AVeryDeepTreeIsWalkedToTheBottomWithoutRecursion()
+    {
+        const int Depth = 100_000;
+        var source = new FakeSource();
+        var root = Window();
+        var current = root;
+        for (var depth = 1; depth <= Depth; depth++)
+        {
+            var next = depth == Depth ? Button("Bottom") : Pane("");
+            source.Add(current, next);
+            current = next;
+        }
+        // No visit cap and no depth cap, so every level is really walked. A 256 KB stack holds a few thousand frames at
+        // most: a recursive walk would end the test process with a StackOverflow long before the bottom.
+        var budget = new ElementBudget(limit: 500, maxVisits: int.MaxValue);
+        WindowWalk? walk = null;
+        Exception? error = null;
+        var thread = new Thread(() =>
+        {
+            try { walk = new TreeWalker(source, budget, Counter(), maxDepth: int.MaxValue).Walk(root, App); }
+            catch (Exception e) { error = e; }
+        }, maxStackSize: 256 * 1024);
+        thread.Start();
+        thread.Join();
+
+        Assert.Null(error);
+        Assert.Equal(Depth, source.Fetched);
+        Assert.Equal(Depth + 1, source.Released);
+        Assert.Equal("Bottom", Assert.Single(walk!.Interactive).Name);
+        Assert.False(budget.Truncated);
+    }
+
+    [Fact]
+    public void TheBudgetStopsTheWalkAndMarksItTruncated()
+    {
+        var source = new FakeSource();
+        var root = source.Add(Window(), Enumerable.Range(0, 5).Select(i => Button($"B{i}", i * 60)).ToArray());
+        var (walk, budget) = Walk(source, root, limit: 2);
+        Assert.Equal(["B4", "B3"], walk.Interactive.Select(e => e.Name));
+        Assert.True(budget.Truncated);
+        Assert.Equal(source.Fetched + 1, source.Released);
+    }
+
+    [Fact]
+    public void TheVisitCapStopsATreeWithoutOutputElements()
+    {
+        var source = new FakeSource();
+        var root = source.Add(Window(), Enumerable.Range(0, 100).Select(_ => Pane("")).ToArray());
+        var budget = new ElementBudget(limit: 500, maxVisits: 10);
+        new TreeWalker(source, budget, Counter()).Walk(root, App);
+        Assert.True(budget.Truncated);
+        Assert.True(budget.Exhausted);
+        // The window and nine panes, then the walk stops.
+        Assert.Equal(10, source.ChildrenRead.Count);
+        Assert.Equal(source.Fetched + 1, source.Released);
+    }
+
+    [Fact]
+    public void ACancelledWalkStopsAtTheNextElement()
+    {
+        var source = new FakeSource();
+        var root = source.Add(Window(), Button("A", 10), Button("B", 100), Button("C", 200));
+        using var cancellation = new CancellationTokenSource();
+        var visited = new List<string>();
+        source.BeforeChildren = element =>
+        {
+            visited.Add(element.Name);
+            if (element.Name == "C") cancellation.Cancel(); // the first child visited (right to left)
+        };
+        var walker = new TreeWalker(source, new ElementBudget(500), Counter());
+        Assert.ThrowsAny<OperationCanceledException>(() => walker.Walk(root, App, cancellation.Token));
+        Assert.Equal(["App", "C"], visited);
+        Assert.Equal(source.Fetched + 1, source.Released);
+    }
+
+    [Fact]
+    public void AWalkCancelledDuringAWordReadTouchesNeitherTheBudgetNorTheIds()
+    {
+        var source = new FakeSource();
+        var edit = Text("Body");
+        source.Words[edit] = [new WordBox("hello", new ScreenRect(5, 5, 40, 20))];
+        var root = source.Add(Window(), edit);
+        using var cancellation = new CancellationTokenSource();
+        source.BeforeWords = _ => cancellation.Cancel(); // the read is abandoned, then returns
+        var budget = new ElementBudget(500);
+        var ids = 0;
+        var walker = new TreeWalker(source, budget, () => Interlocked.Increment(ref ids));
+        Assert.ThrowsAny<OperationCanceledException>(() => walker.Walk(root, App, cancellation.Token));
+        Assert.Equal((0, 0), (budget.Count, ids));
+        Assert.Equal(source.Fetched + 1, source.Released);
+    }
+
+    [Fact]
+    public void AWalkCancelledDuringAChildrenReadStopsBeforeTheChildren()
+    {
+        var source = new FakeSource();
+        var root = source.Add(Window(), Button("A"));
+        using var cancellation = new CancellationTokenSource();
+        source.BeforeChildren = _ => cancellation.Cancel();
+        var budget = new ElementBudget(500);
+        var walker = new TreeWalker(source, budget, Counter());
+        Assert.ThrowsAny<OperationCanceledException>(() => walker.Walk(root, App, cancellation.Token));
+        Assert.Single(source.ChildrenRead);
+        Assert.Equal(0, budget.Count);
+        Assert.Equal(source.Fetched + 1, source.Released);
+    }
+
+    [Fact]
+    public void AnUnlimitedBudgetStillReadsWords()
+    {
+        // Remaining + 1 would wrap to int.MinValue in int arithmetic and read no words.
+        var source = new FakeSource();
+        var edit = Text("Body");
+        source.Words[edit] = [new WordBox("hello", new ScreenRect(5, 5, 40, 20))];
+        var (walk, _) = Walk(source, source.Add(Window(), edit), limit: int.MaxValue);
+        Assert.Equal(["Body", "hello"], walk.Interactive.Select(e => e.Name));
+    }
+
+    [Fact]
+    public void AnAlreadyCancelledWalkVisitsNothing()
+    {
+        var source = new FakeSource();
+        var root = source.Add(Window(), Button("A"));
+        var walker = new TreeWalker(source, new ElementBudget(500), Counter());
+        Assert.ThrowsAny<OperationCanceledException>(() => walker.Walk(root, App, new CancellationToken(canceled: true)));
+        Assert.Equal((0, 1), (source.Fetched, source.Released));
+    }
+
+    [Fact]
+    public void ADeadElementLosesOnlyItsOwnSubtree()
+    {
+        var source = new FakeSource();
+        var gone = source.Add(Pane("Gone"), Button("Lost"));
+        var root = source.Add(Window(), Button("Kept"), gone);
+        source.BeforeChildren = element => { if (element.Name == "Gone") throw DeadElement; };
+        var (walk, _) = Walk(source, root);
+        Assert.Equal(["Kept"], walk.Interactive.Select(e => e.Name));
+        Assert.Equal(source.Fetched + 1, source.Released);
+    }
+
+    [Fact]
+    public void ATimeoutReadingChildrenEndsTheWalk()
+    {
+        // The caller blocks the hung window on a timeout; it must not be taken for a dead element.
+        var source = new FakeSource();
+        var root = source.Add(Window(), Button("A", 10), source.Add(Pane("Slow"), Button("Inner")));
+        source.BeforeChildren = element => { if (element.Name == "Slow") throw UiaTimeout; };
+        var error = Assert.Throws<COMException>(() => Walk(source, root));
+        Assert.Same(UiaTimeout, error);
+        Assert.Equal(source.Fetched + 1, source.Released);
+    }
+
+    [Fact]
+    public void ATimeoutReadingWordsEndsTheWalkButOtherWordFailuresAreIgnored()
+    {
+        var source = new FakeSource();
+        var edit = Text("Body");
+        source.Words[edit] = [new WordBox("hello", new ScreenRect(5, 5, 40, 20))];
+        var root = source.Add(Window(), edit);
+
+        source.BeforeWords = _ => throw UiaTimeout;
+        Assert.Same(UiaTimeout, Assert.Throws<COMException>(() => Walk(source, root)));
+
+        source.BeforeWords = _ => throw new COMException("no text pattern", unchecked((int)0x80004005));
+        Assert.Equal(["Body"], Walk(source, root).Walk.Interactive.Select(e => e.Name));
+
+        source.BeforeWords = _ => throw DeadElement;
+        Assert.Equal(["Body"], Walk(source, root).Walk.Interactive.Select(e => e.Name));
+    }
+
+    [Fact]
+    public void TextControlsAddOneWordElementPerWordBox()
+    {
+        var source = new FakeSource();
+        var edit = Text("Body");
+        source.Words[edit] = [new WordBox("hello", new ScreenRect(5, 5, 40, 20)), new WordBox("away", new ScreenRect(900, 5, 950, 20)), new WordBox("world", new ScreenRect(45, 5, 90, 20))];
+        var (walk, _) = Walk(source, source.Add(Window(), edit));
+        Assert.Equal(["Body", "hello", "world"], walk.Interactive.Select(e => e.Name));
+        Assert.Equal("Word", walk.Interactive[1].ControlType);
+        Assert.Equal(["Body", "hello", "world"], walk.Window.Children.Select(c => c.Name).Reverse());
+    }
+
+    [Fact]
+    public void PasswordFieldsHideTheirWords()
+    {
+        var source = new FakeSource();
+        var password = Text("Password") with { IsPassword = true };
+        source.Words[password] = [new WordBox("secret", new ScreenRect(5, 5, 40, 20))];
+        var element = Assert.Single(Walk(source, source.Add(Window(), password)).Walk.Interactive);
+        Assert.True(element.Metadata.IsPassword);
+    }
+
+    [Fact]
+    public void ControlStateMetadata()
+    {
+        var source = new FakeSource();
+        var toggle = Button("Bold") with { ToggleState = 1, AcceleratorKey = "Ctrl+B" };
+        var combo = new UiaElementData
+        {
+            Name = "Font", ControlType = TreeConfig.ComboBox, LocalizedControlType = "combo box", LegacyRole = 0x2E, LegacyValue = "",
+            ExpandCollapseState = 0, Bounds = new ScreenRect(0, 50, 100, 70),
+        };
+        var slider = new UiaElementData
+        {
+            Name = "Zoom", ControlType = TreeConfig.Slider, LocalizedControlType = "slider", LegacyRole = 0x33,
+            RangeValue = 100, RangeMinimum = 0, RangeMaximum = 225.005, Bounds = new ScreenRect(0, 80, 100, 90),
+        };
+        var elements = Walk(source, source.Add(Window(), slider, combo, toggle)).Walk.Interactive.ToDictionary(e => e.Name, e => e.Metadata);
+        Assert.Equal(new UiMetadata { ToggleState = "on", Shortcut = "Ctrl+B" }, elements["Bold"]);
+        Assert.Equal(new UiMetadata { Value = "(empty)", ExpandCollapseState = "collapsed" }, elements["Font"]);
+        Assert.Equal(new UiMetadata { Value = "100.0", Minimum = "0.0", Maximum = "225.0" }, elements["Zoom"]);
+    }
+
+    [Fact]
+    public void BrowserGroupsWithAnExpandCollapseStateAreInteractive()
+    {
+        var source = new FakeSource();
+        var group = new UiaElementData
+        {
+            Name = "Menu", ControlType = TreeConfig.Group, LocalizedControlType = "group", ExpandCollapseState = 3, Bounds = new ScreenRect(0, 0, 10, 10),
+        };
+        Assert.Empty(Walk(source, source.Add(Window(), group)).Walk.Interactive);
+        Assert.Single(Walk(source, source.Add(Window(), group), context: App with { IsBrowser = true }).Walk.Interactive);
+    }
+
+    [Fact]
+    public void BoxesAreClippedToTheWindowAndTheScreen()
+    {
+        var source = new FakeSource();
+        var element = Assert.Single(Walk(source, source.Add(Window(), Button("Edge") with { Bounds = new ScreenRect(780, 10, 900, 30) })).Walk.Interactive);
+        Assert.Equal((new ScreenRect(780, 10, 800, 30), new ScreenPoint(790, 20)), (element.Box, element.Center));
+    }
+
+    [Fact]
+    public void ChromiumContentIsListedWithoutReadingItsWords()
+    {
+        var source = new FakeSource();
+        var web = Text("Page") with { ControlType = TreeConfig.Document, LocalizedControlType = "document", FrameworkId = "Chrome" };
+        var native = Text("Notes") with { FrameworkId = "Win32" };
+        source.Words[web] = [new WordBox("hidden", new ScreenRect(5, 5, 40, 20))];
+        source.Words[native] = [new WordBox("hello", new ScreenRect(5, 5, 40, 20))];
+        var (walk, _) = Walk(source, source.Add(Window(), web, native));
+        Assert.Equal([native], source.WordsRead);
+        Assert.Equal(["Notes", "hello", "Page"], walk.Interactive.Select(e => e.Name));
+    }
+
+    [Fact]
+    public void TheWindowIsCheckedBeforeEveryChildrenAndWordRead()
+    {
+        var source = new FakeSource();
+        var edit = Text("Notes");
+        source.Words[edit] = [new WordBox("hello", new ScreenRect(5, 5, 40, 20))];
+        Walk(source, source.Add(Window("App"), edit, Button("A")));
+        // children of the window, A and the edit, plus the edit's words, each right after its check
+        Assert.Equal(["check", "children:App", "check", "children:A", "check", "words:Notes", "check", "children:Notes"], source.Log);
+    }
+
+    [Fact]
+    public void AnUnresponsiveWindowStopsTheWalkAsATimeout()
+    {
+        var source = new FakeSource();
+        var pane = Pane("Content");
+        source.Add(pane, Button("Inner"));
+        var root = source.Add(Window(), pane, Button("A"));
+        var checks = 0;
+        // the window, then A, answer; the pane's check fails
+        source.Responding = () => ++checks < 3 ? WindowResponse.Responding : WindowResponse.NotResponding;
+        var error = Assert.Throws<UiaNotRespondingException>(() => Walk(source, root));
+        Assert.True(ComErrors.IsTimeout(error));
+        Assert.Equal(2, source.ChildrenRead.Count);
+        Assert.DoesNotContain(pane, source.ChildrenRead);
+        Assert.Equal(source.Fetched + 1, source.Released);
+    }
+
+    [Fact]
+    public void AnUnresponsiveWindowIsNotAskedForWords()
+    {
+        var source = new FakeSource();
+        var edit = Text("Notes");
+        source.Words[edit] = [new WordBox("hello", new ScreenRect(5, 5, 40, 20))];
+        var root = source.Add(Window(), edit);
+        var checks = 0;
+        source.Responding = () => ++checks < 2 ? WindowResponse.Responding : WindowResponse.NotResponding; // fails before the words
+        Assert.Throws<UiaNotRespondingException>(() => Walk(source, root));
+        Assert.Empty(source.WordsRead);
+    }
+
+    [Fact]
+    public void AHungWindowStopsTheWalkWithTheHangBreakersTimeout()
+    {
+        var source = new FakeSource { Responding = () => WindowResponse.Hung };
+        Assert.Throws<UiaTimeoutException>(() => Walk(source, source.Add(Window(), Button("A"))));
+        Assert.Empty(source.ChildrenRead);
+    }
+
+    [Fact]
+    public void ACutChildListMarksTheWalk()
+    {
+        var source = new FakeSource();
+        var pane = source.Add(Pane("Long"), Button("A"));
+        var root = source.Add(Window(), pane);
+        Assert.False(Walk(source, root).Walk.ChildrenCapped);
+        source.Capped.Add(pane);
+        Assert.True(Walk(source, root).Walk.ChildrenCapped);
+    }
+
+    [Fact]
+    public void StopWhenEndsTheWalkAtTheFirstMatch()
+    {
+        var source = new FakeSource();
+        var (first, second, third) = (Button("One", 10), Button("Two", 70), Button("Three", 130));
+        var root = source.Add(Window(), first, second, third);
+        var visited = new List<string>();
+        var walk = new TreeWalker(source, new ElementBudget(500), Counter(), stopWhen: element =>
+        {
+            visited.Add(element.Name);
+            return visited.Count == 2;
+        }).Walk(root, App);
+
+        // Children are visited right to left: Three, then Two (the match); One is never read.
+        Assert.Equal(["Three", "Two"], visited);
+        Assert.Equal("Two", walk.Match?.Name);
+        Assert.DoesNotContain(first, source.ChildrenRead);
+        Assert.DoesNotContain(second, source.ChildrenRead);
+        Assert.Equal(source.Fetched + 1, source.Released); // every element read was released, the root included
+    }
+
+    [Fact]
+    public void WithoutAMatchTheWalkIsComplete()
+    {
+        var source = new FakeSource();
+        var walk = new TreeWalker(source, new ElementBudget(500), Counter(), stopWhen: _ => false)
+            .Walk(source.Add(Window(), Button("One", 10), Button("Two", 70)), App);
+        Assert.Null(walk.Match);
+        Assert.Equal(2, walk.Interactive.Count);
+    }
+
+    [Fact]
+    public void DescribeListsOneNodeWithoutWordsOrParentRules()
+    {
+        var edit = Text("Body") with { HasKeyboardFocus = true, LegacyValue = "hello", RuntimeId = "1.2" };
+        var element = TreeWalker.Describe(edit, App with { Handle = 9 });
+        Assert.NotNull(element);
+        Assert.Equal(("Body", "edit", "App"), (element.Name, element.ControlType, element.WindowName));
+        Assert.Equal(("hello", true), (element.Metadata.Value, element.Metadata.HasFocus));
+        Assert.Equal(9, element.Identity!.Window);
+
+        var list = Pane("Files", scrollable: true) with { IsEnabled = false };
+        var scrollable = TreeWalker.Describe(list, App);
+        Assert.Equal("Files", scrollable?.Name);
+        Assert.False(scrollable!.Metadata.IsEnabled);
+
+        Assert.Null(TreeWalker.Describe(Pane("Plain"), App));
+        Assert.Null(TreeWalker.Describe(Text(""), App)); // a nameless edit lists only its words, which Describe never reads
+    }
+}

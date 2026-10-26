@@ -9,7 +9,7 @@ final class ToolRegistryTests: XCTestCase {
         .deletingLastPathComponent()  // Tests
         .deletingLastPathComponent()  // macos
         .deletingLastPathComponent()  // repository root
-        .appendingPathComponent("spec/tools.json")
+        .appendingPathComponent("spec/macos/tools.json")
 
     func text(_ content: [MCP.Tool.Content]) -> String? {
         guard case .text(let text, _, _)? = content.first else { return nil }
@@ -18,7 +18,7 @@ final class ToolRegistryTests: XCTestCase {
 
     func testToolsListMatchesTheSharedContract() async throws {
         let spec = try JSON.parse(Data(contentsOf: Self.specURL))
-        let expected = try XCTUnwrap(spec["tools"]?.arrayValue, "spec/tools.json has no tools array")
+        let expected = try XCTUnwrap(spec["tools"]?.arrayValue, "spec/macos/tools.json has no tools array")
 
         let (client, started) = try await connect(await DesktopMCP.makeRegistry())
         defer { Task { await started.shutdown() } }
@@ -26,9 +26,9 @@ final class ToolRegistryTests: XCTestCase {
 
         let byName = { (tools: [Value]) in Dictionary(uniqueKeysWithValues: tools.map { ($0["name"]?.stringValue ?? "", $0) }) }
         let expectedByName = byName(expected), actualByName = byName(actual)
-        XCTAssertEqual(Set(actualByName.keys), Set(expectedByName.keys), "tool set differs from spec/tools.json")
+        XCTAssertEqual(Set(actualByName.keys), Set(expectedByName.keys), "tool set differs from spec/macos/tools.json")
         for (name, tool) in expectedByName {
-            XCTAssertEqual(actualByName[name], tool, "\(name) differs from spec/tools.json")
+            XCTAssertEqual(actualByName[name], tool, "\(name) differs from spec/macos/tools.json")
         }
     }
 

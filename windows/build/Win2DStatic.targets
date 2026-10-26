@@ -1,0 +1,106 @@
+<Project>
+  <!--
+    Links Win2D statically into a NativeAOT exe, so that Microsoft.Graphics.Canvas.dll is not shipped.
+    Imported by Directory.Build.targets for every project with PublishAot=true and a RuntimeIdentifier (also for
+    build/run); only its targets are publish-only: they hook the NativeAOT publish pipeline, so dotnet build/run/test (JIT) are untouched
+    and keep loading the package's Microsoft.Graphics.Canvas.dll.
+
+      Win2DStaticFetch  downloads the release zip for the RID's platform into the git-ignored cache
+                        (windows/.deps/win2d-static/<version>/<platform>/), checks its SHA-256 and extracts it.
+                        Skipped when the cache already holds the verified libs, or when Win2DStaticDir is set
+                        (offline override: an already extracted folder with winrt.lib, win2dmod.lib and their PDBs;
+                        not hash-verified, which the build reports). The RID check runs in both cases.
+      Win2DStaticLink   adds the link items before ILC runs, and the feature switch that makes
+                        AppRuntime.EnsureInitialized route Microsoft.Graphics.Canvas.* activation to the shim.
+      Win2DStaticStripCanvasDll  drops the package's native Microsoft.Graphics.Canvas.dll from the publish output.
+  -->
+  <Import Project="$(MSBuildThisFileDirectory)Win2DStatic.props" />
+
+  <PropertyGroup>
+    <Win2DStaticPlatform Condition="'$(RuntimeIdentifier)' == 'win-x64'">x64</Win2DStaticPlatform>
+    <Win2DStaticPlatform Condition="'$(RuntimeIdentifier)' == 'win-arm64'">ARM64</Win2DStaticPlatform>
+    <Win2DStaticSha256 Condition="'$(Win2DStaticPlatform)' == 'x64'">$(Win2DStaticSha256_x64)</Win2DStaticSha256>
+    <Win2DStaticSha256 Condition="'$(Win2DStaticPlatform)' == 'ARM64'">$(Win2DStaticSha256_ARM64)</Win2DStaticSha256>
+    <Win2DStaticZipName>win2d-static-$(Win2DStaticVersion)-$(Win2DStaticPlatform).zip</Win2DStaticZipName>
+    <_Win2DStaticUseCache Condition="'$(Win2DStaticDir)' == ''">true</_Win2DStaticUseCache>
+    <Win2DStaticDir Condition="'$(Win2DStaticDir)' == ''">$(Win2DStaticCacheRoot)$(Win2DStaticPlatform)</Win2DStaticDir>
+    <!-- Win2DStaticDir may be a global (command-line) property, which cannot be reassigned: normalise a copy. -->
+    <_Win2DStaticLibDir>$([MSBuild]::EnsureTrailingSlash('$(Win2DStaticDir)'))</_Win2DStaticLibDir>
+    <!-- Feature switch read by DesktopMcp.Desktop.Imaging.Win2DStaticActivation (FeatureSwitchDefinition). -->
+    <Win2DStaticFeatureSwitch>DesktopMcp.Desktop.Win2DStatic</Win2DStaticFeatureSwitch>
+  </PropertyGroup>
+
+  <!-- Runs for the cache and for the offline override alike: the override cannot fix an unsupported RID. -->
+  <Target Name="Win2DStaticCheckPlatform">
+    <Error Condition="'$(Win2DStaticPlatform)' == ''"
+           Text="Static Win2D has no build for RuntimeIdentifier '$(RuntimeIdentifier)' (supported: win-x64, win-arm64)." />
+    <Message Importance="high" Condition="'$(_Win2DStaticUseCache)' != 'true'"
+             Text="Win2D static $(Win2DStaticPlatform): using Win2DStaticDir override $(_Win2DStaticLibDir); these libraries are not hash-verified." />
+  </Target>
+
+  <Target Name="Win2DStaticFetch" Condition="'$(_Win2DStaticUseCache)' == 'true'" DependsOnTargets="Win2DStaticCheckPlatform">
+    <PropertyGroup>
+      <_Win2DStaticStamp>$(_Win2DStaticLibDir).sha256</_Win2DStaticStamp>
+      <_Win2DStaticZip>$(Win2DStaticCacheRoot)$(Win2DStaticZipName)</_Win2DStaticZip>
+      <_Win2DStaticCachedHash />
+      <_Win2DStaticCachedHash Condition="Exists('$(_Win2DStaticStamp)')">$([System.IO.File]::ReadAllText('$(_Win2DStaticStamp)').Trim())</_Win2DStaticCachedHash>
+      <_Win2DStaticCacheValid>false</_Win2DStaticCacheValid>
+      <_Win2DStaticCacheValid Condition="'$(_Win2DStaticCachedHash)' == '$(Win2DStaticSha256)' and
+                                         Exists('$(_Win2DStaticLibDir)winrt.lib') and Exists('$(_Win2DStaticLibDir)winrt.pdb') and
+                                         Exists('$(_Win2DStaticLibDir)win2dmod.lib') and Exists('$(_Win2DStaticLibDir)win2dmod.pdb')">true</_Win2DStaticCacheValid>
+    </PropertyGroup>
+
+    <Message Importance="high" Condition="'$(_Win2DStaticCacheValid)' == 'true'"
+             Text="Win2D static $(Win2DStaticVersion) $(Win2DStaticPlatform): using cache $(_Win2DStaticLibDir)" />
+
+    <!-- Cache miss: fresh download, verify, extract, stamp. -->
+    <RemoveDir Condition="'$(_Win2DStaticCacheValid)' != 'true'" Directories="$(_Win2DStaticLibDir)" />
+    <Delete Condition="'$(_Win2DStaticCacheValid)' != 'true'" Files="$(_Win2DStaticZip)" />
+    <Message Importance="high" Condition="'$(_Win2DStaticCacheValid)' != 'true'"
+             Text="Win2D static $(Win2DStaticVersion) $(Win2DStaticPlatform): downloading $(Win2DStaticReleaseUrl)/$(Win2DStaticZipName)" />
+    <DownloadFile Condition="'$(_Win2DStaticCacheValid)' != 'true'"
+                  SourceUrl="$(Win2DStaticReleaseUrl)/$(Win2DStaticZipName)"
+                  DestinationFolder="$(Win2DStaticCacheRoot)"
+                  DestinationFileName="$(Win2DStaticZipName)"
+                  Retries="2" />
+    <GetFileHash Condition="'$(_Win2DStaticCacheValid)' != 'true'" Files="$(_Win2DStaticZip)" Algorithm="SHA256" HashEncoding="hex">
+      <Output TaskParameter="Hash" PropertyName="_Win2DStaticActualHash" />
+    </GetFileHash>
+    <Delete Condition="'$(_Win2DStaticCacheValid)' != 'true' and '$(_Win2DStaticActualHash)' != '$(Win2DStaticSha256)'" Files="$(_Win2DStaticZip)" />
+    <Error Condition="'$(_Win2DStaticCacheValid)' != 'true' and '$(_Win2DStaticActualHash)' != '$(Win2DStaticSha256)'"
+           Text="SHA-256 mismatch for $(Win2DStaticZipName): expected $(Win2DStaticSha256), got $(_Win2DStaticActualHash). The download was deleted." />
+    <Unzip Condition="'$(_Win2DStaticCacheValid)' != 'true'" SourceFiles="$(_Win2DStaticZip)" DestinationFolder="$(_Win2DStaticLibDir)" />
+    <WriteLinesToFile Condition="'$(_Win2DStaticCacheValid)' != 'true'" File="$(_Win2DStaticStamp)" Lines="$(Win2DStaticSha256)" Overwrite="true" />
+    <Delete Condition="'$(_Win2DStaticCacheValid)' != 'true'" Files="$(_Win2DStaticZip)" />
+  </Target>
+
+  <!-- SetupOSSpecificProps (ILCompiler) turns NativeLibrary into linker inputs and runs before PrepareForILLink
+       (which turns Trim="true" options into ILC feature switches) and WriteIlcRspFileForCompilation (DirectPInvoke). -->
+  <Target Name="Win2DStaticLink" BeforeTargets="SetupOSSpecificProps" DependsOnTargets="Win2DStaticCheckPlatform;Win2DStaticFetch">
+    <Error Condition="!Exists('$(_Win2DStaticLibDir)winrt.lib') or !Exists('$(_Win2DStaticLibDir)win2dmod.lib')"
+           Text="Static Win2D libraries not found in '$(_Win2DStaticLibDir)' (expected winrt.lib and win2dmod.lib, with winrt.pdb and win2dmod.pdb beside them)." />
+    <ItemGroup>
+      <!-- [LibraryImport("Microsoft.Graphics.Canvas")] binds to the linked shim instead of a DLL. -->
+      <DirectPInvoke Include="Microsoft.Graphics.Canvas" />
+      <NativeLibrary Include="$(_Win2DStaticLibDir)win2dmod.lib" />
+      <NativeLibrary Include="$(_Win2DStaticLibDir)winrt.lib" />
+      <NativeLibrary Include="d2d1.lib;d3d11.lib;d3dcompiler.lib;windowscodecs.lib;dwrite.lib;runtimeobject.lib;rpcrt4.lib;shcore.lib;dxgi.lib;delayimp.lib" />
+      <!-- WRL registers activatable classes through linker sections; pull every object in. -->
+      <LinkerArg Include="/WHOLEARCHIVE:&quot;$(_Win2DStaticLibDir)winrt.lib&quot;" />
+      <!-- Delay-load the graphics stack the static Win2D imports, so that runs which never render (headless
+           tool calls, the stdio protocol) do not load it. The DLLs load on the first Win2D call instead.
+           dxgi.dll and windowscodecs.dll are not listed: the linked code imports nothing from them directly
+           (Win2D reaches them through D3D11/COM), and /DELAYLOAD of a DLL without imports warns (LNK4199). -->
+      <LinkerArg Include="/DELAYLOAD:d2d1.dll;/DELAYLOAD:d3d11.dll;/DELAYLOAD:dwrite.dll;/DELAYLOAD:d3dcompiler_47.dll" />
+      <LinkerArg Include="/DELAYLOAD:api-ms-win-shcore-stream-winrt-l1-1-0.dll" />
+      <RuntimeHostConfigurationOption Include="$(Win2DStaticFeatureSwitch)" Value="true" Trim="true" />
+    </ItemGroup>
+  </Target>
+
+  <!-- The package's native DLL is still a copy-local asset (JIT builds need it); keep it out of the publish folder. -->
+  <Target Name="Win2DStaticStripCanvasDll" AfterTargets="ComputeResolvedFilesToPublishList">
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)" Condition="'%(Filename)%(Extension)' == 'Microsoft.Graphics.Canvas.dll'" />
+    </ItemGroup>
+  </Target>
+</Project>

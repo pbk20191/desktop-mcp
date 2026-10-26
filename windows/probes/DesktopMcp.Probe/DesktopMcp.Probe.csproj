@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>desktop-mcp-probe</AssemblyName>
+    <PublishAot>true</PublishAot>
+    <ApplicationManifest>..\..\src\DesktopMcp\app.manifest</ApplicationManifest>
+    <DisableRuntimeMarshalling>true</DisableRuntimeMarshalling>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\DesktopMcp.Desktop\DesktopMcp.Desktop.csproj" />
+  </ItemGroup>
+</Project>

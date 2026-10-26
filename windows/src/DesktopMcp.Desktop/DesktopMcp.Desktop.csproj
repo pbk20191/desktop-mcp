@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>DesktopMcp.Desktop</RootNamespace>
+    <DisableRuntimeMarshalling>true</DisableRuntimeMarshalling>
+    <!-- CsWin32 emits COM interfaces as [GeneratedComInterface] (NativeMethods.json comInterop.useComSourceGenerators) only
+         when it runs as a build task; built-in COM interop does not exist under NativeAOT. -->
+    <CsWin32RunAsBuildTask>true</CsWin32RunAsBuildTask>
+    <!-- Compiles the SDK's Release/Runtime version constants (used by AppRuntime) into this assembly. -->
+    <WindowsAppSdkIncludeVersionInfo>true</WindowsAppSdkIncludeVersionInfo>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Version constants (AppRuntime) and the framework package identity. -->
+    <PackageReference Include="Microsoft.WindowsAppSDK.Runtime" />
+    <!-- Microsoft.UI.Dispatching, Microsoft.UI.Windowing, Microsoft.UI.Win32Interop. -->
+    <PackageReference Include="Microsoft.WindowsAppSDK.InteractiveExperiences" />
+    <PackageReference Include="Microsoft.Graphics.Win2D" />
+    <PackageReference Include="Microsoft.Windows.CsWin32" PrivateAssets="all" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\DesktopMcp.Core\DesktopMcp.Core.csproj" />
+    <InternalsVisibleTo Include="DesktopMcp.Desktop.Tests" />
+    <InternalsVisibleTo Include="desktop-mcp-probe" />
+  </ItemGroup>
+</Project>

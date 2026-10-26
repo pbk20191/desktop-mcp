@@ -1,0 +1,204 @@
+// OS Dynamic Dependencies (appmodel.h, Windows 11 22H2+)
+TryCreatePackageDependency
+AddPackageDependency
+PACKAGE_DEPENDENCY_RANK_DEFAULT
+// Frees the strings the Dynamic Dependencies API allocates on the process heap
+GetProcessHeap
+HeapFree
+// HSTRINGs for the static Win2D activation hook
+WindowsCreateString
+WindowsDeleteString
+// Monitors
+MonitorFromPoint
+// Clipboard (the Win32 fallback for the Clipboard tool)
+OpenClipboard
+CloseClipboard
+EmptyClipboard
+IsClipboardFormatAvailable
+GetClipboardData
+SetClipboardData
+CLIPBOARD_FORMAT
+GlobalAlloc
+GlobalLock
+GlobalUnlock
+GlobalFree
+GlobalSize
+// UI Automation client (spec §6), as [GeneratedComInterface] interfaces
+CUIAutomation8
+IUIAutomation6
+IUIAutomationElement
+IUIAutomationElementArray
+IUIAutomationCacheRequest
+IUIAutomationTreeWalker
+IUIAutomationTextPattern
+IUIAutomationTextRange
+IUIAutomationTextRangeArray
+// Label actions (P3 Decisions 1-4): ScrollIntoView before a click, the Value read-back after Type
+IUIAutomationScrollItemPattern
+IUIAutomationValuePattern
+UIA_PROPERTY_ID
+UIA_PATTERN_ID
+UIA_CONTROLTYPE_ID
+UIA_TEXTATTRIBUTE_ID
+TreeScope
+TextUnit
+TextPatternRangeEndpoint
+SysFreeString
+SafeArrayGetLBound
+SafeArrayGetUBound
+SafeArrayAccessData
+SafeArrayUnaccessData
+SafeArrayDestroy
+SafeArrayGetDim
+SafeArrayGetElemsize
+SafeArrayGetVartype
+GetDpiForSystem
+GetForegroundWindow
+// Displays (DisplayInventory, display selection; upstream uia/core.py:599-828)
+EnumDisplayMonitors
+GetMonitorInfo
+MONITORINFOEXW
+MONITORINFOF_PRIMARY
+EnumDisplayDevices
+DISPLAY_DEVICE_STATE_FLAGS
+EnumDisplaySettings
+ENUM_DISPLAY_SETTINGS_MODE
+GetDpiForMonitor
+GetSystemMetrics
+// Virtual desktops (documented manager; the internal one is declared by hand in VirtualDesktops/)
+VirtualDesktopManager
+IVirtualDesktopManager
+IServiceProvider
+IObjectArray
+CoCreateInstance
+// Top-level windows (upstream desktop/service.py:1068-1245)
+EnumWindows
+IsWindow
+IsWindowVisible
+IsIconic
+IsZoomed
+GetWindowThreadProcessId
+GetClassName
+FindWindow
+GetAncestor
+OpenProcess
+QueryFullProcessImageName
+CloseHandle
+// The walk's responsiveness guard (Decisions 38)
+SendMessageTimeout
+WM_NULL
+IsHungAppWindow
+WIN32_ERROR
+// Capture: the monitor behind a display rectangle
+MonitorFromRect
+// Snapshot: the cursor and the interactive-session check (spec §5)
+GetCursorPos
+ProcessIdToSessionId
+OpenInputDesktop
+GetUserObjectInformation
+CloseDesktop
+// Input injection (SendInput only) and the integrity-level check behind the UIPI diagnosis
+SendInput
+INPUT
+MapVirtualKey
+OpenProcessToken
+GetTokenInformation
+TOKEN_MANDATORY_LABEL
+TOKEN_ELEVATION
+GetSidSubAuthority
+GetSidSubAuthorityCount
+GetCurrentProcess
+WindowFromPoint
+// Desktop input: the double-click time and the non-text clipboard check (Type pastes only over text or nothing)
+GetDoubleClickTime
+CountClipboardFormats
+// Foreground and window placement (Decisions 7 and 32): restore and placement use ShowWindowAsync and SWP_ASYNCWINDOWPOS;
+// the AttachThreadInput sequence, whose calls can block on a hung thread, runs on a dedicated thread bounded at 2 s.
+// That thread's first user32 call creates its message queue, which AttachThreadInput needs.
+SetForegroundWindow
+AttachThreadInput
+AllowSetForegroundWindow
+ASFW_ANY
+ShowWindowAsync
+SetWindowPos
+GetCurrentThreadId
+GetWindowRect
+GetWindowText
+GetWindowTextLength
+// App launch (P3 Decisions 31 and 34): the AppsFolder enumeration on an STA thread, packaged-app activation, ShellExecuteEx
+// of shell:AppsFolder for the other entries, and CreateProcess with the std handles on NUL as the only inherited handle.
+SHCreateItemFromParsingName
+IShellItem
+IEnumShellItems
+BHID_EnumItems
+SIGDN
+CoTaskMemFree
+IApplicationActivationManager
+ApplicationActivationManager
+ACTIVATEOPTIONS
+ShellExecuteEx
+SHELLEXECUTEINFOW
+SEE_MASK_NOCLOSEPROCESS
+SEE_MASK_FLAG_NO_UI
+SEE_MASK_NOASYNC
+GetProcessId
+CreateProcess
+STARTUPINFOEXW
+InitializeProcThreadAttributeList
+UpdateProcThreadAttribute
+DeleteProcThreadAttributeList
+PROCESS_CREATION_FLAGS
+PROC_THREAD_ATTRIBUTE_HANDLE_LIST
+// Overlay layers (P4 Decisions 2, Task 1 verdict UpdateLayeredWindow): a layered, click-through, capture-excluded popup
+// (SetWindowPos and IsWindowVisible are listed above) whose premultiplied pixels go in through a DIB section
+CreateWindowEx
+DestroyWindow
+RegisterClassEx
+UnregisterClass
+DefWindowProc
+UpdateLayeredWindow
+CreateDIBSection
+CreateCompatibleDC
+DeleteDC
+SelectObject
+DeleteObject
+GetDC
+ReleaseDC
+SetWindowDisplayAffinity
+ShowWindow
+BLENDFUNCTION
+WINDOW_EX_STYLE
+WINDOW_DISPLAY_AFFINITY
+// Task 9's layers: topmost without activation, hit-test transparent, alpha blend constants, and window calls made in
+// per-monitor-v2 physical pixels whatever the calling thread's DPI context is
+HWND_TOPMOST
+WM_NCHITTEST
+HTTRANSPARENT
+AC_SRC_OVER
+AC_SRC_ALPHA
+SetThreadDpiAwarenessContext
+DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+// Input monitor (Task 7): the low-level hooks, the Raw Input sink window (message-only, Decisions 23), the missed-key-up
+// sampler and the interactive-session check (the window class calls are listed above)
+SetWindowsHookEx
+UnhookWindowsHookEx
+CallNextHookEx
+WINDOWS_HOOK_ID
+KBDLLHOOKSTRUCT
+MSLLHOOKSTRUCT
+RegisterRawInputDevices
+GetRawInputData
+RAWINPUT
+RAWINPUTHEADER
+RAWINPUTDEVICE
+RAWINPUTDEVICE_FLAGS
+RAW_INPUT_DATA_COMMAND_FLAGS
+GetAsyncKeyState
+WTSQuerySessionInformation
+WTSFreeMemory
+WTS_CONNECTSTATE_CLASS
+WTS_CURRENT_SERVER_HANDLE
+WTS_CURRENT_SESSION
+HWND_MESSAGE
+GetModuleHandle
+WM_INPUT

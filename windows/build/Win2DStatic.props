@@ -1,0 +1,16 @@
+<Project>
+  <!--
+    Statically linked Win2D: the pinned release of the static-lib fork (pbk20191/Win2D, branch static-lib,
+    Win2D-WinUI 1.4.0 at microsoft/Win2D 25680382). Each zip holds winrt.lib, win2dmod.lib, their PDBs and
+    BUILDINFO.txt. The hashes are the release's SHA256SUMS.txt, cross-checked against a fresh download.
+    Win2DStatic.targets downloads, verifies and extracts the zip for the publish RID.
+  -->
+  <PropertyGroup>
+    <Win2DStaticVersion>1.4.0-1</Win2DStaticVersion>
+    <Win2DStaticReleaseUrl>https://github.com/pbk20191/Win2D/releases/download/win2d-static-v$(Win2DStaticVersion)</Win2DStaticReleaseUrl>
+    <Win2DStaticSha256_x64>39dd72db1b38b6a5d89b4d0d15285d6b08615edffbead7fc613b1f93b86cf2b1</Win2DStaticSha256_x64>
+    <Win2DStaticSha256_ARM64>492b2b14e72682823eac5f4975fbf1d69bac756dbe511f6e024828d70057888c</Win2DStaticSha256_ARM64>
+    <!-- Git-ignored download cache; one folder per version and platform. -->
+    <Win2DStaticCacheRoot>$([MSBuild]::NormalizeDirectory('$(MSBuildThisFileDirectory)..', '.deps', 'win2d-static', '$(Win2DStaticVersion)'))</Win2DStaticCacheRoot>
+  </PropertyGroup>
+</Project>
