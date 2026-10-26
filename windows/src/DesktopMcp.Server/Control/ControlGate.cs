@@ -11,13 +11,21 @@ namespace DesktopMcp.Server.Control;
 /// <summary>
 /// Desktop ownership for tool calls (upstream <c>tools/control_notifications.py:204-296</c> <c>on_call_tool</c>; spec §5
 /// serialisation, §7 rules). One lock serialises the calls that use the desktop: with control disabled, every call but
-/// ControlStatus (P3's one input lock, widened); with control enabled, the calls the policy gates, each inside a
-/// <see cref="ControlLease"/>. The gate runs before the tool's own argument checks.
+/// ControlStatus and <see cref="NeverUsesTheDesktop"/> (P3's one input lock, widened); with control enabled, the calls the
+/// policy gates, each inside a <see cref="ControlLease"/>. The gate runs before the tool's own argument checks.
 /// </summary>
 public sealed class ControlGate(IDesktopControl control, TimeProvider time)
 {
     /// <summary>How often a call waiting for the lock re-checks the status (upstream's 0.1 s).</summary>
     public static TimeSpan RecheckInterval { get; } = TimeSpan.FromSeconds(0.1);
+
+    /// <summary>
+    /// The tools that run without the lock when control is disabled (P5 plan, Decisions 22). Scrape only: it fetches a
+    /// URL and may then wait, for as long as the client takes, on a <c>sampling/createMessage</c> answer that is often a
+    /// human approval; holding the one lock for that would block every other call from every session. Under a policy
+    /// that gates Scrape (strict) the policy still decides and the call keeps its lease, as upstream.
+    /// </summary>
+    internal static IReadOnlySet<string> NeverUsesTheDesktop { get; } = new HashSet<string>(StringComparer.Ordinal) { "Scrape" };
 
     private readonly SemaphoreSlim _lock = new(1, 1);
 
@@ -32,6 +40,7 @@ public sealed class ControlGate(IDesktopControl control, TimeProvider time)
         var settings = control.Settings;
         if (!settings.Enabled)
         {
+            if (NeverUsesTheDesktop.Contains(toolName)) return await RunOutsideALeaseAsync(toolName, next, ct).ConfigureAwait(false);
             await _lock.WaitAsync(ct).ConfigureAwait(false);
             try
             {

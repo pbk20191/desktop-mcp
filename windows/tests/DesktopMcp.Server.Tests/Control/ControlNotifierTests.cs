@@ -131,6 +131,37 @@ public class ControlNotifierTests
     }
 
     [Fact]
+    public void RememberingDropsExpiredSessionsWithoutANotification()
+    {
+        // Final review I2: a server whose control state never changes must not keep every session it ever served.
+        var time = new ManualTime();
+        var sessions = new SessionRegistry(time, TimeSpan.FromSeconds(60));
+        var a = new RecordingSession();
+        sessions.Remember("a", a);
+        time.Advance(TimeSpan.FromSeconds(61));
+        sessions.Remember("b", new RecordingSession());
+        Assert.Equal(1, sessions.Count);
+        Assert.Empty(a.Sent);
+        Assert.Equal("b", Assert.Single(sessions.Live()).Key);
+    }
+
+    [Fact]
+    public void RememberingKeepsSessionsWithinTheTtl()
+    {
+        var time = new ManualTime();
+        var sessions = new SessionRegistry(time, TimeSpan.FromSeconds(60));
+        sessions.Remember("a", new RecordingSession());
+        time.Advance(TimeSpan.FromSeconds(60));
+        sessions.Remember("b", new RecordingSession());
+        Assert.Equal(2, sessions.Count);
+        var forever = new SessionRegistry(time, null);
+        forever.Remember("a", new RecordingSession());
+        time.Advance(TimeSpan.FromDays(1));
+        forever.Remember("b", new RecordingSession());
+        Assert.Equal(2, forever.Count);
+    }
+
+    [Fact]
     public async Task NothingIsSentAfterDisposal()
     {
         var rig = new NotifierRig(ttl: null);

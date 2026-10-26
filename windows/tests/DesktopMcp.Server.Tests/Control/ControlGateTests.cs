@@ -95,6 +95,58 @@ public class ControlGateTests
     }
 
     [Fact]
+    public async Task WithControlDisabledAScrapeWaitingOnSamplingDoesNotBlockOtherCalls()
+    {
+        // Final review I1 (Decisions 22): Scrape never uses the desktop, and its sampling may wait on a human approval.
+        var control = new FakeControl { Current = new(ControlState.Disabled, 0, 0, false, "relaxed", 10) };
+        var gate = new ControlGate(control, TimeProvider.System);
+        var sampling = new TaskCompletionSource();
+        var scrape = gate.InvokeAsync("Scrape", null, async _ => { await sampling.Task; return await Ok(); }, default).AsTask();
+        var wait = await gate.InvokeAsync("Wait", null, _ => Ok(), default).AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(wait.IsError ?? false);
+        var second = await gate.InvokeAsync("Scrape", null, _ => Ok(), default).AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(second.IsError ?? false);
+        Assert.False(scrape.IsCompleted);
+        sampling.SetResult();
+        Assert.False((await scrape).IsError ?? false);
+        Assert.Equal(0, control.BegunCalls);
+    }
+
+    [Fact]
+    public async Task WithControlDisabledAScrapeDoesNotWaitForADesktopCall()
+    {
+        var control = new FakeControl { Current = new(ControlState.Disabled, 0, 0, false, "relaxed", 10) };
+        var gate = new ControlGate(control, TimeProvider.System);
+        var release = new TaskCompletionSource();
+        var click = gate.InvokeAsync("Click", null, async _ => { await release.Task; return await Ok(); }, default).AsTask();
+        var scrape = await gate.InvokeAsync("Scrape", null, _ => Ok(), default).AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(scrape.IsError ?? false);
+        Assert.False(click.IsCompleted);
+        release.SetResult();
+        await click;
+    }
+
+    [Fact]
+    public async Task UnderStrictAScrapeKeepsItsLeaseAndTheLock()
+    {
+        // Strict gates Scrape: the policy decides, as upstream, so a pending Scrape holds the lease and other calls wait.
+        var control = new FakeControl { Current = Ready with { Policy = "strict" } };
+        var gate = new ControlGate(control, TimeProvider.System);
+        var sampling = new TaskCompletionSource();
+        ControlLease? inside = null;
+        var scrape = gate.InvokeAsync("Scrape", null, async _ => { inside = ControlCall.Current; await sampling.Task; return await Ok(); }, default).AsTask();
+        var waitRan = false;
+        var wait = gate.InvokeAsync("Wait", null, _ => { waitRan = true; return Ok(); }, default).AsTask();
+        await Task.Delay(150);
+        Assert.NotNull(inside);
+        Assert.False(waitRan);
+        sampling.SetResult();
+        await Task.WhenAll(scrape, wait).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(waitRan);
+        Assert.Equal(2, control.BegunCalls);
+    }
+
+    [Fact]
     public async Task ACancelledCallReleasesTheLockAndEndsTheCall()
     {
         var control = new FakeControl { Current = Ready };

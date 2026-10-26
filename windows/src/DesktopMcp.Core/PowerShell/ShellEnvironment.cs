@@ -17,8 +17,11 @@ public static class ShellEnvironment
     internal const string FallbackPathExt = ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC;.CPL;.PY;.PYW";
     private const string MachineKey = @"SYSTEM\CurrentControlSet\Control\Session Manager\Environment";
 
-    /// <summary>The server's own secrets; both Build overloads keep them out of the child's environment.</summary>
-    internal static IReadOnlyList<string> SecretVariables { get; } = ["DESKTOP_MCP_AUTH_KEY", "DESKTOP_MCP_OAUTH_CLIENT_SECRET"];
+    /// <summary>
+    /// The server's own secrets; both Build overloads keep them out of the child's environment (they may come back from
+    /// HKCU/HKLM), and serve removes them from its own process environment once its options are read.
+    /// </summary>
+    public static IReadOnlyList<string> SecretVariables { get; } = ["DESKTOP_MCP_AUTH_KEY", "DESKTOP_MCP_OAUTH_CLIENT_SECRET"];
 
     public static Dictionary<string, string> Build()
     {

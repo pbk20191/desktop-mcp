@@ -130,7 +130,8 @@ public static class HttpServer
             ? new OAuthServer(clientId, clientSecret, services.Time)
             : null;
         HttpPipeline.Use(app, plan, oauth is null ? null : oauth.ValidateToken);
-        app.MapGet("/health", new RequestDelegate(HttpPipeline.Health));
+        // GET answers HEAD too, as Starlette's GET routes do (and as the OAuth routes here do).
+        app.MapMethods("/health", [HttpMethods.Get, HttpMethods.Head], new RequestDelegate(HttpPipeline.Health));
         if (oauth is not null) OAuthEndpoints.Map(app, oauth, context => Issuer(plan, Volatile.Read(ref boundPort), context));
         MapTransport(app, plan);
 

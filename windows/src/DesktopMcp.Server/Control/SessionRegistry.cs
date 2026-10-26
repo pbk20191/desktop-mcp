@@ -28,7 +28,9 @@ internal sealed class McpServerSession(McpServer server) : IControlSession
 /// <summary>
 /// The sessions that called a tool recently (upstream <c>tools/control_notifications.py</c> sessions; spec §7). A session
 /// is remembered on each tool call and is live until <c>ttl</c> passes without one: <c>null</c> keeps it for ever (stdio
-/// has one session for the process's life), <see cref="TimeSpan.Zero"/> never notifies (stateless transports).
+/// has one session for the process's life), <see cref="TimeSpan.Zero"/> never notifies (stateless transports). Expired
+/// sessions are dropped on every <see cref="Remember"/> as well as on <see cref="Live"/>, so a long-running HTTP server
+/// whose control state never changes does not keep every session it ever served.
 /// </summary>
 public sealed class SessionRegistry(TimeProvider time, TimeSpan? ttl)
 {
@@ -42,7 +44,11 @@ public sealed class SessionRegistry(TimeProvider time, TimeSpan? ttl)
         ArgumentNullException.ThrowIfNull(session);
         if (ttl == TimeSpan.Zero) return;
         var now = time.GetTimestamp();
-        lock (_lock) _sessions[key] = (session, now);
+        lock (_lock)
+        {
+            DropExpired(now);
+            _sessions[key] = (session, now);
+        }
     }
 
     /// <summary>The live sessions; expired ones are dropped.</summary>
@@ -52,15 +58,17 @@ public sealed class SessionRegistry(TimeProvider time, TimeSpan? ttl)
         var now = time.GetTimestamp();
         lock (_lock)
         {
-            if (ttl is { } limit)
-            {
-                List<object>? expired = null;
-                foreach (var (key, entry) in _sessions)
-                    if (time.GetElapsedTime(entry.LastSeen, now) > limit) (expired ??= []).Add(key);
-                if (expired is not null)
-                    foreach (var key in expired) _sessions.Remove(key);
-            }
+            DropExpired(now);
             return [.. _sessions.Select(pair => (pair.Key, pair.Value.Session))];
+        }
+    }
+
+    /// <summary>The number of remembered sessions, expired ones included until the next sweep (for tests).</summary>
+    internal int Count
+    {
+        get
+        {
+            lock (_lock) return _sessions.Count;
         }
     }
 
@@ -75,5 +83,16 @@ public sealed class SessionRegistry(TimeProvider time, TimeSpan? ttl)
     {
         lock (_lock)
             if (_sessions.TryGetValue(key, out var entry) && ReferenceEquals(entry.Session, session)) _sessions.Remove(key);
+    }
+
+    /// <summary>Drops the sessions whose last call is more than <c>ttl</c> before <paramref name="now"/>; the caller holds the lock.</summary>
+    private void DropExpired(long now)
+    {
+        if (ttl is not { } limit) return;
+        List<object>? expired = null;
+        foreach (var (key, entry) in _sessions)
+            if (time.GetElapsedTime(entry.LastSeen, now) > limit) (expired ??= []).Add(key);
+        if (expired is not null)
+            foreach (var key in expired) _sessions.Remove(key);
     }
 }

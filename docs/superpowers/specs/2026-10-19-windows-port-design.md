@@ -197,7 +197,12 @@ fallback, a `MsgWaitForMultipleObjectsEx` loop with its own work queue, was not 
 
 Gated tools (per the control policy, §7) wait on one global desktop lock (`SemaphoreSlim(1)`),
 re-check the control state every 0.1 s while waiting, and keep a 15 s lease after the call ends.
-Ungated tools run concurrently without the lock. With `--no-control`, every call takes the lock.
+Ungated tools run concurrently without the lock. With `--no-control` (or `[control] enabled =
+false`), every call takes the lock except ControlStatus and Scrape: Scrape never uses the desktop,
+and its sampling may wait as long as the client takes to answer, often a human approval, which
+would block every other call from every session (P5 plan, Decisions 22). Under a policy that gates
+Scrape (`strict`), Scrape keeps its lease and the lock for the whole call, sampling wait included,
+as upstream, so other gated calls wait for a pending sampling approval.
 Since P4 the gate's lock replaces P3's input lock (P4 plan, Decisions 4).
 
 ### Cancellation
@@ -405,7 +410,8 @@ with the latest call's `McpServer` as the value; the SDK builds a new `McpServer
 keying by instance would send one copy of each notification per call (P5 plan, Decisions 18).
 Notifications go to every session seen within the TTL: unlimited for stdio, 60 s for HTTP, none
 for stateless Streamable HTTP (as upstream). A session is forgotten on a failed send or after the
-TTL.
+TTL: expired sessions are dropped whenever a call is recorded and whenever notifications go out, so
+a long-running HTTP server whose control state never changes does not keep them.
 
 ## 8. Server layer
 
@@ -434,6 +440,10 @@ TTL.
   both or neither, a non-loopback HTTP bind requires an auth key, OAuth or
   `--allow-insecure-remote` (upstream's "Refusing to bind HTTP transport..." message), port range.
 - `--tools` / `--exclude-tools` filter the registered tools; ControlStatus is always kept.
+- Once serve has read its options, and before any host starts, it removes `DESKTOP_MCP_AUTH_KEY`
+  and `DESKTOP_MCP_OAUTH_CLIENT_SECRET` from its own process environment, so no process it starts
+  (PowerShell, App's `CreateProcess` and `ShellExecuteEx` launches) inherits them (P5 plan,
+  Decisions 20).
 - `[control]` keys: `enabled`, `policy`, `idle_timeout_seconds`, `mouse_takeover_units`,
   `mouse_takeover_pixels` (upstream's), and `process_allowlist`, a TOML array of process image names
   checked before every `SendInput` (default empty: every process; an entry without a `.` also matches
@@ -489,7 +499,8 @@ Kestrel middleware in upstream's order, with the Origin check added (P5 plan, De
    no such header: its client authenticates with `client_secret_post`, for which RFC 6749 §5.2 does
    not require one. Public paths: `/health`, `/.well-known/oauth-authorization-server`,
    `/oauth/register`, `/oauth/authorize`, `/oauth/token`.
-7. MCP endpoints, plus `GET /health` returning `{"status":"ok"}` (Decisions 17).
+7. MCP endpoints, plus `GET /health` returning `{"status":"ok"}` (HEAD answered too, as the OAuth
+   GET routes; Decisions 17).
 
 Every rejection is `application/json` with `X-Content-Type-Options: nosniff`, except the host
 check's plain text.
@@ -524,7 +535,9 @@ into the `Location`.
 - **PowerShell**: `pwsh` on PATH, else `powershell`, else the System32 path; `-NoProfile`,
   `-OutputFormat Text` for 5.1, `-EncodedCommand` (UTF-16LE base64) of the command prefixed with
   the UTF-8 output-encoding preamble; stdin closed, `CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`,
-  working directory `~`, environment rebuilt from HKLM/HKCU with PATH merged, `NO_COLOR=1`. Output
+  working directory `~`, environment rebuilt from HKLM/HKCU with PATH merged and
+  `DESKTOP_MCP_AUTH_KEY`/`DESKTOP_MCP_OAUTH_CLIENT_SECRET` removed after the merge (a value set in
+  HKCU or HKLM too), `NO_COLOR=1`. Output
   is stdout (or stderr when stdout is empty) as `Response: {output}\nStatus Code: {rc}`; timeout
   (default 30 s) gives `Command execution timed out`; the elevation hint is appended on "Access is
   denied" when not elevated.
@@ -763,7 +776,8 @@ P5 results (2026-10-21, Windows build 10.0.26220.9739): default suite 2268 (Core
   flash geometry, the raw-JSON logging) are listed in the P4 plan's "Decisions on upstream ambiguities"
   (`docs/superpowers/plans/2026-10-20-windows-p4-desktop-control.md`).
 - **P5 decisions**: P5's departures from upstream for HTTP (Origin check, trusted-host parsing,
-  OAuth hardening, sampling as raw JSON, the PowerShell child's secrets, no telemetry) are listed in
+  OAuth hardening, sampling as raw JSON, the server's secrets kept from its children, Scrape
+  outside the desktop lock with control disabled, no telemetry) are listed in
   the P5 plan's "Decisions on upstream ambiguities" (`docs/superpowers/plans/2026-10-21-windows-p5-http.md`).
 
 ## 11. Phases

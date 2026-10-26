@@ -29,6 +29,18 @@ public class HttpPipelineTests(ITestOutputHelper output)
     }
 
     [Fact]
+    public async Task HealthAnswersHead()
+    {
+        await using var rig = await HttpRig.StartAsync(Streamable(authKey: "k", allowlist: "10.0.0.0/8"));
+        using var response = await rig.SendAsync(HttpMethod.Head, "/health");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("application/json", response.Content.Headers.ContentType!.MediaType);
+        Assert.Empty(await response.Content.ReadAsByteArrayAsync());
+        using var post = await rig.SendAsync(HttpMethod.Post, "/health");
+        Assert.Equal(HttpStatusCode.MethodNotAllowed, post.StatusCode);
+    }
+
+    [Fact]
     public async Task HealthIsServedForSseToo()
     {
         await using var rig = await HttpRig.StartAsync(new ServeArguments { Transport = "sse" });
