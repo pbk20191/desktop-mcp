@@ -1,0 +1,11 @@
+[package]
+name = "desktop-mcp-parity"
+description = "Black-box tests that drive a desktop-mcp binary, whichever port built it"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+libc.workspace = true

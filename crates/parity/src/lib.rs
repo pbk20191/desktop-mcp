@@ -1,0 +1,241 @@
+//! Black-box tests that drive a desktop-mcp binary, whichever port built it.
+//!
+//! The binary comes from `DESKTOP_MCP_BIN`. The HTTP client here is written by hand over `TcpStream`, so the
+//! suite shares no HTTP code with the server it tests.
+use serde_json::Value;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::path::PathBuf;
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
+
+pub struct ServerUnderTest {
+    child: Option<Child>,
+    pub port: u16,
+    home: PathBuf,
+}
+
+pub struct Reply {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+}
+
+impl Reply {
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers.iter().find(|(key, _)| key.eq_ignore_ascii_case(name)).map(|(_, value)| value.as_str())
+    }
+
+    pub fn json(&self) -> Value {
+        serde_json::from_slice(&self.body).unwrap_or_else(|_| panic!("not JSON (status {}): {:?}", self.status, String::from_utf8_lossy(&self.body)))
+    }
+}
+
+/// The headers a JSON-RPC POST carries. `Accept` names JSON only: with `text/event-stream` in it, an
+/// `initialize` would open a session on the Swift port.
+pub const JSON_HEADERS: &[(&str, &str)] = &[("Accept", "application/json"), ("Content-Type", "application/json")];
+
+static SERVERS: AtomicUsize = AtomicUsize::new(0);
+
+impl ServerUnderTest {
+    /// Starts `$DESKTOP_MCP_BIN serve --transport streamable-http` on a free loopback port, with `HOME` pointing
+    /// at a fresh directory so no user configuration is read or written.
+    pub fn start() -> ServerUnderTest {
+        let binary = std::env::var_os("DESKTOP_MCP_BIN").expect("set DESKTOP_MCP_BIN to the desktop-mcp binary under test");
+        let port = TcpListener::bind("127.0.0.1:0").expect("a free port").local_addr().unwrap().port();
+        let home = std::env::temp_dir().join(format!("desktop-mcp-parity-{}-{}", std::process::id(), SERVERS.fetch_add(1, Ordering::SeqCst)));
+        std::fs::create_dir_all(&home).expect("a scratch HOME");
+        let stderr = std::fs::File::create(home.join("stderr.log")).expect("a log file");
+        let child = Command::new(&binary)
+            .args(["serve", "--transport", "streamable-http", "--host", "127.0.0.1", "--port", &port.to_string()])
+            .env("HOME", &home)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(stderr)
+            .spawn()
+            .unwrap_or_else(|error| panic!("cannot start {binary:?}: {error}"));
+        let server = ServerUnderTest { child: Some(child), port, home };
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while TcpStream::connect(("127.0.0.1", port)).is_err() {
+            assert!(Instant::now() < deadline, "the server did not listen within 15 s:\n{}", server.log());
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        server
+    }
+
+    /// What the server has written to stderr.
+    pub fn log(&self) -> String {
+        std::fs::read_to_string(self.home.join("stderr.log")).unwrap_or_default()
+    }
+
+    /// Whether the binary is the Rust port (it says so when it starts).
+    pub fn is_rust(&self) -> bool {
+        self.log().contains("(rust)")
+    }
+
+    pub fn connect(&self) -> Connection {
+        let stream = TcpStream::connect(("127.0.0.1", self.port)).expect("connect");
+        stream.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        Connection { stream }
+    }
+
+    /// One request on its own connection.
+    pub fn request(&self, method: &str, path: &str, headers: &[(&str, &str)], body: &[u8]) -> Reply {
+        self.connect().request(method, path, headers, body)
+    }
+
+    pub fn post(&self, message: &Value) -> Reply {
+        self.request("POST", "/mcp", JSON_HEADERS, message.to_string().as_bytes())
+    }
+
+    pub fn pid(&self) -> u32 {
+        self.child.as_ref().expect("running").id()
+    }
+
+    /// How often the kernel has woken the server process from idle (timers and interrupts) since it started.
+    pub fn wakeups(&self) -> u64 {
+        let mut usage: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
+        let status = unsafe { libc::proc_pid_rusage(self.pid() as i32, libc::RUSAGE_INFO_V2, &mut usage as *mut _ as *mut libc::rusage_info_t) };
+        assert_eq!(status, 0, "proc_pid_rusage failed");
+        usage.ri_pkg_idle_wkups + usage.ri_interrupt_wkups
+    }
+
+    /// The number of threads in the server process.
+    pub fn threads(&self) -> i32 {
+        let mut info: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_taskinfo>() as i32;
+        let written = unsafe { libc::proc_pidinfo(self.pid() as i32, libc::PROC_PIDTASKINFO, 0, &mut info as *mut _ as *mut libc::c_void, size) };
+        assert_eq!(written, size, "proc_pidinfo failed");
+        info.pti_threadnum
+    }
+
+    /// Sends SIGTERM and waits for the exit status.
+    pub fn terminate(mut self) -> ExitStatus {
+        let mut child = self.child.take().expect("running");
+        unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(status) = child.try_wait().expect("wait") {
+                return status;
+            }
+            if Instant::now() > deadline {
+                let _ = child.kill();
+                panic!("the server did not exit within 10 s of SIGTERM");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
+impl Drop for ServerUnderTest {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        let _ = std::fs::remove_dir_all(&self.home);
+    }
+}
+
+/// One TCP connection, for several requests in a row.
+pub struct Connection {
+    stream: TcpStream,
+}
+
+impl Connection {
+    pub fn request(&mut self, method: &str, path: &str, headers: &[(&str, &str)], body: &[u8]) -> Reply {
+        self.send(method, path, headers, body, usize::MAX);
+        self.read_reply()
+    }
+
+    /// Writes a request, the body in pieces of `chunk` bytes with a short pause between them.
+    pub fn send(&mut self, method: &str, path: &str, headers: &[(&str, &str)], body: &[u8], chunk: usize) {
+        let mut head = format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\n", body.len());
+        for (name, value) in headers {
+            head += &format!("{name}: {value}\r\n");
+        }
+        head += "\r\n";
+        self.stream.write_all(head.as_bytes()).expect("write the head");
+        for piece in body.chunks(chunk.max(1)) {
+            self.stream.write_all(piece).expect("write the body");
+            if chunk != usize::MAX {
+                self.stream.flush().unwrap();
+                std::thread::sleep(Duration::from_micros(200));
+            }
+        }
+    }
+
+    /// Everything the server sends until it closes the connection.
+    pub fn read_to_close(&mut self) -> Vec<u8> {
+        let mut received = Vec::new();
+        let _ = self.stream.read_to_end(&mut received);
+        received
+    }
+
+    pub fn read_reply(&mut self) -> Reply {
+        let mut buffer = Vec::new();
+        let head_end = loop {
+            if let Some(position) = find(&buffer, b"\r\n\r\n") {
+                break position;
+            }
+            let mut chunk = [0u8; 4096];
+            let count = self.stream.read(&mut chunk).expect("read the reply head");
+            assert!(count > 0, "the connection closed before a reply: {:?}", String::from_utf8_lossy(&buffer));
+            buffer.extend_from_slice(&chunk[..count]);
+        };
+        let head = String::from_utf8_lossy(&buffer[..head_end]).into_owned();
+        let mut lines = head.split("\r\n");
+        let status: u16 = lines.next().and_then(|line| line.split(' ').nth(1)).and_then(|code| code.parse().ok()).expect("a status line");
+        let headers: Vec<(String, String)> = lines.filter_map(|line| line.split_once(':')).map(|(name, value)| (name.trim().to_string(), value.trim().to_string())).collect();
+        let mut rest = buffer[head_end + 4..].to_vec();
+        let header = |name: &str| headers.iter().find(|(key, _)| key.eq_ignore_ascii_case(name)).map(|(_, value)| value.clone());
+        let body = if header("transfer-encoding").is_some_and(|value| value.eq_ignore_ascii_case("chunked")) {
+            self.read_chunked(&mut rest)
+        } else {
+            let length: usize = header("content-length").and_then(|value| value.parse().ok()).unwrap_or(0);
+            while rest.len() < length {
+                let mut chunk = [0u8; 16384];
+                let count = self.stream.read(&mut chunk).expect("read the reply body");
+                assert!(count > 0, "the connection closed inside the body");
+                rest.extend_from_slice(&chunk[..count]);
+            }
+            rest.truncate(length);
+            rest
+        };
+        Reply { status, headers, body }
+    }
+
+    fn read_chunked(&mut self, pending: &mut Vec<u8>) -> Vec<u8> {
+        let mut body = Vec::new();
+        loop {
+            let line_end = loop {
+                if let Some(position) = find(pending, b"\r\n") {
+                    break position;
+                }
+                self.fill(pending);
+            };
+            let size = usize::from_str_radix(String::from_utf8_lossy(&pending[..line_end]).split(';').next().unwrap().trim(), 16).expect("a chunk size");
+            pending.drain(..line_end + 2);
+            while pending.len() < size + 2 {
+                self.fill(pending);
+            }
+            body.extend_from_slice(&pending[..size]);
+            pending.drain(..size + 2);
+            if size == 0 {
+                return body;
+            }
+        }
+    }
+
+    fn fill(&mut self, pending: &mut Vec<u8>) {
+        let mut chunk = [0u8; 16384];
+        let count = self.stream.read(&mut chunk).expect("read a chunk");
+        assert!(count > 0, "the connection closed inside a chunked body");
+        pending.extend_from_slice(&chunk[..count]);
+    }
+}
+
+fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|window| window == needle)
+}

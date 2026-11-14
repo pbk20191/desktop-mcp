@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/macos", "crates/cli", "crates/parity"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+desktop-mcp-core = { path = "crates/core" }
+desktop-mcp-macos = { path = "crates/macos" }
+rmcp = { version = "=3.10.0", default-features = false, features = ["server", "macros", "local"] }
+tokio = { version = "1", features = ["rt", "time", "sync", "macros"] }
+tokio-util = "0.7"
+hyper = { version = "1", features = ["http1", "server"] }
+http = "1"
+http-body = "1"
+http-body-util = "0.1"
+bytes = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+block2 = "0.6"
+dispatch2 = { version = "0.3", default-features = false, features = ["std", "block2"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFRunLoop", "CFDate"] }
+libc = "0.2"

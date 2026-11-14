@@ -1,0 +1,19 @@
+[package]
+name = "desktop-mcp-cli"
+description = "The desktop-mcp command"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "desktop-mcp"
+path = "src/main.rs"
+
+[dependencies]
+desktop-mcp-core.workspace = true
+clap.workspace = true
+tokio.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+desktop-mcp-macos.workspace = true

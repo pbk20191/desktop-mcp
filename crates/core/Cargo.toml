@@ -1,0 +1,19 @@
+[package]
+name = "desktop-mcp-core"
+description = "The platform-independent part of desktop-mcp: MCP server, HTTP app, guest runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rmcp.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+hyper.workspace = true
+http.workspace = true
+http-body.workspace = true
+http-body-util.workspace = true
+bytes.workspace = true
+serde.workspace = true
+serde_json.workspace = true

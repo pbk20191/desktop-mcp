@@ -1,0 +1,134 @@
+//! The MCP server: the tools, declared with rmcp's macros, over a platform's [`Desktop`].
+use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::handler::server::wrapper::Parameters;
+use rmcp::model::{CallToolResult, ClientJsonRpcMessage, ContentBlock, Implementation, JsonRpcMessage, ServerCapabilities, ServerConfig, ServerJsonRpcMessage};
+use rmcp::transport::OneshotTransport;
+use rmcp::{schemars, tool, tool_handler, tool_router, RoleServer, ServerHandler};
+use std::future::Future;
+use std::pin::Pin;
+use std::rc::Rc;
+use std::time::Duration;
+use tokio_util::sync::CancellationToken;
+
+/// The tools' behaviour, implemented per platform. Lives on the main thread and is not `Send`.
+pub trait Desktop: 'static {
+    /// Completes after `duration`, measured exactly (not by the guest runtime's coarse timers).
+    fn sleep(&self, duration: Duration) -> Pin<Box<dyn Future<Output = ()>>>;
+}
+
+/// One MCP server. Stateless requests get a fresh one each; a session keeps one.
+pub struct Server {
+    tool_router: ToolRouter<Self>,
+    desktop: Rc<dyn Desktop>,
+}
+
+impl Server {
+    /// A server offering the tools named in `tools`.
+    pub fn new(desktop: Rc<dyn Desktop>, tools: &[&str]) -> Server {
+        let mut tool_router = Self::tool_router();
+        for tool in tool_router.list_all() {
+            if !tools.contains(&tool.name.as_ref()) {
+                tool_router.remove_route(&tool.name);
+            }
+        }
+        Server { tool_router, desktop }
+    }
+}
+
+/// A tool's failure, shown to the model as an error result (not a protocol error).
+struct ToolError(String);
+
+/// Runs a tool's work until it finishes or its request is cancelled (`notifications/cancelled`, or the client
+/// went away), and turns the outcome into the result the model sees. Cancellation drops the work on the spot,
+/// so whatever it holds (a child process, a timer) is released then.
+async fn run_tool(tool: &str, cancellation: CancellationToken, work: impl Future<Output = Result<String, ToolError>>) -> CallToolResult {
+    tokio::select! {
+        outcome = work => match outcome {
+            Ok(text) => CallToolResult::success(vec![ContentBlock::text(text)]),
+            Err(ToolError(message)) => CallToolResult::error(vec![ContentBlock::text(format!("Error executing tool {tool}: {message}"))]),
+        },
+        _ = cancellation.cancelled() => CallToolResult::error(vec![ContentBlock::text("Cancelled.")]),
+    }
+}
+
+#[derive(Clone, Copy, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum WaitUntil {
+    AppRunning,
+    AppQuit,
+    Window,
+    WindowGone,
+    Element,
+}
+
+impl WaitUntil {
+    fn name(self) -> &'static str {
+        match self {
+            WaitUntil::AppRunning => "app_running",
+            WaitUntil::AppQuit => "app_quit",
+            WaitUntil::Window => "window",
+            WaitUntil::WindowGone => "window_gone",
+            WaitUntil::Element => "element",
+        }
+    }
+}
+
+fn ten() -> i64 {
+    10
+}
+
+#[allow(dead_code)] // `timeout`, `app`, `title` and `role` belong to the conditions that are not ported yet
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct WaitArgs {
+    duration: Option<i64>,
+    until: Option<WaitUntil>,
+    #[serde(default = "ten")]
+    timeout: i64,
+    app: Option<String>,
+    title: Option<String>,
+    role: Option<String>,
+}
+
+#[tool_router]
+impl Server {
+    #[tool(
+        name = "Wait",
+        description = "Waits a fixed 'duration' in seconds, or with 'until' waits for a condition, checking with backoff until it holds or 'timeout' seconds (default 10) pass, then fails. 'duration' is ignored with 'until'. Conditions: 'app_running' / 'app_quit' ('app': name or bundle id); 'window' / 'window_gone' ('app' and/or 'title', a case-insensitive substring; 'window' returns the matching Window list lines); 'element' ('title' and/or 'role', an exact AX role such as AXButton, in 'app' or else the app owning the menu bar; title matches title, description or value; returns '<role> \"<title>\" at [x,y]', the centre in Click coordinates). Window and element conditions need Accessibility.",
+        annotations(title = "Wait", read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
+    )]
+    async fn wait(&self, Parameters(args): Parameters<WaitArgs>, cancellation: CancellationToken) -> CallToolResult {
+        run_tool("Wait", cancellation, self.wait_for(args)).await
+    }
+}
+
+impl Server {
+    async fn wait_for(&self, args: WaitArgs) -> Result<String, ToolError> {
+        if let Some(until) = args.until {
+            return Err(ToolError(format!("Wait until '{}' is not available in this build.", until.name())));
+        }
+        let duration = args.duration.ok_or_else(|| ToolError("Missing required argument 'duration'".to_string()))?;
+        self.desktop.sleep(Duration::from_secs(duration.max(0) as u64)).await;
+        Ok(format!("Waited for {duration} seconds."))
+    }
+}
+
+#[tool_handler(router = self.tool_router)]
+impl ServerHandler for Server {
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build()).with_server_info(Implementation::new("desktop-mcp", env!("CARGO_PKG_VERSION")))
+    }
+}
+
+/// Answers one JSON-RPC message with a fresh service, the way rmcp's own Streamable HTTP server implements
+/// stateless mode: a one-message transport and no initialize handshake. `None` for notifications and responses,
+/// which have nothing to act on without a session. Dropping the future ends the service.
+pub async fn answer_stateless(server: Server, message: ClientJsonRpcMessage) -> Option<ServerJsonRpcMessage> {
+    if !matches!(message, JsonRpcMessage::Request(_)) {
+        return None;
+    }
+    let (transport, mut answers) = OneshotTransport::<RoleServer>::new(message);
+    // Dropping this future (the client went away) drops the service, which cancels the request's token;
+    // the tool watches that token (`run_tool`) and stops.
+    let _service = rmcp::service::serve_directly(server, transport, None);
+    answers.recv().await
+}

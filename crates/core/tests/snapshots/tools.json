@@ -1,0 +1,71 @@
+[
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Wait"
+    },
+    "description": "Waits a fixed 'duration' in seconds, or with 'until' waits for a condition, checking with backoff until it holds or 'timeout' seconds (default 10) pass, then fails. 'duration' is ignored with 'until'. Conditions: 'app_running' / 'app_quit' ('app': name or bundle id); 'window' / 'window_gone' ('app' and/or 'title', a case-insensitive substring; 'window' returns the matching Window list lines); 'element' ('title' and/or 'role', an exact AX role such as AXButton, in 'app' or else the app owning the menu bar; title matches title, description or value; returns '<role> \"<title>\" at [x,y]', the centre in Click coordinates). Window and element conditions need Accessibility.",
+    "inputSchema": {
+      "$defs": {
+        "WaitUntil": {
+          "enum": [
+            "app_running",
+            "app_quit",
+            "window",
+            "window_gone",
+            "element"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "app": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "duration": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "role": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timeout": {
+          "default": 10,
+          "format": "int64",
+          "type": "integer"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "until": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WaitUntil"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "Wait"
+  }
+]

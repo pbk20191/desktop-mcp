@@ -10,7 +10,8 @@ Only the command name, the config directory (`~/.desktop-mcp`) and the environme
 | Port | Port of | Status | Language |
 |---|---|---|---|
 | [`macos/`](macos/) + root `Package.swift` | [CursorTouch/MacOS-MCP](https://github.com/CursorTouch/MacOS-MCP) | working, 18 tools (plus opt-in `OCR`) | Swift 6 (SwiftPM) |
-| `windows/` | [CursorTouch/Windows-MCP](https://github.com/CursorTouch/Windows-MCP) | planned | to be decided (C# NativeAOT or Rust) |
+| [`crates/`](crates/) + root `Cargo.toml` | the same, sharing its core with the Windows port | in progress: stateless Streamable HTTP and one tool (`Wait` by duration) | Rust |
+| `windows/` | [CursorTouch/Windows-MCP](https://github.com/CursorTouch/Windows-MCP) | planned | Rust, on the core crate under `crates/` |
 | `linux/` | none upstream | idea | to be decided (Rust) |
 
 ## Layout
@@ -19,10 +20,13 @@ Only the command name, the config directory (`~/.desktop-mcp`) and the environme
 desktop-mcp/
   Package.swift     # the macOS port's SwiftPM manifest; targets point into macos/, so
   Package.resolved  # `swift build`, `swift test` and Xcode work from the repository root
+  Cargo.toml        # the Rust ports' workspace
+  crates/           # core (no platform code), macos, cli, parity (black-box tests for any port's binary)
+  scripts/parity.sh # runs the parity suite against the Swift and the Rust binary
   spec/
     tools.json      # the tool contract every port must match (names, parameters, descriptions)
-  macos/            # Sources, Tests, README, scripts/build-release.sh (output: macos/dist/)
-  windows/          # (planned; its own solution or Cargo workspace)
+  macos/            # the Swift port: Sources, Tests, README, scripts/build-release.sh (output: macos/dist/)
+  windows/          # (planned)
   linux/            # (idea)
 ```
 
@@ -33,7 +37,9 @@ with the port (`macos-v0.1.0`), since the upstream projects version independentl
 
 `spec/tools.json` is the single description of the tools: it is what `tools/list` must return,
 byte for byte apart from ordering. The macOS port generates it today and has a test that fails
-when its own `tools/list` drifts from it; every new port gets the same test. Platform-specific
+when its own `tools/list` drifts from it; every new port gets the same test. The Rust port is the
+exception: its SDK's macros write the tool schemas, so its `tools/list` is not compared with this
+file (it pins its own output with a snapshot test instead). Platform-specific
 behaviour (what a key name means, which windows can be switched to) belongs in each port's
 README, not in the contract.
 
@@ -51,8 +57,9 @@ Tools split into two groups, which matters for headless use:
 - No runtime dependencies. Build-time packages compiled into the binary are fine.
 - One root task per process; servers and signal handling are its children, and the
   process exits by returning, never by calling `exit()`.
-- System frameworks over hand-rolled parsers where the platform has them, and the official MCP Swift SDK
-  for the MCP protocol itself.
+- System frameworks over hand-rolled parsers where the platform has them, and the official MCP SDK of
+  the port's language for the MCP protocol itself.
+- No thread pool of the server's own: threads belong to the system (libdispatch on macOS).
 - Telemetry is disabled: the upstream sends usage events to its own PostHog project, and this port sends nothing.
 
 ## License
