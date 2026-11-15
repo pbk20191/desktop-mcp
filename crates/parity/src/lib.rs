@@ -149,26 +149,40 @@ impl ServerUnderTest {
     /// Starts the server as `launch` describes and waits until it listens.
     pub fn launch(launch: &Launch) -> ServerUnderTest {
         let binary = std::env::var_os("DESKTOP_MCP_BIN").expect("set DESKTOP_MCP_BIN to the desktop-mcp binary under test");
-        let port = TcpListener::bind("127.0.0.1:0").expect("a free port").local_addr().unwrap().port();
-        let home = scratch_home(launch.config);
-        let stderr = std::fs::File::create(home.join("stderr.log")).expect("a log file");
-        let child = Command::new(&binary)
-            .args(["serve", "--transport", "streamable-http", "--host", "127.0.0.1", "--port", &port.to_string()])
-            .args(launch.options)
-            .env("HOME", &home)
-            .envs(launch.env.iter().copied())
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(stderr)
-            .spawn()
-            .unwrap_or_else(|error| panic!("cannot start {binary:?}: {error}"));
-        let server = ServerUnderTest { child: Some(child), port, home };
-        let deadline = Instant::now() + Duration::from_secs(15);
-        while TcpStream::connect(("127.0.0.1", port)).is_err() {
-            assert!(Instant::now() < deadline, "the server did not listen within 15 s:\n{}", server.log());
-            std::thread::sleep(Duration::from_millis(20));
+        // The port is free when chosen but not reserved: a test starting at the same moment can take it first. A
+        // server that cannot listen for that reason is started again on another port.
+        for _attempt in 0..5 {
+            let port = TcpListener::bind("127.0.0.1:0").expect("a free port").local_addr().unwrap().port();
+            let home = scratch_home(launch.config);
+            let stderr = std::fs::File::create(home.join("stderr.log")).expect("a log file");
+            let child = Command::new(&binary)
+                .args(["serve", "--transport", "streamable-http", "--host", "127.0.0.1", "--port", &port.to_string()])
+                .args(launch.options)
+                .env("HOME", &home)
+                .envs(launch.env.iter().copied())
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(stderr)
+                .spawn()
+                .unwrap_or_else(|error| panic!("cannot start {binary:?}: {error}"));
+            let mut server = ServerUnderTest { child: Some(child), port, home };
+            let deadline = Instant::now() + Duration::from_secs(15);
+            loop {
+                if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                    return server;
+                }
+                if let Some(status) = server.child.as_mut().unwrap().try_wait().expect("the server's status") {
+                    let log = server.log();
+                    if log.contains("Address already in use") || log.contains("error 48") {
+                        break;
+                    }
+                    panic!("the server exited ({status}) before listening:\n{log}");
+                }
+                assert!(Instant::now() < deadline, "the server did not listen within 15 s:\n{}", server.log());
+                std::thread::sleep(Duration::from_millis(20));
+            }
         }
-        server
+        panic!("no free port after 5 attempts");
     }
 
     /// What the server has written to stderr.
