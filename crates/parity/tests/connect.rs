@@ -75,3 +75,52 @@ fn a_socket_nobody_serves_fails() {
     assert!(!status.success());
     assert!(stderr.contains("desktop-mcp connect:"), "{stderr}");
 }
+
+#[test]
+fn connect_over_http() {
+    let server = ServerUnderTest::start();
+    let url = format!("http://127.0.0.1:{}/mcp", server.port);
+    let (status, lines) = run_stdio(&["connect", "--url", &url], &conversation());
+    assert_eq!(status.code(), Some(0), "{status:?}");
+    check_answers(&lines);
+}
+
+#[test]
+fn connect_over_http_sends_the_key() {
+    let server = ServerUnderTest::start_with(&["--auth-key", "s3cret"]);
+    let url = format!("http://127.0.0.1:{}/mcp", server.port);
+    let (status, lines) = run_stdio(&["connect", "--url", &url, "--auth-key", "s3cret"], &conversation());
+    assert_eq!(status.code(), Some(0));
+    check_answers(&lines);
+    let (_, refused) = run_stdio(&["connect", "--url", &url, "--auth-key", "wrong"], &conversation()[..1]);
+    let message = refused[0]["error"]["message"].as_str().unwrap_or_default();
+    assert_eq!(refused[0]["id"], 1);
+    assert!(message.contains("HTTP 401"), "{message}");
+}
+
+#[test]
+fn an_unreachable_server_answers_with_errors() {
+    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port(); // free, nobody listens
+    let (status, lines) = run_stdio(&["connect", "--url", &format!("http://127.0.0.1:{port}/mcp")], &conversation());
+    assert_eq!(status.code(), Some(0), "the bridge ends with its input");
+    let errors: Vec<&Value> = lines.iter().filter(|line| line["error"]["code"] == -32000).collect();
+    assert_eq!(errors.len(), 2, "both requests are answered with an error, the notification is not: {lines:?}");
+    assert!(errors[0]["error"]["message"].as_str().unwrap().starts_with("desktop-mcp connect: "));
+}
+
+#[test]
+fn a_refused_socket_falls_back_to_the_agents_http_address() {
+    let server = ServerUnderTest::start();
+    let missing = socket_path("gone");
+    let plist = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>ProgramArguments</key><array><string>/x</string><string>serve</string><string>--transport</string><string>streamable-http</string><string>--host</string><string>127.0.0.1</string><string>--port</string><string>{}</string><string>--socket</string><string>{}</string></array>
+</dict></plist>"#,
+        server.port,
+        missing.display()
+    );
+    let (status, lines) = run_stdio_with(&["connect"], &conversation(), &[("Library/LaunchAgents/com.desktop-mcp.server.plist", &plist)]);
+    assert_eq!(status.code(), Some(0), "{status:?}");
+    check_answers(&lines);
+}

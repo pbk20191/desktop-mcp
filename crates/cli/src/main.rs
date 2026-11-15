@@ -226,8 +226,21 @@ fn run_connect(route: Route) -> ExitCode {
             },
         },
     };
-    log(&format!("desktop-mcp connect: HTTP ({}) is not available in this build yet", target.url));
-    ExitCode::FAILURE
+    let Ok(uri) = target.url.parse::<http::Uri>() else {
+        eprintln!("Error: --url must be an absolute http(s) URL.");
+        return ExitCode::from(64);
+    };
+    let tls = uri.scheme_str() == Some("https");
+    let host = uri.host().unwrap_or("127.0.0.1").trim_start_matches('[').trim_end_matches(']').to_string();
+    let port = uri.port_u16().unwrap_or(if tls { 443 } else { 80 });
+    let bridge = std::rc::Rc::new(desktop_mcp_core::http_bridge::HttpBridge::new(target, desktop_mcp_macos::nw::NwConnector { host, port, tls }));
+    main_loop::run(|main_loop| async move {
+        // The bridge's GET listener waits a second between attempts on a tokio timer.
+        let activity = desktop_mcp_core::guest::Activity::new(main_loop);
+        let _alive = activity.connection();
+        desktop_mcp_core::http_bridge::run_http_bridge(FdIo::stdio(), bridge).await;
+    });
+    ExitCode::SUCCESS
 }
 
 #[cfg(not(target_os = "macos"))]

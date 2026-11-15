@@ -15,6 +15,7 @@ desktop-mcp-core.workspace = true
 clap.workspace = true
 tokio.workspace = true
 libc.workspace = true
+http.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 desktop-mcp-macos.workspace = true

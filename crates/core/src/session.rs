@@ -225,7 +225,8 @@ impl Sessions {
         self.sessions.borrow().get(id).filter(|session| !session.over_budget()).cloned()
     }
 
-    pub(crate) fn end(&self, id: &str) {
+    /// Ends a session as `DELETE` would: its calls are cancelled and its streams end.
+    pub fn end(&self, id: &str) {
         let session = self.sessions.borrow_mut().remove(id);
         if let Some(session) = session {
             session.end();

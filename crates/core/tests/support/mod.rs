@@ -258,3 +258,116 @@ impl hyper::rt::Write for Pipe {
         std::task::Poll::Ready(Ok(()))
     }
 }
+
+/// One direction of an in-memory connection.
+#[derive(Default)]
+struct Lane {
+    bytes: std::collections::VecDeque<u8>,
+    closed: bool,
+    reader: Option<std::task::Waker>,
+}
+
+/// One end of an in-memory connection: reads what the other end writes.
+pub struct Duplex {
+    incoming: Rc<RefCell<Lane>>,
+    outgoing: Rc<RefCell<Lane>>,
+}
+
+/// Two connected ends.
+pub fn duplex() -> (Duplex, Duplex) {
+    let (a, b) = (Rc::new(RefCell::new(Lane::default())), Rc::new(RefCell::new(Lane::default())));
+    (Duplex { incoming: a.clone(), outgoing: b.clone() }, Duplex { incoming: b, outgoing: a })
+}
+
+impl Drop for Duplex {
+    fn drop(&mut self) {
+        let mut lane = self.outgoing.borrow_mut();
+        lane.closed = true;
+        if let Some(waker) = lane.reader.take() {
+            waker.wake();
+        }
+    }
+}
+
+impl desktop_mcp_core::io::Peer for Duplex {
+    fn peer_address(&self) -> Option<std::net::IpAddr> {
+        Some(std::net::IpAddr::from([127, 0, 0, 1]))
+    }
+}
+
+impl hyper::rt::Read for Duplex {
+    fn poll_read(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>, mut buffer: hyper::rt::ReadBufCursor<'_>) -> std::task::Poll<std::io::Result<()>> {
+        let mut lane = self.incoming.borrow_mut();
+        if lane.bytes.is_empty() {
+            if lane.closed {
+                return std::task::Poll::Ready(Ok(()));
+            }
+            lane.reader = Some(cx.waker().clone());
+            return std::task::Poll::Pending;
+        }
+        let count = lane.bytes.len().min(buffer.remaining());
+        let bytes: Vec<u8> = lane.bytes.drain(..count).collect();
+        buffer.put_slice(&bytes);
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+impl hyper::rt::Write for Duplex {
+    fn poll_write(self: Pin<&mut Self>, _cx: &mut std::task::Context<'_>, bytes: &[u8]) -> std::task::Poll<std::io::Result<usize>> {
+        let mut lane = self.outgoing.borrow_mut();
+        if lane.closed {
+            return std::task::Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()));
+        }
+        lane.bytes.extend(bytes);
+        if let Some(waker) = lane.reader.take() {
+            waker.wake();
+        }
+        std::task::Poll::Ready(Ok(bytes.len()))
+    }
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> std::task::Poll<std::io::Result<()>> {
+        let mut lane = self.outgoing.borrow_mut();
+        lane.closed = true;
+        if let Some(waker) = lane.reader.take() {
+            waker.wake();
+        }
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+/// Connects to `app` in memory: every connection is served by hyper on the other end of a duplex.
+#[derive(Clone)]
+pub struct InMemory {
+    pub app: Rc<App>,
+    pub connections: Rc<Cell<usize>>,
+    /// While true, connecting fails as an unreachable server would.
+    pub down: Rc<Cell<bool>>,
+}
+
+impl InMemory {
+    pub fn new(app: Rc<App>) -> InMemory {
+        InMemory { app, connections: Rc::default(), down: Rc::default() }
+    }
+}
+
+impl desktop_mcp_core::http_bridge::Connect for InMemory {
+    type Io = Duplex;
+    fn connect(&self) -> Pin<Box<dyn Future<Output = Result<Duplex, String>>>> {
+        if self.down.get() {
+            return Box::pin(async { Err("Connection refused".to_string()) });
+        }
+        self.connections.set(self.connections.get() + 1);
+        let (client, server) = duplex();
+        let app = self.app.clone();
+        tokio::task::spawn_local(async move {
+            let service = hyper::service::service_fn(move |request| {
+                let app = app.clone();
+                async move { Ok::<_, std::convert::Infallible>(desktop_mcp_core::http::handle(&app, request).await) }
+            });
+            let _ = hyper::server::conn::http1::Builder::new().serve_connection(server, service).await;
+        });
+        Box::pin(async move { Ok(client) })
+    }
+}

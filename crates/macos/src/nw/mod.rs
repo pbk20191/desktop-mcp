@@ -159,6 +159,73 @@ impl NwIo {
     }
 }
 
+/// Opens connections to one server, as `connect` needs them: TCP, with the system's TLS (and trust) for HTTPS.
+pub struct NwConnector {
+    pub host: String,
+    pub port: u16,
+    pub tls: bool,
+}
+
+impl desktop_mcp_core::http_bridge::Connect for NwConnector {
+    type Io = NwIo;
+
+    fn connect(&self) -> Pin<Box<dyn Future<Output = Result<NwIo, String>>>> {
+        let (host, port, tls) = (self.host.clone(), self.port, self.tls);
+        Box::pin(async move { NwIo::connect(&host, port, tls).await })
+    }
+}
+
+impl NwIo {
+    /// Connects to `host`:`port`; with `tls`, over TLS that trusts what the system trusts.
+    pub async fn connect(host: &str, port: u16, tls: bool) -> Result<NwIo, String> {
+        let host_c = CString::new(host).map_err(|_| format!("invalid host {host:?}"))?;
+        let port_c = CString::new(port.to_string()).expect("digits");
+        let (ready_tx, ready_rx) = oneshot::channel::<Result<(), String>>();
+        let connection = unsafe {
+            let tls_block: &ConfigureProtocol = if tls { _nw_parameters_configure_protocol_default_configuration } else { _nw_parameters_configure_protocol_disable };
+            let parameters = nw_parameters_create_secure_tcp(tls_block, _nw_parameters_configure_protocol_default_configuration).ok_or("cannot create TCP parameters")?;
+            let endpoint = nw_endpoint_create_host(host_c.as_ptr(), port_c.as_ptr()).ok_or_else(|| format!("invalid address {host}:{port}"))?;
+            nw_connection_create(&endpoint, &parameters).ok_or_else(|| format!("cannot connect to {host}:{port}"))?
+        };
+        unsafe {
+            nw_connection_set_queue(&connection, DispatchQueue::main());
+            let ready = Cell::new(Some(ready_tx));
+            nw_connection_set_state_changed_handler(
+                &connection,
+                Some(&RcBlock::new(move |state: i32, error: *mut NWError| {
+                    let outcome = match state {
+                        CONNECTION_READY => Ok(()),
+                        // Waiting means the path or the peer refused (connection refused, say): no use retrying here.
+                        CONNECTION_WAITING | CONNECTION_FAILED => Err(describe(error)),
+                        CONNECTION_CANCELLED => Err("the connection was cancelled".to_string()),
+                        _ => return,
+                    };
+                    if let Some(ready) = ready.take() {
+                        let _ = ready.send(outcome);
+                    }
+                })),
+            );
+            nw_connection_start(&connection);
+        }
+        let outcome = ready_rx.await.unwrap_or_else(|_| Err("the connection went away".into()));
+        match outcome {
+            Ok(()) => Ok(NwIo::new(connection)),
+            Err(reason) => {
+                unsafe { nw_connection_cancel(&connection) };
+                Err(reason)
+            }
+        }
+    }
+}
+
+/// An error as the system describes it (`Connection refused`), from its POSIX code.
+unsafe fn describe(error: *mut NWError) -> String {
+    match error.as_ref().map(|error| nw_error_get_error_code(error)) {
+        Some(code) if code != 0 => std::io::Error::from_raw_os_error(code).to_string().split(" (os error").next().unwrap_or_default().to_string(),
+        _ => "the connection failed".to_string(),
+    }
+}
+
 /// The address of a connection's remote end.
 fn remote_address(connection: &NWConnection) -> Option<IpAddr> {
     unsafe {

@@ -11,3 +11,4 @@ pub mod oauth;
 pub mod stream;
 pub mod bridge;
 pub mod launch_agent;
+pub mod http_bridge;

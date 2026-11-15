@@ -151,6 +151,10 @@ pub const LISTENER_READY: i32 = 2;
 pub const LISTENER_FAILED: i32 = 3;
 pub const LISTENER_CANCELLED: i32 = 4;
 pub const ENDPOINT_TYPE_ADDRESS: i32 = 1;
+pub const CONNECTION_WAITING: i32 = 1;
+pub const CONNECTION_READY: i32 = 3;
+pub const CONNECTION_FAILED: i32 = 4;
+pub const CONNECTION_CANCELLED: i32 = 5;
 
 /// `nw_parameters_configure_protocol_block_t`: configures one protocol of new parameters. Network.framework
 /// also offers two ready ones, `_nw_parameters_configure_protocol_default_configuration` and `…_disable`.
@@ -184,6 +188,8 @@ extern "C" {
     pub fn nw_listener_cancel(listener: &NWListener);
     pub fn nw_listener_get_port(listener: &NWListener) -> u16;
 
+    pub fn nw_connection_create(endpoint: &NWEndpoint, parameters: &NWParameters) -> Option<NWRetained<NWConnection>>;
+    pub fn nw_connection_set_state_changed_handler(connection: &NWConnection, handler: Option<&block2::Block<dyn Fn(i32, *mut NWError)>>);
     pub fn nw_connection_set_queue(connection: &NWConnection, queue: &DispatchQueue);
     pub fn nw_connection_start(connection: &NWConnection);
     pub fn nw_connection_cancel(connection: &NWConnection);
