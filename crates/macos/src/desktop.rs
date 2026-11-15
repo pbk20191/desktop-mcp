@@ -6,6 +6,7 @@ use desktop_mcp_core::clipboard::{Clipboard, ClipboardWrite};
 use desktop_mcp_core::html::Element;
 use desktop_mcp_core::open::{Application, Target as OpenTarget};
 use desktop_mcp_core::shortcuts::ShortcutRun;
+use desktop_mcp_core::spotlight::{Found, Search};
 use std::path::Path;
 use desktop_mcp_core::io::Stream;
 use desktop_mcp_core::shell::{Run, ShellMode};
@@ -109,6 +110,10 @@ impl Desktop for MacDesktop {
     fn run_shortcut(&self, name: &str, input: Option<&str>, timeout: Duration) -> Pin<Box<dyn Future<Output = Result<ShortcutRun, String>>>> {
         let (name, input) = (name.to_string(), input.map(str::to_string));
         Box::pin(async move { crate::shortcuts::run(&name, input.as_deref(), timeout).await })
+    }
+
+    fn search_files(&self, search: Search) -> Pin<Box<dyn Future<Output = Result<Found, String>>>> {
+        Box::pin(crate::main_loop::offload(move || crate::spotlight::search(search)))
     }
 
     fn find_application(&self, name_or_bundle_id: &str) -> Pin<Box<dyn Future<Output = Option<Application>>>> {

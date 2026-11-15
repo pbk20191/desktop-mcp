@@ -119,3 +119,21 @@ fn shortcuts_are_listed_and_unknown_names_refused() {
     let answer = server.post(&call("RunShortcut", json!({}))).json();
     assert_eq!(text(&answer), "Error executing tool RunShortcut: name is required for run.");
 }
+
+/// Spotlight only reads the index. Live answers are skipped when indexing is off.
+#[test]
+fn spotlight_finds_safari_and_refuses_bad_queries() {
+    let server = ServerUnderTest::start();
+    let answer = server.post(&call("Spotlight", json!({"query": "kMDItemFSName == \"Safari.app\"", "raw": true, "scope": ["/Applications"]}))).json();
+    let rows = text(&answer);
+    if rows != "No matches." {
+        let row = rows.lines().next().unwrap();
+        let fields: Vec<&str> = row.split('\t').collect();
+        assert_eq!(fields.len(), 4, "{row}");
+        assert!(fields[0].ends_with("/Safari.app") && fields[2].ends_with('Z'), "{row}");
+    }
+    let answer = server.post(&call("Spotlight", json!({"query": "kMDItem ==", "raw": true}))).json();
+    assert_eq!(text(&answer), "Error executing tool Spotlight: Invalid Spotlight query: kMDItem ==");
+    let answer = server.post(&call("Spotlight", json!({"query": "  "}))).json();
+    assert_eq!(text(&answer), "Error executing tool Spotlight: query is required.");
+}

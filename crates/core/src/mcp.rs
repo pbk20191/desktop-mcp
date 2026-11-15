@@ -7,6 +7,7 @@ use crate::clipboard::{Clipboard, ClipboardWrite};
 use crate::html::Element;
 use crate::open::{Application, Target as OpenTarget};
 use crate::shortcuts::ShortcutRun;
+use crate::spotlight::{Found, Kind as SearchKind, Search};
 use std::path::Path;
 use crate::io::Stream;
 use crate::shell::{self, Run, ShellMode};
@@ -48,6 +49,8 @@ pub trait Desktop: 'static {
     fn list_shortcuts(&self, folder: Option<&str>, timeout: Duration) -> Pin<Box<dyn Future<Output = Result<Run, String>>>>;
     /// Runs the shortcut named exactly `name`, with `input` as its input text. `Err` when it cannot start.
     fn run_shortcut(&self, name: &str, input: Option<&str>, timeout: Duration) -> Pin<Box<dyn Future<Output = Result<ShortcutRun, String>>>>;
+    /// Searches the file index. `Err` when the platform rejects the query.
+    fn search_files(&self, search: Search) -> Pin<Box<dyn Future<Output = Result<Found, String>>>>;
 }
 
 /// One MCP server. Stateless requests get a fresh one each; a session keeps one.
@@ -238,8 +241,36 @@ struct RunShortcutArgs {
     timeout: i64,
 }
 
+fn twenty() -> i64 {
+    20
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct SpotlightArgs {
+    query: String,
+    #[serde(default)]
+    raw: bool,
+    scope: Option<Vec<String>>,
+    #[serde(default)]
+    kind: SearchKind,
+    #[serde(default = "twenty")]
+    limit: i64,
+    #[serde(default)]
+    content: bool,
+}
+
 #[tool_router]
 impl Server {
+    #[tool(
+        name = "Spotlight",
+        description = "Searches the Spotlight index for files. By default 'query' is words that must each appear in the file name or text, name matches first, then content-only matches; raw=true passes 'query' as a Spotlight query (e.g. kMDItemContentModificationDate > $time.today(-7)). 'scope' is a list of folders (default: home; kind=application without scope searches the app folders /Applications, /System/Applications, ~/Applications). 'kind' narrows the type. Returns up to 'limit' (max 200) lines '<path>\\t<kind>\\t<modified>\\t<size>', newest first within each group; content=true adds the first 300 characters of each plain-text file.",
+        annotations(title = "Spotlight", read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
+    )]
+    async fn spotlight(&self, Parameters(args): Parameters<SpotlightArgs>, cancellation: CancellationToken) -> CallToolResult {
+        let request = crate::spotlight::Request { query: args.query, raw: args.raw, kind: args.kind, scope: args.scope.unwrap_or_default(), limit: args.limit, content: args.content };
+        run_tool("Spotlight", cancellation, async move { crate::spotlight::run(self.desktop.as_ref(), request).await.map_err(ToolError) }).await
+    }
+
     #[tool(
         name = "RunShortcut",
         description = "Lists or runs the user's Shortcuts (the Shortcuts app, not keyboard shortcuts). mode='list' returns the shortcut names, optionally only those in 'folder'. mode='run' runs the shortcut 'name' (exact name), passing 'input' text to it, and returns its output.",

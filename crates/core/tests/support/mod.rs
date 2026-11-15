@@ -43,6 +43,9 @@ impl FakeDesktop {
     }
 }
 impl Desktop for FakeDesktop {
+    fn search_files(&self, _search: desktop_mcp_core::spotlight::Search) -> Pin<Box<dyn Future<Output = Result<desktop_mcp_core::spotlight::Found, String>>>> {
+        unreachable!()
+    }
     fn list_shortcuts(&self, _folder: Option<&str>, _timeout: Duration) -> Pin<Box<dyn Future<Output = Result<Run, String>>>> {
         unreachable!()
     }

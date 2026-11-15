@@ -8,6 +8,7 @@ pub mod scrape;
 pub mod clipboard;
 pub mod open;
 pub mod shortcuts;
+pub mod spotlight;
 pub mod http;
 pub mod session;
 pub mod config;

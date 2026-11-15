@@ -4,6 +4,7 @@ use desktop_mcp_core::shell::{Run, ShellMode};
 use desktop_mcp_core::clipboard::{Clipboard, ClipboardWrite, Image};
 use desktop_mcp_core::open::{Application, Target};
 use desktop_mcp_core::shortcuts::ShortcutRun;
+use desktop_mcp_core::spotlight::{Found, Item as FoundItem, Kind, Query, Search};
 use std::path::{Path, PathBuf};
 use serde_json::{json, Value};
 use std::cell::RefCell;
@@ -30,8 +31,19 @@ struct FakeDesktop {
     list_failure: Option<Run>,
     shortcut_run: Option<ShortcutRun>,
     shortcut_calls: RefCell<Vec<String>>,
+    searches: RefCell<Vec<Search>>,
+    /// Answers for the name query, the content-only query and a raw query, in that order of use.
+    found: RefCell<Vec<Result<Found, String>>>,
+    /// How long each search pretends to take.
+    search_takes: Duration,
 }
 impl Desktop for FakeDesktop {
+    fn search_files(&self, search: Search) -> Pin<Box<dyn Future<Output = Result<Found, String>>>> {
+        self.searches.borrow_mut().push(search);
+        std::thread::sleep(self.search_takes);
+        let answer = if self.found.borrow().is_empty() { Ok(Found::default()) } else { self.found.borrow_mut().remove(0) };
+        Box::pin(async move { answer })
+    }
     fn list_shortcuts(&self, folder: Option<&str>, timeout: Duration) -> Pin<Box<dyn Future<Output = Result<Run, String>>>> {
         self.shortcut_calls.borrow_mut().push(format!("list {folder:?} {}", timeout.as_secs()));
         let run = self.list_failure.clone().unwrap_or(Run { stdout: self.shortcut_names.into(), stderr: String::new(), status: 0, timed_out: false });
@@ -100,7 +112,7 @@ impl FakeDesktop {
 fn ask(desktop: &Rc<FakeDesktop>, message: Value) -> Option<Value> {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
     let local = tokio::task::LocalSet::new();
-    let server = Server::new(desktop.clone(), &["Wait", "Shell", "Scrape", "Clipboard", "Open", "Notification", "RunShortcut"]);
+    let server = Server::new(desktop.clone(), &["Wait", "Shell", "Scrape", "Clipboard", "Open", "Notification", "RunShortcut", "Spotlight"]);
     local.block_on(&runtime, async move {
         let answer = answer_stateless(server, serde_json::from_value(message).unwrap()).await;
         answer.map(|message| serde_json::to_value(message).unwrap())
@@ -118,7 +130,7 @@ fn listed_tools(desktop: &Rc<FakeDesktop>) -> Vec<Value> {
 fn only_the_requested_tools_are_listed() {
     let desktop = Rc::new(FakeDesktop::default());
     let names: Vec<String> = listed_tools(&desktop).iter().map(|tool| tool["name"].as_str().unwrap().to_string()).collect();
-    assert_eq!(names, ["Clipboard", "Notification", "Open", "RunShortcut", "Scrape", "Shell", "Wait"]);
+    assert_eq!(names, ["Clipboard", "Notification", "Open", "RunShortcut", "Scrape", "Shell", "Spotlight", "Wait"]);
     let desktop = Rc::new(FakeDesktop::default());
     let server = Server::new(desktop.clone(), &["Wait"]);
     let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
@@ -480,4 +492,64 @@ fn a_shortcut_that_outlives_its_timeout_is_left_running() {
     assert_eq!(texts(&call(&desktop, "RunShortcut", json!({"name": "Resize", "timeout": 5}))), ["Stopped waiting for shortcut 'Resize' after 5s; it may still be running."]);
     call(&desktop, "RunShortcut", json!({"name": "Resize", "timeout": 100000}));
     assert_eq!(desktop.shortcut_calls.borrow().last().unwrap(), "run Resize None 240");
+}
+
+fn found(paths: &[&str], total: usize, stopped: bool) -> Result<Found, String> {
+    let items = paths.iter().map(|path| FoundItem { path: path.to_string(), kind: "Folder".into(), modified: None, size: None, text: None }).collect();
+    Ok(Found { items, total, stopped })
+}
+fn spotlight(answers: Vec<Result<Found, String>>) -> Rc<FakeDesktop> {
+    Rc::new(FakeDesktop { found: RefCell::new(answers), ..FakeDesktop::default() })
+}
+
+#[test]
+fn spotlight_lists_name_matches_then_content_only_matches() {
+    let desktop = spotlight(vec![found(&["/n1", "/n2"], 2, false), found(&["/c1"], 4, false)]);
+    let answer = call(&desktop, "Spotlight", json!({"query": " tax  2025 ", "limit": 3, "scope": ["~/Documents"], "kind": "pdf", "content": true}));
+    assert_eq!(texts(&answer), ["/n1\tFolder\t-\t-\n/n2\tFolder\t-\t-\n/c1\tFolder\t-\t-\n3 more not shown"]);
+    let searches = desktop.searches.borrow();
+    let words = vec!["tax".to_string(), "2025".to_string()];
+    assert_eq!((&searches[0].query, searches[0].shown.as_str(), searches[0].limit, searches[0].kind, searches[0].content), (&Query::Names(words.clone()), " tax  2025 ", 3, Kind::Pdf, true));
+    assert_eq!(searches[0].scope, ["~/Documents"]);
+    assert_eq!(searches[0].timeout, Duration::from_secs(10));
+    assert_eq!((&searches[1].query, searches[1].limit), (&Query::ContentOnly(words), 1));
+    assert!(searches[1].timeout <= Duration::from_secs(10));
+}
+
+#[test]
+fn a_stopped_name_search_skips_the_content_search() {
+    let desktop = spotlight(vec![found(&["/n1"], 9, true)]);
+    let answer = call(&desktop, "Spotlight", json!({"query": "a"}));
+    assert_eq!(texts(&answer), ["/n1\tFolder\t-\t-\n8 more not shown\n(search stopped after 10 s; results may be incomplete)"]);
+    assert_eq!(desktop.searches.borrow().len(), 1);
+}
+
+#[test]
+fn the_content_search_gets_what_is_left_of_the_deadline() {
+    let desktop = Rc::new(FakeDesktop { found: RefCell::new(vec![found(&[], 0, false), found(&[], 0, false)]), search_takes: Duration::from_millis(300), ..FakeDesktop::default() });
+    call(&desktop, "Spotlight", json!({"query": "a"}));
+    let left = desktop.searches.borrow()[1].timeout;
+    assert!(left <= Duration::from_millis(9_700) && left > Duration::from_millis(9_000), "{left:?}");
+}
+
+#[test]
+fn a_raw_query_is_passed_through_trimmed() {
+    let desktop = spotlight(vec![found(&["/r"], 1, false)]);
+    let answer = call(&desktop, "Spotlight", json!({"query": " kMDItemFSName == \"x\" ", "raw": true, "limit": 1000}));
+    assert_eq!(texts(&answer), ["/r\tFolder\t-\t-"]);
+    let searches = desktop.searches.borrow();
+    assert_eq!((&searches[0].query, searches[0].shown.as_str(), searches[0].limit, searches[0].kind), (&Query::Raw("kMDItemFSName == \"x\"".into()), "kMDItemFSName == \"x\"", 200, Kind::Any));
+}
+
+#[test]
+fn spotlight_refusals() {
+    let desktop = spotlight(vec![Err("Invalid Spotlight query: kMDItem ==".into())]);
+    for arguments in [json!({"query": "  "}), json!({"query": " ", "raw": true})] {
+        assert_eq!(texts(&call(&desktop, "Spotlight", arguments)), ["Error executing tool Spotlight: query is required."]);
+    }
+    assert!(desktop.searches.borrow().is_empty());
+    assert_eq!(texts(&call(&desktop, "Spotlight", json!({"query": "kMDItem ==", "raw": true}))), ["Error executing tool Spotlight: Invalid Spotlight query: kMDItem =="]);
+    let answer = call(&desktop, "Spotlight", json!({"query": "a", "limit": 0}));
+    assert_eq!(desktop.searches.borrow().last().unwrap().limit, 1);
+    let _ = answer;
 }
