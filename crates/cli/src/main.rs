@@ -18,6 +18,25 @@ struct Cli {
 enum Command {
     /// Run the server (the default command).
     Serve(ServeArgs),
+    /// Bridge stdio to the running server, for clients that only spawn stdio servers.
+    ///
+    /// Without --url or --socket the installed Launch Agent is used (desktop-mcp install): its Unix socket
+    /// when it has one, with HTTP as the fallback if the socket refuses the connection, else its HTTP address.
+    /// Over the socket, stdin and stdout are piped to the server unchanged.
+    Connect(ConnectArgs),
+}
+
+#[derive(Args)]
+struct ConnectArgs {
+    /// The streamable-http endpoint. (default: the installed Launch Agent's socket, else its /mcp URL)
+    #[arg(long)]
+    url: Option<String>,
+    /// Connect over this Unix domain socket instead of HTTP (no fallback).
+    #[arg(long)]
+    socket: Option<String>,
+    /// Bearer token for the server (HTTP only). Or $DESKTOP_MCP_AUTH_KEY, else auth_key from config.toml.
+    #[arg(long)]
+    auth_key: Option<String>,
 }
 
 #[derive(Args, Clone, Default)]
@@ -98,6 +117,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let args = match cli.command {
         Some(Command::Serve(args)) => args,
+        Some(Command::Connect(args)) => return connect(args),
         None => cli.serve,
     };
     let plan = match plan(&args) {
@@ -113,10 +133,117 @@ fn main() -> ExitCode {
     serve(plan)
 }
 
+fn home() -> PathBuf {
+    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
+}
+
+/// Where `connect` goes.
+enum Route {
+    Socket { path: String, fallback: Option<desktop_mcp_core::launch_agent::HttpTarget> },
+    Http(desktop_mcp_core::launch_agent::HttpTarget),
+}
+
+fn connect(args: ConnectArgs) -> ExitCode {
+    use desktop_mcp_core::launch_agent::{plist_path, ConnectPlan, HttpTarget};
+    if args.url.is_some() && args.socket.is_some() {
+        eprintln!("Error: --url and --socket are exclusive.");
+        return ExitCode::from(64);
+    }
+    let config = Config::discover(None, &home()).and_then(|path| Config::load(Some(&path)).ok()).unwrap_or_default();
+    let key = [args.auth_key.clone(), std::env::var(desktop_mcp_core::plan::ENV_AUTH_KEY).ok(), config.server.auth_key.clone()].into_iter().flatten().find(|key| !key.is_empty());
+    let route = if let Some(url) = args.url {
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            eprintln!("Error: --url must be an absolute http(s) URL.");
+            return ExitCode::from(64);
+        }
+        Route::Http(HttpTarget { url, auth_key: key })
+    } else if let Some(socket) = args.socket {
+        if socket.len() > 103 {
+            eprintln!("Error: Socket path too long (max 103 bytes): {socket}");
+            return ExitCode::FAILURE;
+        }
+        Route::Socket { path: socket, fallback: None }
+    } else {
+        let plist = plist_path(&home());
+        if !plist.exists() {
+            eprintln!("Error: No Launch Agent is installed ({}). Run `desktop-mcp install` first, or pass --url.", plist.display());
+            return ExitCode::FAILURE;
+        }
+        let installed = installed_arguments(&plist).and_then(|arguments| ConnectPlan::installed(&arguments, &config));
+        match installed {
+            Ok(ConnectPlan::Socket { path, mut fallback }) => {
+                fallback.auth_key = key;
+                Route::Socket { path, fallback: Some(fallback) }
+            }
+            Ok(ConnectPlan::Http(mut target)) => {
+                target.auth_key = key;
+                Route::Http(target)
+            }
+            Err(reason) => {
+                eprintln!("Error: {reason}");
+                return ExitCode::FAILURE;
+            }
+        }
+    };
+    run_connect(route)
+}
+
+#[cfg(target_os = "macos")]
+fn installed_arguments(plist: &std::path::Path) -> Result<Vec<String>, String> {
+    desktop_mcp_macos::plist::read(plist).map(|plist| desktop_mcp_macos::plist::program_arguments(&plist))
+}
+
+#[cfg(target_os = "macos")]
+fn run_connect(route: Route) -> ExitCode {
+    use desktop_mcp_core::bridge::{relay, Relayed};
+    use desktop_mcp_macos::{fd::FdIo, main_loop};
+    use std::os::fd::IntoRawFd;
+
+    // A write to a closed stdout or socket must fail with EPIPE, not end the process.
+    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
+    let target = match route {
+        Route::Http(target) => target,
+        Route::Socket { path, fallback } => match std::os::unix::net::UnixStream::connect(&path) {
+            Ok(stream) => {
+                let socket = FdIo::socket(stream.into_raw_fd());
+                return match main_loop::run(|_| relay(FdIo::stdio(), socket)) {
+                    Relayed::Finished | Relayed::OutputClosed => ExitCode::SUCCESS,
+                    Relayed::ServerClosed => {
+                        log("desktop-mcp connect: the server closed the connection");
+                        ExitCode::FAILURE
+                    }
+                };
+            }
+            Err(error) => match fallback {
+                Some(fallback) => {
+                    log(&format!("desktop-mcp connect: {path}: {error}; using HTTP at {}", fallback.url));
+                    fallback
+                }
+                None => {
+                    log(&format!("desktop-mcp connect: {path}: {error}"));
+                    return ExitCode::FAILURE;
+                }
+            },
+        },
+    };
+    log(&format!("desktop-mcp connect: HTTP ({}) is not available in this build yet", target.url));
+    ExitCode::FAILURE
+}
+
+#[cfg(not(target_os = "macos"))]
+fn installed_arguments(_plist: &std::path::Path) -> Result<Vec<String>, String> {
+    Err("this platform is not supported yet".into())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn run_connect(_route: Route) -> ExitCode {
+    eprintln!("Error: this platform is not supported yet");
+    ExitCode::FAILURE
+}
+
 /// The command line, the environment and `config.toml`, merged.
 fn plan(args: &ServeArgs) -> Result<ServePlan, String> {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    let config = Config::load(Config::discover(args.config.as_deref(), &home).as_deref())?;
+    let config = Config::load(Config::discover(args.config.as_deref(), &home()).as_deref())?;
     ServePlan::resolve(&args.command_line(), &std::env::vars().collect(), &config)
 }
 

@@ -162,6 +162,7 @@ struct PipeState {
     output: Vec<u8>,
     output_closed: bool,
     writer_watch: Option<std::task::Waker>,
+    shut_down: bool,
 }
 
 impl Pipe {
@@ -191,6 +192,14 @@ impl Pipe {
     /// The client stops reading: further writes fail.
     pub fn close_output(&self) {
         self.state.borrow_mut().output_closed = true;
+    }
+    /// The bytes written so far.
+    pub fn output(&self) -> Vec<u8> {
+        self.state.borrow().output.clone()
+    }
+    /// Whether the other side shut its writing down (EOF for the reader at this end).
+    pub fn shut_down(&self) -> bool {
+        self.state.borrow().shut_down
     }
     /// The complete lines written so far, as JSON.
     pub fn lines(&self) -> Vec<serde_json::Value> {
@@ -245,6 +254,7 @@ impl hyper::rt::Write for Pipe {
         std::task::Poll::Ready(Ok(()))
     }
     fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> std::task::Poll<std::io::Result<()>> {
+        self.state.borrow_mut().shut_down = true;
         std::task::Poll::Ready(Ok(()))
     }
 }

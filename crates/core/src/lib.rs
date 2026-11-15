@@ -9,3 +9,5 @@ pub mod plan;
 pub mod security;
 pub mod oauth;
 pub mod stream;
+pub mod bridge;
+pub mod launch_agent;

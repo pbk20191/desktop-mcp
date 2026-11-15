@@ -62,8 +62,18 @@ fn scratch_home(config: Option<&str>) -> PathBuf {
 /// Runs `$DESKTOP_MCP_BIN <arguments>` with `input` as its stdin, closed after the last line: its exit
 /// status and the JSON lines it wrote to stdout.
 pub fn run_stdio(arguments: &[&str], input: &[Value]) -> (ExitStatus, Vec<Value>) {
+    run_stdio_with(arguments, input, &[])
+}
+
+/// As [`run_stdio`], with `files` (paths relative to HOME, and their contents) in the scratch HOME.
+pub fn run_stdio_with(arguments: &[&str], input: &[Value], files: &[(&str, &str)]) -> (ExitStatus, Vec<Value>) {
     let binary = std::env::var_os("DESKTOP_MCP_BIN").expect("set DESKTOP_MCP_BIN to the desktop-mcp binary under test");
     let home = scratch_home(None);
+    for (path, contents) in files {
+        let path = home.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, contents).unwrap();
+    }
     let mut child = Command::new(&binary).args(arguments).env("HOME", &home).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().expect("start");
     let mut stdin = child.stdin.take().unwrap();
     for message in input {

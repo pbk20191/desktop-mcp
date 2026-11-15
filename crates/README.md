@@ -40,7 +40,12 @@ serves the same binding on a Unix socket beside HTTP, one session per connection
 (mode 0600, and the peer's uid is checked); under launchd it takes the plist's `Listener` socket. A socket
 that is in use leaves HTTP serving alone.
 
-Not there yet: `connect`, `install`/`uninstall`, `auth`, `permissions`, and every tool but `Wait` by duration.
+`desktop-mcp connect [--socket <path>]` bridges stdio to a running server over its Unix socket, piping
+stdin and stdout through unchanged; without options it finds the installed Launch Agent's socket from
+`~/Library/LaunchAgents/com.desktop-mcp.server.plist` (read with CoreFoundation).
+
+Not there yet: `connect` over HTTP (`--url`, or an agent without a socket), `install`/`uninstall`, `auth`,
+`permissions`, and every tool but `Wait` by duration.
 
 ## How it is built
 
