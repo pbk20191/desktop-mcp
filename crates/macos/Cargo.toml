@@ -11,6 +11,7 @@ desktop-mcp-core.workspace = true
 tokio.workspace = true
 hyper.workspace = true
 block2.workspace = true
+objc2.workspace = true
 dispatch2.workspace = true
 objc2-core-foundation.workspace = true
 libc.workspace = true

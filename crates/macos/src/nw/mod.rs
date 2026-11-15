@@ -1,65 +1,25 @@
 //! TCP through Network.framework. Every callback is delivered on the main queue, which the main run loop
-//! drains, so nothing here crosses threads.
-//!
-//! Network.framework has no binding crate (`objc2-network` is an empty placeholder), so the C functions used
-//! are declared here. Everything of libdispatch's (the main queue, `dispatch_data`) comes from `dispatch2`.
-use block2::{Block, RcBlock};
+//! drains, so nothing here crosses threads. libdispatch comes from `dispatch2`, Network.framework from [`sys`].
+pub mod sys;
+
+use block2::RcBlock;
 use desktop_mcp_core::io::{Listener, Peer};
 use dispatch2::{DispatchData, DispatchObject, DispatchQueue, DispatchRetained};
 use std::cell::{Cell, RefCell};
-use std::ffi::{c_char, c_void, CString};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::ffi::{c_void, CString};
 use std::future::Future;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::pin::Pin;
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
+use sys::*;
 use tokio::sync::{mpsc, oneshot};
-
-/// A Network.framework object.
-type Object = *mut c_void;
-
-const LISTENER_READY: i32 = 2;
-const LISTENER_FAILED: i32 = 3;
-const LISTENER_CANCELLED: i32 = 4;
-const ENDPOINT_TYPE_ADDRESS: i32 = 1;
-
-#[link(name = "Network", kind = "framework")]
-extern "C" {
-    static _nw_parameters_configure_protocol_default_configuration: *mut c_void;
-    static _nw_parameters_configure_protocol_disable: *mut c_void;
-    static _nw_content_context_default_message: Object;
-    static _nw_content_context_final_send: Object;
-    fn nw_parameters_create_secure_tcp(configure_tls: *mut c_void, configure_tcp: *mut c_void) -> Object;
-    fn nw_parameters_set_local_endpoint(parameters: Object, endpoint: Object);
-    fn nw_parameters_set_reuse_local_address(parameters: Object, reuse: bool);
-    fn nw_endpoint_create_host(hostname: *const c_char, port: *const c_char) -> Object;
-    fn nw_listener_create(parameters: Object) -> Object;
-    fn nw_listener_set_queue(listener: Object, queue: &DispatchQueue);
-    fn nw_listener_set_state_changed_handler(listener: Object, handler: Option<&Block<dyn Fn(i32, Object)>>);
-    fn nw_listener_set_new_connection_handler(listener: Object, handler: Option<&Block<dyn Fn(Object)>>);
-    fn nw_listener_start(listener: Object);
-    fn nw_listener_cancel(listener: Object);
-    fn nw_listener_get_port(listener: Object) -> u16;
-    fn nw_error_get_error_code(error: Object) -> i32;
-    fn nw_connection_set_queue(connection: Object, queue: &DispatchQueue);
-    fn nw_connection_start(connection: Object);
-    fn nw_connection_cancel(connection: Object);
-    fn nw_connection_copy_endpoint(connection: Object) -> Object;
-    fn nw_endpoint_get_type(endpoint: Object) -> i32;
-    fn nw_endpoint_get_address(endpoint: Object) -> *const libc::sockaddr;
-    // C `bool` block arguments are declared `u8`: block2 has no encoding for `bool`.
-    /// `content` is a borrowed `dispatch_data_t`, or null.
-    fn nw_connection_receive(connection: Object, minimum: u32, maximum: u32, completion: &Block<dyn Fn(*mut c_void, Object, u8, Object)>);
-    fn nw_connection_send(connection: Object, content: Option<&DispatchData>, context: Object, is_complete: bool, completion: &Block<dyn Fn(Object)>);
-    fn nw_retain(object: Object) -> Object;
-    fn nw_release(object: Object);
-}
 
 /// A listening TCP socket.
 pub struct NwListener {
-    listener: Object,
+    listener: NWRetained<NWListener>,
     port: u16,
     connections: mpsc::UnboundedReceiver<NwIo>,
 }
@@ -71,28 +31,25 @@ impl NwListener {
         let host = if host.eq_ignore_ascii_case("localhost") { "127.0.0.1" } else { host };
         let host_c = CString::new(host).map_err(|_| format!("invalid host {host:?}"))?;
         let port_c = CString::new(port.to_string()).expect("digits");
-        let (ready_tx, ready_rx) = oneshot::channel::<Result<u16, String>>();
+        let (ready_tx, ready_rx) = oneshot::channel::<Result<(), String>>();
         let (connection_tx, connections) = mpsc::unbounded_channel();
         let listener = unsafe {
-            let parameters = nw_parameters_create_secure_tcp(_nw_parameters_configure_protocol_disable, _nw_parameters_configure_protocol_default_configuration);
-            let endpoint = nw_endpoint_create_host(host_c.as_ptr(), port_c.as_ptr());
-            nw_parameters_set_local_endpoint(parameters, endpoint);
-            nw_parameters_set_reuse_local_address(parameters, true);
-            let listener = nw_listener_create(parameters);
-            nw_release(endpoint);
-            nw_release(parameters);
-            if listener.is_null() {
-                return Err(format!("cannot listen on {host}:{port}"));
-            }
-            nw_listener_set_queue(listener, DispatchQueue::main());
+            let parameters = nw_parameters_create_secure_tcp(_nw_parameters_configure_protocol_disable, _nw_parameters_configure_protocol_default_configuration)
+                .ok_or("cannot create TCP parameters")?;
+            let endpoint = nw_endpoint_create_host(host_c.as_ptr(), port_c.as_ptr()).ok_or_else(|| format!("invalid address {host}:{port}"))?;
+            nw_parameters_set_local_endpoint(&parameters, Some(&endpoint));
+            nw_parameters_set_reuse_local_address(&parameters, true);
+            nw_listener_create(&parameters).ok_or_else(|| format!("cannot listen on {host}:{port}"))?
+        };
+        unsafe {
+            nw_listener_set_queue(&listener, DispatchQueue::main());
             let ready = Cell::new(Some(ready_tx));
-            let address = listener as usize; // the handler must not retain the listener it belongs to
             nw_listener_set_state_changed_handler(
-                listener,
-                Some(&RcBlock::new(move |state: i32, error: Object| {
+                &listener,
+                Some(&RcBlock::new(move |state: i32, error: *mut NWError| {
                     let outcome = match state {
-                        LISTENER_READY => Ok(nw_listener_get_port(address as Object)),
-                        LISTENER_FAILED => Err(format!("listen failed (error {})", if error.is_null() { 0 } else { nw_error_get_error_code(error) })),
+                        LISTENER_READY => Ok(()),
+                        LISTENER_FAILED => Err(format!("listen failed (error {})", error.as_ref().map_or(0, |error| nw_error_get_error_code(error)))),
                         LISTENER_CANCELLED => Err("the listener was cancelled".to_string()),
                         _ => return,
                     };
@@ -102,20 +59,21 @@ impl NwListener {
                 })),
             );
             nw_listener_set_new_connection_handler(
-                listener,
-                Some(&RcBlock::new(move |connection: Object| {
-                    nw_retain(connection);
-                    nw_connection_set_queue(connection, DispatchQueue::main());
-                    nw_connection_start(connection);
+                &listener,
+                Some(&RcBlock::new(move |connection: NonNull<NWConnection>| {
+                    // Handed over borrowed: retained for as long as the NwIo lives.
+                    let connection = NWRetained::retain(connection);
+                    nw_connection_set_queue(&connection, DispatchQueue::main());
+                    nw_connection_start(&connection);
                     let _ = connection_tx.send(NwIo::new(connection));
                 })),
             );
-            nw_listener_start(listener);
-            listener
-        };
+            nw_listener_start(&listener);
+        }
         // From here the value owns the listener, so an early return cancels it.
         let mut bound = NwListener { listener, port: 0, connections };
-        bound.port = ready_rx.await.map_err(|_| "the listener went away".to_string())??;
+        ready_rx.await.map_err(|_| "the listener went away".to_string())??;
+        bound.port = unsafe { nw_listener_get_port(&bound.listener) };
         Ok(bound)
     }
 
@@ -126,10 +84,7 @@ impl NwListener {
 
 impl Drop for NwListener {
     fn drop(&mut self) {
-        unsafe {
-            nw_listener_cancel(self.listener);
-            nw_release(self.listener);
-        }
+        unsafe { nw_listener_cancel(&self.listener) }
     }
 }
 
@@ -166,7 +121,7 @@ struct IoState {
 /// straight into hyper's buffer from the addresses `DispatchData::apply` hands out, and the consumed prefix is
 /// dropped (`DispatchData::subrange`). Writes copy once (hyper only lends its bytes).
 pub struct NwIo {
-    connection: Object,
+    connection: NWRetained<NWConnection>,
     peer: Option<IpAddr>,
     /// `Arc`, not `Rc`: the completion blocks hold a clone each, and the system may release a block on a thread
     /// of its own, so the count has to be atomic (as a Swift or Objective-C capture's is). The state itself is
@@ -175,25 +130,23 @@ pub struct NwIo {
 }
 
 impl NwIo {
-    /// Takes over a started connection (+1 retained).
-    fn new(connection: Object) -> NwIo {
+    /// Takes over a started connection.
+    fn new(connection: NWRetained<NWConnection>) -> NwIo {
         let state = IoState { queue: None, receiving: false, end_of_stream: false, read_waker: None, unsent: 0, write_failed: false, write_waker: None, closing: false, closed: false };
         #[allow(clippy::arc_with_non_send_sync)]
         let state = Arc::new(RefCell::new(state));
-        NwIo { connection, peer: remote_address(connection), state }
+        NwIo { peer: remote_address(&connection), connection, state }
     }
 }
 
 /// The address of a connection's remote end.
-fn remote_address(connection: Object) -> Option<IpAddr> {
+fn remote_address(connection: &NWConnection) -> Option<IpAddr> {
     unsafe {
-        let endpoint = nw_connection_copy_endpoint(connection);
-        if endpoint.is_null() {
+        let endpoint = nw_connection_copy_endpoint(connection)?;
+        if nw_endpoint_get_type(&endpoint) != ENDPOINT_TYPE_ADDRESS {
             return None;
         }
-        let address = if nw_endpoint_get_type(endpoint) == ENDPOINT_TYPE_ADDRESS { sockaddr_ip(nw_endpoint_get_address(endpoint)) } else { None };
-        nw_release(endpoint);
-        address
+        sockaddr_ip(nw_endpoint_get_address(&endpoint))
     }
 }
 
@@ -223,10 +176,8 @@ impl Peer for NwIo {
 
 impl Drop for NwIo {
     fn drop(&mut self) {
-        unsafe {
-            nw_connection_cancel(self.connection);
-            nw_release(self.connection);
-        }
+        // The reference is released afterwards, with the field.
+        unsafe { nw_connection_cancel(&self.connection) }
     }
 }
 
@@ -262,7 +213,7 @@ impl hyper::rt::Read for NwIo {
         if !state.receiving {
             state.receiving = true;
             let shared = self.state.clone();
-            let received = RcBlock::new(move |content: *mut c_void, _context: Object, _is_complete: u8, error: Object| {
+            let received = RcBlock::new(move |content: *mut c_void, _context: *mut NWContentContext, _is_complete: u8, error: *mut NWError| {
                 let mut state = shared.borrow_mut();
                 state.receiving = false;
                 match NonNull::new(content.cast::<DispatchData>()).filter(|_| error.is_null()) {
@@ -279,7 +230,7 @@ impl hyper::rt::Read for NwIo {
                     waker.wake();
                 }
             });
-            unsafe { nw_connection_receive(self.connection, 1, 64 * 1024, &received) };
+            unsafe { nw_connection_receive(&self.connection, 1, 64 * 1024, &received) };
         }
         Poll::Pending
     }
@@ -297,7 +248,7 @@ impl hyper::rt::Write for NwIo {
         }
         state.unsent += bytes.len();
         let (shared, length) = (self.state.clone(), bytes.len());
-        let sent = RcBlock::new(move |error: Object| {
+        let sent = RcBlock::new(move |error: *mut NWError| {
             let mut state = shared.borrow_mut();
             state.unsent -= length;
             if !error.is_null() {
@@ -309,7 +260,7 @@ impl hyper::rt::Write for NwIo {
         });
         if !bytes.is_empty() {
             let data = DispatchData::from_bytes(bytes); // copies
-            unsafe { nw_connection_send(self.connection, Some(&data), _nw_content_context_default_message, false, &sent) };
+            unsafe { nw_connection_send(&self.connection, Some(&data), _nw_content_context_default_message, false, &sent) };
         }
         Poll::Ready(Ok(bytes.len()))
     }
@@ -331,14 +282,14 @@ impl hyper::rt::Write for NwIo {
         if state.unsent == 0 && !state.closing {
             state.closing = true;
             let shared = self.state.clone();
-            let closed = RcBlock::new(move |_error: Object| {
+            let closed = RcBlock::new(move |_error: *mut NWError| {
                 let mut state = shared.borrow_mut();
                 state.closed = true;
                 if let Some(waker) = state.write_waker.take() {
                     waker.wake();
                 }
             });
-            unsafe { nw_connection_send(self.connection, None, _nw_content_context_final_send, true, &closed) };
+            unsafe { nw_connection_send(&self.connection, None, _nw_content_context_final_send, true, &closed) };
         }
         Poll::Pending
     }

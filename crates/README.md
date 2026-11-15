@@ -43,9 +43,11 @@ Not there yet: HTTPS (`--ssl-certfile`/`--ssl-keyfile` are refused), stdio, the 
   it runs as a guest of the run loop (`crates/core/src/guest.rs`): a current-thread runtime that is
   never parked, given short turns by run loop timers that are armed only while a connection or a
   request exists. An idle server is not woken at all.
-- **HTTP by hyper** over `NwIo` (`crates/macos/src/nw.rs`). Received bytes stay in `dispatch_data`
+- **HTTP by hyper** over `NwIo` (`crates/macos/src/nw/mod.rs`). Received bytes stay in `dispatch_data`
   until they are copied once into hyper's buffer. libdispatch is used through the `dispatch2` crate;
-  Network.framework has no binding crate, so its C functions are declared in `nw.rs`.
+  Network.framework has no binding crate, so its objects and functions are declared in
+  `crates/macos/src/nw/sys.rs` after `dispatch2`'s model: an opaque type per object, and
+  `NWRetained<T>` for an owned reference (released on drop, retained on clone).
 - **Stateless requests** each get a fresh rmcp service, as in rmcp's own HTTP server. A session keeps
   one service behind a channel transport (`crates/core/src/session.rs`); answers go to the `POST`
   that asked, anything else to the session's `GET` stream. While a session lives, the guest
