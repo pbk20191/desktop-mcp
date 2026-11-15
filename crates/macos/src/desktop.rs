@@ -95,6 +95,11 @@ impl Desktop for MacDesktop {
         Box::pin(async {})
     }
 
+    fn notify(&self, message: &str, title: &str, subtitle: Option<&str>, sound: Option<&str>) -> Pin<Box<dyn Future<Output = Result<(), String>>>> {
+        let (message, title, subtitle, sound) = (message.to_string(), title.to_string(), subtitle.map(str::to_string), sound.map(str::to_string));
+        Box::pin(async move { crate::notification::notify(&message, &title, subtitle.as_deref(), sound.as_deref()).await })
+    }
+
     fn find_application(&self, name_or_bundle_id: &str) -> Pin<Box<dyn Future<Output = Option<Application>>>> {
         let name = name_or_bundle_id.to_string();
         Box::pin(crate::main_loop::offload(move || crate::open::application(&name)))

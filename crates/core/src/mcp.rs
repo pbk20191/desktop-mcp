@@ -41,6 +41,8 @@ pub trait Desktop: 'static {
     fn reveal(&self, path: &Path) -> Pin<Box<dyn Future<Output = ()>>>;
     /// The application with this bundle id or name.
     fn find_application(&self, name_or_bundle_id: &str) -> Pin<Box<dyn Future<Output = Option<Application>>>>;
+    /// Posts a notification banner. `Err` carries the system's reason.
+    fn notify(&self, message: &str, title: &str, subtitle: Option<&str>, sound: Option<&str>) -> Pin<Box<dyn Future<Output = Result<(), String>>>>;
 }
 
 /// One MCP server. Stateless requests get a fresh one each; a session keeps one.
@@ -178,8 +180,55 @@ struct OpenArgs {
     app: Option<String>,
 }
 
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+enum NotificationSound {
+    Glass,
+    Ping,
+    Basso,
+    Tink,
+    Funk,
+    Bottle,
+    Frog,
+    Hero,
+    Morse,
+    Pop,
+    Purr,
+    Sosumi,
+    Submarine,
+}
+
+fn notification() -> String {
+    "Notification".to_string()
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct NotificationArgs {
+    message: String,
+    #[serde(default = "notification")]
+    title: String,
+    subtitle: Option<String>,
+    sound: Option<NotificationSound>,
+}
+
 #[tool_router]
 impl Server {
+    #[tool(
+        name = "Notification",
+        description = "Sends a macOS notification banner with a message, title, optional subtitle, and optional sound.",
+        annotations(title = "Notification", read_only_hint = false, destructive_hint = false, idempotent_hint = false, open_world_hint = false)
+    )]
+    async fn notification(&self, Parameters(args): Parameters<NotificationArgs>, cancellation: CancellationToken) -> CallToolResult {
+        run_tool("Notification", cancellation, async move {
+            let sound = args.sound.map(|sound| serde_json::to_value(sound).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default());
+            let subtitle = args.subtitle.filter(|subtitle| !subtitle.is_empty());
+            Ok(match self.desktop.notify(&args.message, &args.title, subtitle.as_deref(), sound.as_deref()).await {
+                Ok(()) => format!("Notification sent: [{}] {}", args.title, args.message),
+                Err(reason) => format!("Failed to send notification: {reason}"),
+            })
+        })
+        .await
+    }
+
     #[tool(
         name = "Open",
         description = "Opens a file, folder or URL with the default application, or with the application given by 'app' (name or bundle id). mode='reveal' shows an existing file or folder in Finder instead.",

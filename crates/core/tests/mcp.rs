@@ -23,8 +23,15 @@ struct FakeDesktop {
     opened: RefCell<Vec<(Target, Option<PathBuf>)>>,
     revealed: RefCell<Vec<PathBuf>>,
     applications: Vec<(&'static str, Application)>,
+    notified: RefCell<Vec<(String, String, Option<String>, Option<String>)>>,
+    notify_failure: Option<&'static str>,
 }
 impl Desktop for FakeDesktop {
+    fn notify(&self, message: &str, title: &str, subtitle: Option<&str>, sound: Option<&str>) -> Pin<Box<dyn Future<Output = Result<(), String>>>> {
+        self.notified.borrow_mut().push((message.into(), title.into(), subtitle.map(Into::into), sound.map(Into::into)));
+        let outcome = self.notify_failure.map(|reason| Err(reason.to_string())).unwrap_or(Ok(()));
+        Box::pin(async move { outcome })
+    }
     fn open(&self, target: &Target, app: Option<&Path>) -> Pin<Box<dyn Future<Output = Result<(), String>>>> {
         self.opened.borrow_mut().push((target.clone(), app.map(Path::to_path_buf)));
         Box::pin(async { Ok(()) })
@@ -78,7 +85,7 @@ impl FakeDesktop {
 fn ask(desktop: &Rc<FakeDesktop>, message: Value) -> Option<Value> {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
     let local = tokio::task::LocalSet::new();
-    let server = Server::new(desktop.clone(), &["Wait", "Shell", "Scrape", "Clipboard", "Open"]);
+    let server = Server::new(desktop.clone(), &["Wait", "Shell", "Scrape", "Clipboard", "Open", "Notification"]);
     local.block_on(&runtime, async move {
         let answer = answer_stateless(server, serde_json::from_value(message).unwrap()).await;
         answer.map(|message| serde_json::to_value(message).unwrap())
@@ -96,7 +103,7 @@ fn listed_tools(desktop: &Rc<FakeDesktop>) -> Vec<Value> {
 fn only_the_requested_tools_are_listed() {
     let desktop = Rc::new(FakeDesktop::default());
     let names: Vec<String> = listed_tools(&desktop).iter().map(|tool| tool["name"].as_str().unwrap().to_string()).collect();
-    assert_eq!(names, ["Clipboard", "Open", "Scrape", "Shell", "Wait"]);
+    assert_eq!(names, ["Clipboard", "Notification", "Open", "Scrape", "Shell", "Wait"]);
     let desktop = Rc::new(FakeDesktop::default());
     let server = Server::new(desktop.clone(), &["Wait"]);
     let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
@@ -364,4 +371,33 @@ fn open_refusals() {
         assert_eq!(texts(&answer), [format!("Error executing tool Open: {message}")], "{arguments}");
     }
     assert!(desktop.opened.borrow().is_empty() && desktop.revealed.borrow().is_empty());
+}
+
+#[test]
+fn a_notification_is_sent_with_a_default_title() {
+    let desktop = Rc::new(FakeDesktop::default());
+    assert_eq!(texts(&call(&desktop, "Notification", json!({"message": "Build \"done\""}))), ["Notification sent: [Notification] Build \"done\""]);
+    let answer = call(&desktop, "Notification", json!({"message": "m", "title": "T", "subtitle": "s", "sound": "Glass"}));
+    assert_eq!(texts(&answer), ["Notification sent: [T] m"]);
+    assert_eq!(
+        *desktop.notified.borrow(),
+        [("Build \"done\"".into(), "Notification".into(), None, None), ("m".into(), "T".into(), Some("s".into()), Some("Glass".into()))]
+    );
+}
+
+#[test]
+fn a_failed_notification_is_reported_not_raised() {
+    let desktop = Rc::new(FakeDesktop { notify_failure: Some("execution error: nope"), ..FakeDesktop::default() });
+    let answer = call(&desktop, "Notification", json!({"message": "m"}));
+    assert_eq!(answer["result"]["isError"], false);
+    assert_eq!(texts(&answer), ["Failed to send notification: execution error: nope"]);
+}
+
+#[test]
+fn unknown_sounds_are_refused_by_the_schema() {
+    let desktop = Rc::new(FakeDesktop::default());
+    let answer = call(&desktop, "Notification", json!({"message": "m", "sound": "Trumpet"}));
+    assert_eq!(answer["result"]["isError"], true, "{answer}");
+    assert!(texts(&answer)[0].contains("unknown variant `Trumpet`"), "{answer}");
+    assert!(desktop.notified.borrow().is_empty());
 }

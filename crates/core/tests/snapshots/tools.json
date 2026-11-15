@@ -48,6 +48,69 @@
     "annotations": {
       "destructiveHint": false,
       "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Notification"
+    },
+    "description": "Sends a macOS notification banner with a message, title, optional subtitle, and optional sound.",
+    "inputSchema": {
+      "$defs": {
+        "NotificationSound": {
+          "enum": [
+            "Glass",
+            "Ping",
+            "Basso",
+            "Tink",
+            "Funk",
+            "Bottle",
+            "Frog",
+            "Hero",
+            "Morse",
+            "Pop",
+            "Purr",
+            "Sosumi",
+            "Submarine"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "sound": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NotificationSound"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "subtitle": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "default": "Notification",
+          "type": "string"
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "type": "object"
+    },
+    "name": "Notification"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
       "openWorldHint": true,
       "readOnlyHint": false,
       "title": "Open"
