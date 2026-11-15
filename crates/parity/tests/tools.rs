@@ -106,3 +106,16 @@ fn open_refuses_what_it_cannot_open() {
         assert_eq!(text(&answer), format!("Error executing tool Open: {message}"), "{arguments}");
     }
 }
+
+/// Read-only: listing, and a name that does not exist (which lists, then refuses). No shortcut is run.
+#[test]
+fn shortcuts_are_listed_and_unknown_names_refused() {
+    let server = ServerUnderTest::start();
+    let answer = server.post(&call("RunShortcut", json!({"mode": "list"}))).json();
+    assert_eq!(answer["result"]["isError"], false, "{answer}");
+    let answer = server.post(&call("RunShortcut", json!({"name": "zzz-no-such-shortcut-desktop-mcp"}))).json();
+    assert_eq!(answer["result"]["isError"], true);
+    assert_eq!(text(&answer), "Error executing tool RunShortcut: No shortcut named 'zzz-no-such-shortcut-desktop-mcp'.");
+    let answer = server.post(&call("RunShortcut", json!({}))).json();
+    assert_eq!(text(&answer), "Error executing tool RunShortcut: name is required for run.");
+}

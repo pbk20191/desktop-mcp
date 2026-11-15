@@ -5,6 +5,7 @@ use crate::nw::NwIo;
 use desktop_mcp_core::clipboard::{Clipboard, ClipboardWrite};
 use desktop_mcp_core::html::Element;
 use desktop_mcp_core::open::{Application, Target as OpenTarget};
+use desktop_mcp_core::shortcuts::ShortcutRun;
 use std::path::Path;
 use desktop_mcp_core::io::Stream;
 use desktop_mcp_core::shell::{Run, ShellMode};
@@ -98,6 +99,16 @@ impl Desktop for MacDesktop {
     fn notify(&self, message: &str, title: &str, subtitle: Option<&str>, sound: Option<&str>) -> Pin<Box<dyn Future<Output = Result<(), String>>>> {
         let (message, title, subtitle, sound) = (message.to_string(), title.to_string(), subtitle.map(str::to_string), sound.map(str::to_string));
         Box::pin(async move { crate::notification::notify(&message, &title, subtitle.as_deref(), sound.as_deref()).await })
+    }
+
+    fn list_shortcuts(&self, folder: Option<&str>, timeout: Duration) -> Pin<Box<dyn Future<Output = Result<Run, String>>>> {
+        let folder = folder.map(str::to_string);
+        Box::pin(async move { crate::shortcuts::list(folder.as_deref(), timeout).await })
+    }
+
+    fn run_shortcut(&self, name: &str, input: Option<&str>, timeout: Duration) -> Pin<Box<dyn Future<Output = Result<ShortcutRun, String>>>> {
+        let (name, input) = (name.to_string(), input.map(str::to_string));
+        Box::pin(async move { crate::shortcuts::run(&name, input.as_deref(), timeout).await })
     }
 
     fn find_application(&self, name_or_bundle_id: &str) -> Pin<Box<dyn Future<Output = Option<Application>>>> {

@@ -8,6 +8,7 @@ pub mod html;
 pub mod clipboard;
 pub mod open;
 pub mod notification;
+pub mod shortcuts;
 pub mod signals;
 pub mod tls;
 pub mod fd;

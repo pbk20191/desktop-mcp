@@ -3,6 +3,7 @@ use desktop_mcp_core::mcp::{answer_stateless, Desktop, Server};
 use desktop_mcp_core::shell::{Run, ShellMode};
 use desktop_mcp_core::clipboard::{Clipboard, ClipboardWrite, Image};
 use desktop_mcp_core::open::{Application, Target};
+use desktop_mcp_core::shortcuts::ShortcutRun;
 use std::path::{Path, PathBuf};
 use serde_json::{json, Value};
 use std::cell::RefCell;
@@ -25,8 +26,22 @@ struct FakeDesktop {
     applications: Vec<(&'static str, Application)>,
     notified: RefCell<Vec<(String, String, Option<String>, Option<String>)>>,
     notify_failure: Option<&'static str>,
+    shortcut_names: &'static str,
+    list_failure: Option<Run>,
+    shortcut_run: Option<ShortcutRun>,
+    shortcut_calls: RefCell<Vec<String>>,
 }
 impl Desktop for FakeDesktop {
+    fn list_shortcuts(&self, folder: Option<&str>, timeout: Duration) -> Pin<Box<dyn Future<Output = Result<Run, String>>>> {
+        self.shortcut_calls.borrow_mut().push(format!("list {folder:?} {}", timeout.as_secs()));
+        let run = self.list_failure.clone().unwrap_or(Run { stdout: self.shortcut_names.into(), stderr: String::new(), status: 0, timed_out: false });
+        Box::pin(async move { Ok(run) })
+    }
+    fn run_shortcut(&self, name: &str, input: Option<&str>, timeout: Duration) -> Pin<Box<dyn Future<Output = Result<ShortcutRun, String>>>> {
+        self.shortcut_calls.borrow_mut().push(format!("run {name} {input:?} {}", timeout.as_secs()));
+        let run = self.shortcut_run.clone().unwrap_or(ShortcutRun { status: 0, timed_out: false, output: String::new(), stderr: String::new() });
+        Box::pin(async move { Ok(run) })
+    }
     fn notify(&self, message: &str, title: &str, subtitle: Option<&str>, sound: Option<&str>) -> Pin<Box<dyn Future<Output = Result<(), String>>>> {
         self.notified.borrow_mut().push((message.into(), title.into(), subtitle.map(Into::into), sound.map(Into::into)));
         let outcome = self.notify_failure.map(|reason| Err(reason.to_string())).unwrap_or(Ok(()));
@@ -85,7 +100,7 @@ impl FakeDesktop {
 fn ask(desktop: &Rc<FakeDesktop>, message: Value) -> Option<Value> {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
     let local = tokio::task::LocalSet::new();
-    let server = Server::new(desktop.clone(), &["Wait", "Shell", "Scrape", "Clipboard", "Open", "Notification"]);
+    let server = Server::new(desktop.clone(), &["Wait", "Shell", "Scrape", "Clipboard", "Open", "Notification", "RunShortcut"]);
     local.block_on(&runtime, async move {
         let answer = answer_stateless(server, serde_json::from_value(message).unwrap()).await;
         answer.map(|message| serde_json::to_value(message).unwrap())
@@ -103,7 +118,7 @@ fn listed_tools(desktop: &Rc<FakeDesktop>) -> Vec<Value> {
 fn only_the_requested_tools_are_listed() {
     let desktop = Rc::new(FakeDesktop::default());
     let names: Vec<String> = listed_tools(&desktop).iter().map(|tool| tool["name"].as_str().unwrap().to_string()).collect();
-    assert_eq!(names, ["Clipboard", "Notification", "Open", "Scrape", "Shell", "Wait"]);
+    assert_eq!(names, ["Clipboard", "Notification", "Open", "RunShortcut", "Scrape", "Shell", "Wait"]);
     let desktop = Rc::new(FakeDesktop::default());
     let server = Server::new(desktop.clone(), &["Wait"]);
     let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
@@ -400,4 +415,69 @@ fn unknown_sounds_are_refused_by_the_schema() {
     assert_eq!(answer["result"]["isError"], true, "{answer}");
     assert!(texts(&answer)[0].contains("unknown variant `Trumpet`"), "{answer}");
     assert!(desktop.notified.borrow().is_empty());
+}
+
+fn shortcuts(names: &'static str, run: Option<ShortcutRun>) -> Rc<FakeDesktop> {
+    Rc::new(FakeDesktop { shortcut_names: names, shortcut_run: run, ..FakeDesktop::default() })
+}
+fn finished_shortcut(status: i32, output: &str, stderr: &str) -> Option<ShortcutRun> {
+    Some(ShortcutRun { status, timed_out: false, output: output.into(), stderr: stderr.into() })
+}
+
+#[test]
+fn shortcuts_are_listed_one_per_line() {
+    let desktop = shortcuts("A\n\n B \n", None);
+    assert_eq!(texts(&call(&desktop, "RunShortcut", json!({"mode": "list"}))), ["A\nB"]);
+    call(&desktop, "RunShortcut", json!({"mode": "list", "folder": "Work"}));
+    assert_eq!(*desktop.shortcut_calls.borrow(), ["list None 60", "list Some(\"Work\") 60"]);
+}
+
+#[test]
+fn a_failed_list_is_an_error() {
+    let desktop = Rc::new(FakeDesktop { list_failure: Some(Run { stdout: String::new(), stderr: " boom\n".into(), status: 1, timed_out: false }), ..FakeDesktop::default() });
+    assert_eq!(texts(&call(&desktop, "RunShortcut", json!({"mode": "list"}))), ["Error executing tool RunShortcut: shortcuts list failed: boom"]);
+    let desktop = Rc::new(FakeDesktop { list_failure: Some(Run { stdout: String::new(), stderr: String::new(), status: -9, timed_out: true }), ..FakeDesktop::default() });
+    assert_eq!(texts(&call(&desktop, "RunShortcut", json!({"mode": "list"}))), ["Error executing tool RunShortcut: shortcuts list timed out."]);
+}
+
+#[test]
+fn a_shortcut_runs_with_its_input_and_reports_its_output() {
+    let desktop = shortcuts("Resize\nOther\n", finished_shortcut(0, "<out>", ""));
+    assert_eq!(texts(&call(&desktop, "RunShortcut", json!({"name": "Resize", "input": "hello"}))), ["Shortcut 'Resize' finished with status 0.\n<out>"]);
+    assert_eq!(*desktop.shortcut_calls.borrow(), ["list None 60", "run Resize Some(\"hello\") 60"]);
+}
+
+#[test]
+fn a_shortcut_without_output_says_so() {
+    let desktop = shortcuts("Resize\n", None);
+    assert_eq!(texts(&call(&desktop, "RunShortcut", json!({"name": "Resize"}))), ["Shortcut 'Resize' finished with status 0.\n(no output)"]);
+    let desktop = shortcuts("Resize\n", finished_shortcut(1, "", " Error: nope\n"));
+    assert_eq!(texts(&call(&desktop, "RunShortcut", json!({"name": "Resize"}))), ["Shortcut 'Resize' finished with status 1.\n(no output)\nstderr:\nError: nope"]);
+    let desktop = shortcuts("Resize\n", finished_shortcut(1, "partial", "Error"));
+    assert_eq!(texts(&call(&desktop, "RunShortcut", json!({"name": "Resize"}))), ["Shortcut 'Resize' finished with status 1.\npartial"]);
+}
+
+#[test]
+fn an_unknown_shortcut_runs_nothing_and_suggests_close_names() {
+    let desktop = shortcuts("Resize Image\nMake GIF\n", None);
+    assert_eq!(texts(&call(&desktop, "RunShortcut", json!({"name": "resize"}))), ["Error executing tool RunShortcut: No shortcut named 'resize'. Close matches: Resize Image"]);
+    assert_eq!(texts(&call(&desktop, "RunShortcut", json!({"name": "zzz"}))), ["Error executing tool RunShortcut: No shortcut named 'zzz'."]);
+    assert!(desktop.shortcut_calls.borrow().iter().all(|call| call.starts_with("list")));
+}
+
+#[test]
+fn running_needs_a_name() {
+    let desktop = shortcuts("A\n", None);
+    for arguments in [json!({}), json!({"name": ""})] {
+        assert_eq!(texts(&call(&desktop, "RunShortcut", arguments)), ["Error executing tool RunShortcut: name is required for run."]);
+    }
+    assert!(desktop.shortcut_calls.borrow().is_empty());
+}
+
+#[test]
+fn a_shortcut_that_outlives_its_timeout_is_left_running() {
+    let desktop = shortcuts("Resize\n", Some(ShortcutRun { status: -9, timed_out: true, output: String::new(), stderr: String::new() }));
+    assert_eq!(texts(&call(&desktop, "RunShortcut", json!({"name": "Resize", "timeout": 5}))), ["Stopped waiting for shortcut 'Resize' after 5s; it may still be running."]);
+    call(&desktop, "RunShortcut", json!({"name": "Resize", "timeout": 100000}));
+    assert_eq!(desktop.shortcut_calls.borrow().last().unwrap(), "run Resize None 240");
 }

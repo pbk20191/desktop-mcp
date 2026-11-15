@@ -63,6 +63,12 @@ fn redirect(status: u16, location: &str) -> Response<Full<bytes::Bytes>> {
 }
 
 impl Desktop for FakeWeb {
+    fn list_shortcuts(&self, _folder: Option<&str>, _timeout: Duration) -> Pin<Box<dyn Future<Output = Result<Run, String>>>> {
+        unreachable!()
+    }
+    fn run_shortcut(&self, _name: &str, _input: Option<&str>, _timeout: Duration) -> Pin<Box<dyn Future<Output = Result<desktop_mcp_core::shortcuts::ShortcutRun, String>>>> {
+        unreachable!()
+    }
     fn notify(&self, _message: &str, _title: &str, _subtitle: Option<&str>, _sound: Option<&str>) -> Pin<Box<dyn Future<Output = Result<(), String>>>> {
         unreachable!()
     }

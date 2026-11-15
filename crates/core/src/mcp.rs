@@ -6,6 +6,7 @@ use rmcp::transport::OneshotTransport;
 use crate::clipboard::{Clipboard, ClipboardWrite};
 use crate::html::Element;
 use crate::open::{Application, Target as OpenTarget};
+use crate::shortcuts::ShortcutRun;
 use std::path::Path;
 use crate::io::Stream;
 use crate::shell::{self, Run, ShellMode};
@@ -43,6 +44,10 @@ pub trait Desktop: 'static {
     fn find_application(&self, name_or_bundle_id: &str) -> Pin<Box<dyn Future<Output = Option<Application>>>>;
     /// Posts a notification banner. `Err` carries the system's reason.
     fn notify(&self, message: &str, title: &str, subtitle: Option<&str>, sound: Option<&str>) -> Pin<Box<dyn Future<Output = Result<(), String>>>>;
+    /// The `shortcuts list` run: one name per line on stdout.
+    fn list_shortcuts(&self, folder: Option<&str>, timeout: Duration) -> Pin<Box<dyn Future<Output = Result<Run, String>>>>;
+    /// Runs the shortcut named exactly `name`, with `input` as its input text. `Err` when it cannot start.
+    fn run_shortcut(&self, name: &str, input: Option<&str>, timeout: Duration) -> Pin<Box<dyn Future<Output = Result<ShortcutRun, String>>>>;
 }
 
 /// One MCP server. Stateless requests get a fresh one each; a session keeps one.
@@ -210,8 +215,52 @@ struct NotificationArgs {
     sound: Option<NotificationSound>,
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum ShortcutMode {
+    #[default]
+    Run,
+    List,
+}
+
+fn sixty() -> i64 {
+    60
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct RunShortcutArgs {
+    #[serde(default)]
+    mode: ShortcutMode,
+    name: Option<String>,
+    input: Option<String>,
+    folder: Option<String>,
+    #[serde(default = "sixty")]
+    timeout: i64,
+}
+
 #[tool_router]
 impl Server {
+    #[tool(
+        name = "RunShortcut",
+        description = "Lists or runs the user's Shortcuts (the Shortcuts app, not keyboard shortcuts). mode='list' returns the shortcut names, optionally only those in 'folder'. mode='run' runs the shortcut 'name' (exact name), passing 'input' text to it, and returns its output.",
+        annotations(title = "RunShortcut", read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = true)
+    )]
+    async fn run_shortcut(&self, Parameters(args): Parameters<RunShortcutArgs>, cancellation: CancellationToken) -> CallToolResult {
+        let desktop = self.desktop.as_ref();
+        run_tool("RunShortcut", cancellation, async move {
+            let timeout = crate::shortcuts::timeout(args.timeout);
+            match args.mode {
+                ShortcutMode::List => crate::shortcuts::list(desktop, args.folder.as_deref(), timeout).await.map(|names| names.join("\n")),
+                ShortcutMode::Run => match args.name.filter(|name| !name.is_empty()) {
+                    Some(name) => crate::shortcuts::run(desktop, &name, args.input.as_deref(), timeout).await,
+                    None => Err("name is required for run.".to_string()),
+                },
+            }
+            .map_err(ToolError)
+        })
+        .await
+    }
+
     #[tool(
         name = "Notification",
         description = "Sends a macOS notification banner with a message, title, optional subtitle, and optional sound.",
