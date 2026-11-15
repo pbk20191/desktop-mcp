@@ -6,7 +6,7 @@ progress: the Swift port under [`macos/`](../macos/) is the one to use.
 ## What works
 
 `desktop-mcp serve --transport streamable-http [--host localhost] [--port 8000] [--session-timeout 1800]`
-serves `/mcp` (and `/mcp/`) with one tool so far, `Wait` with a `duration`:
+serves `/mcp` (and `/mcp/`) with the tools that need no display (see "Tools" below):
 
 - Stateless by default: `POST` with one JSON-RPC message, answered with `application/json`.
 - Sessions on request: an `initialize` whose `Accept` includes `text/event-stream` gets an
@@ -48,7 +48,22 @@ Without options it finds the installed Launch Agent from
 `~/Library/LaunchAgents/com.desktop-mcp.server.plist`: its socket, falling back to its HTTP address.
 The HTTP client is hyper over an outbound Network.framework connection (system TLS for `https`).
 
-Not there yet: `install`/`uninstall`, `auth`, `permissions`, and every tool but `Wait` by duration.
+### Tools
+
+`Shell`, `Scrape`, `Clipboard`, `Open`, `Notification`, `RunShortcut`, `Spotlight`, `Permissions`, and `Wait`
+(a duration, or until an app runs or quits), with the Swift port's descriptions, arguments and wording. Each tool's
+logic is in `core` (`crates/core/src/<tool>.rs`); the macOS side (`crates/macos/src/`) supplies what only the system
+can: child processes (posix_spawn, reaped by a dispatch process source), `NSPasteboard`, `NSWorkspace`,
+`NSXMLDocument` for HTML, `MDQuery`, ImageIO, and the permission checks. Differences from the Swift port:
+
+- Argument errors are rmcp's text (`failed to deserialize parameters: ...`), not the Swift SDK's.
+- `Scrape` truncates at 20,000 Unicode scalars, not grapheme clusters, so a page with combining marks is cut a few
+  characters earlier.
+- `Clipboard` reports copied files' paths in composed (NFC) form.
+
+Not there yet: the desktop tools (`App`, `Window`, `Menu`, `Snapshot`, `Click`, `Type`, `Scroll`, `Move`,
+`Shortcut`, `Desktop`, `OCR`, and `Wait` for windows and elements), and the `install`/`uninstall`, `auth` and
+`permissions` commands.
 
 ## How it is built
 
