@@ -1,6 +1,7 @@
 //! Opening, revealing and finding applications with NSWorkspace.
 use desktop_mcp_core::open::{Application, Target};
-use objc2_app_kit::{NSRunningApplication, NSWorkspace, NSWorkspaceOpenConfiguration};
+use desktop_mcp_core::wait::RunningApp;
+use objc2_app_kit::{NSApplicationActivationPolicy, NSRunningApplication, NSWorkspace, NSWorkspaceOpenConfiguration};
 use objc2_foundation::{NSArray, NSError, NSFileManager, NSString, NSURL};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -102,4 +103,19 @@ fn search(folder: &Path, wanted: &str, level: usize) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Apps with a Dock icon or a menu-bar presence; background-only processes are left out. NSWorkspace updates
+/// this list on the main run loop: call it on the main thread.
+pub fn running_apps() -> Vec<RunningApp> {
+    NSWorkspace::sharedWorkspace()
+        .runningApplications()
+        .iter()
+        .filter(|app| !app.isTerminated() && matches!(app.activationPolicy(), NSApplicationActivationPolicy::Regular | NSApplicationActivationPolicy::Accessory))
+        .map(|app| RunningApp {
+            pid: app.processIdentifier(),
+            name: app.localizedName().map(|name| name.to_string()),
+            bundle_id: app.bundleIdentifier().map(|id| id.to_string()),
+        })
+        .collect()
 }

@@ -10,6 +10,7 @@ pub mod open;
 pub mod shortcuts;
 pub mod spotlight;
 pub mod permissions;
+pub mod wait;
 pub mod http;
 pub mod session;
 pub mod config;

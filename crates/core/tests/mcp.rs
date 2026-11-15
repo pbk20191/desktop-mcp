@@ -6,9 +6,10 @@ use desktop_mcp_core::open::{Application, Target};
 use desktop_mcp_core::shortcuts::ShortcutRun;
 use desktop_mcp_core::spotlight::{Found, Item as FoundItem, Kind, Query, Search};
 use desktop_mcp_core::permissions::{format as permissions_report, Automation, PermissionState};
+use desktop_mcp_core::wait::RunningApp;
 use std::path::{Path, PathBuf};
 use serde_json::{json, Value};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
@@ -38,8 +39,17 @@ struct FakeDesktop {
     /// How long each search pretends to take.
     search_takes: Duration,
     permissions: Option<PermissionState>,
+    /// The running apps at each look; the last answer repeats.
+    looks: RefCell<Vec<Vec<RunningApp>>>,
+    looked: Cell<usize>,
 }
 impl Desktop for FakeDesktop {
+    fn running_apps(&self) -> Pin<Box<dyn Future<Output = Vec<RunningApp>>>> {
+        self.looked.set(self.looked.get() + 1);
+        let mut looks = self.looks.borrow_mut();
+        let apps = if looks.len() > 1 { looks.remove(0) } else { looks.first().cloned().unwrap_or_default() };
+        Box::pin(async move { apps })
+    }
     fn permissions(&self) -> Pin<Box<dyn Future<Output = PermissionState>>> {
         let state = self.permissions.expect("a permission state");
         Box::pin(async move { state })
@@ -192,11 +202,68 @@ fn wait_without_duration_is_an_error_result() {
 }
 
 #[test]
-fn wait_until_is_refused_for_now() {
+fn window_and_element_waits_are_refused_for_now() {
     let desktop = Rc::new(FakeDesktop::default());
-    let answer = call(&desktop, "Wait", json!({"until": "app_running", "app": "Finder"}));
+    let answer = call(&desktop, "Wait", json!({"until": "window", "app": "Finder"}));
     assert_eq!(answer["result"]["isError"], true);
-    assert_eq!(answer["result"]["content"][0]["text"], "Error executing tool Wait: Wait until 'app_running' is not available in this build.");
+    assert_eq!(answer["result"]["content"][0]["text"], "Error executing tool Wait: Wait until 'window' is not available in this build.");
+}
+
+fn preview() -> RunningApp {
+    RunningApp { pid: 42, name: Some("Preview".into()), bundle_id: Some("com.apple.Preview".into()) }
+}
+fn looking(looks: Vec<Vec<RunningApp>>) -> Rc<FakeDesktop> {
+    Rc::new(FakeDesktop { looks: RefCell::new(looks), ..FakeDesktop::default() })
+}
+
+#[test]
+fn an_app_that_starts_is_waited_for_with_backoff() {
+    let desktop = looking(vec![vec![], vec![], vec![], vec![], vec![preview()]]);
+    assert_eq!(texts(&call(&desktop, "Wait", json!({"until": "app_running", "app": "preview", "duration": 60}))), ["App preview is running."]);
+    assert_eq!(desktop.looked.get(), 5);
+    let millis: Vec<u128> = desktop.slept.borrow().iter().map(Duration::as_millis).collect();
+    assert_eq!(millis, [100, 200, 400, 800], "the duration is ignored with until");
+}
+
+#[test]
+fn an_app_that_quits_is_matched_by_bundle_id() {
+    let desktop = looking(vec![vec![preview()], vec![preview()], vec![]]);
+    assert_eq!(texts(&call(&desktop, "Wait", json!({"until": "app_quit", "app": "com.apple.Preview"}))), ["App com.apple.Preview quit."]);
+    assert_eq!(desktop.looked.get(), 3);
+}
+
+#[test]
+fn an_app_not_running_at_the_first_look_did_not_quit() {
+    let desktop = looking(vec![vec![preview()]]);
+    assert_eq!(texts(&call(&desktop, "Wait", json!({"until": "app_quit", "app": "Preveiw"}))), ["App Preveiw is not running."]);
+}
+
+#[test]
+fn app_waits_time_out() {
+    let desktop = looking(vec![vec![]]);
+    assert_eq!(texts(&call(&desktop, "Wait", json!({"until": "app_running", "app": "Preview", "timeout": 0}))), ["Error executing tool Wait: Timed out after 0s waiting for app Preview to run."]);
+    let desktop = looking(vec![vec![preview()]]);
+    assert_eq!(texts(&call(&desktop, "Wait", json!({"until": "app_quit", "app": "Preview", "timeout": -5}))), ["Error executing tool Wait: Timed out after 0s waiting for app Preview to quit."]);
+    assert_eq!(desktop.looked.get(), 1, "a zero timeout still looks once");
+}
+
+#[test]
+fn app_waits_need_an_app() {
+    let desktop = looking(vec![vec![preview()]]);
+    assert_eq!(texts(&call(&desktop, "Wait", json!({"until": "app_running"}))), ["Error executing tool Wait: app required for app_running."]);
+    assert_eq!(texts(&call(&desktop, "Wait", json!({"until": "app_quit", "app": "  "}))), ["Error executing tool Wait: app required for app_quit."]);
+    assert_eq!(desktop.looked.get(), 0);
+}
+
+#[test]
+fn apps_match_by_bundle_id_or_name() {
+    use desktop_mcp_core::wait::matches;
+    assert!(matches(Some("Preview"), Some("com.apple.Preview"), " preview "));
+    assert!(matches(None, Some("com.apple.Preview"), "com.apple.Preview"));
+    assert!(!matches(Some("Preview"), Some("com.apple.Preview"), "com.apple.preview"), "bundle ids match exactly");
+    assert!(!matches(Some("Preview"), None, "Prev"));
+    assert!(!matches(Some("Preview"), None, "  "));
+    assert!(!matches(None, None, "Preview"));
 }
 
 #[test]

@@ -148,3 +148,19 @@ fn permissions_are_reported_without_prompting() {
     assert!(lines[0].starts_with("Accessibility: ") && lines[1].starts_with("Screen Recording: ") && lines[2].starts_with("Automation (System Events): "), "{report}");
     assert_eq!(lines[3..], ["Needs Accessibility: App (resize, move), Click, Type, Scroll, Move, Shortcut, Snapshot, Desktop, Window, Menu, Wait (until)", "Needs Screen Recording: Snapshot (use_vision), OCR"]);
 }
+
+/// The app conditions of Wait only look at the running apps.
+#[test]
+fn wait_for_apps() {
+    let server = ServerUnderTest::start();
+    let answer = server.post(&call("Wait", json!({"until": "app_running", "app": "com.apple.finder"}))).json();
+    assert_eq!(text(&answer), "App com.apple.finder is running.");
+    let answer = server.post(&call("Wait", json!({"until": "app_quit", "app": "No Such App desktop-mcp"}))).json();
+    assert_eq!(text(&answer), "App No Such App desktop-mcp is not running.");
+    let start = Instant::now();
+    let answer = server.post(&call("Wait", json!({"until": "app_running", "app": "No Such App desktop-mcp", "timeout": 1}))).json();
+    assert!(start.elapsed() >= Duration::from_millis(900) && start.elapsed() < Duration::from_secs(3), "took {:?}", start.elapsed());
+    assert_eq!(text(&answer), "Error executing tool Wait: Timed out after 1s waiting for app No Such App desktop-mcp to run.");
+    let answer = server.post(&call("Wait", json!({"until": "app_quit"}))).json();
+    assert_eq!(text(&answer), "Error executing tool Wait: app required for app_quit.");
+}

@@ -9,6 +9,7 @@ use crate::open::{Application, Target as OpenTarget};
 use crate::shortcuts::ShortcutRun;
 use crate::spotlight::{Found, Kind as SearchKind, Search};
 use crate::permissions::PermissionState;
+use crate::wait::RunningApp;
 use std::path::Path;
 use crate::io::Stream;
 use crate::shell::{self, Run, ShellMode};
@@ -54,6 +55,8 @@ pub trait Desktop: 'static {
     fn search_files(&self, search: Search) -> Pin<Box<dyn Future<Output = Result<Found, String>>>>;
     /// The grants as they are now. Never prompts.
     fn permissions(&self) -> Pin<Box<dyn Future<Output = PermissionState>>>;
+    /// The applications running now.
+    fn running_apps(&self) -> Pin<Box<dyn Future<Output = Vec<RunningApp>>>>;
 }
 
 /// One MCP server. Stateless requests get a fresh one each; a session keeps one.
@@ -132,7 +135,7 @@ fn ten() -> i64 {
     10
 }
 
-#[allow(dead_code)] // `timeout`, `app`, `title` and `role` belong to the conditions that are not ported yet
+#[allow(dead_code)] // `title` and `role` belong to the conditions that are not ported yet
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct WaitArgs {
     duration: Option<i64>,
@@ -384,8 +387,11 @@ impl Server {
 
 impl Server {
     async fn wait_for(&self, args: WaitArgs) -> Result<String, ToolError> {
-        if let Some(until) = args.until {
-            return Err(ToolError(format!("Wait until '{}' is not available in this build.", until.name())));
+        match args.until {
+            Some(WaitUntil::AppRunning) => return crate::wait::until_app(self.desktop.as_ref(), args.app.as_deref(), true, args.timeout).await.map_err(ToolError),
+            Some(WaitUntil::AppQuit) => return crate::wait::until_app(self.desktop.as_ref(), args.app.as_deref(), false, args.timeout).await.map_err(ToolError),
+            Some(until) => return Err(ToolError(format!("Wait until '{}' is not available in this build.", until.name()))),
+            None => {}
         }
         let duration = args.duration.ok_or_else(|| ToolError("Missing required argument 'duration'".to_string()))?;
         self.desktop.sleep(Duration::from_secs(duration.max(0) as u64)).await;

@@ -8,6 +8,7 @@ use desktop_mcp_core::open::{Application, Target as OpenTarget};
 use desktop_mcp_core::shortcuts::ShortcutRun;
 use desktop_mcp_core::spotlight::{Found, Search};
 use desktop_mcp_core::permissions::PermissionState;
+use desktop_mcp_core::wait::RunningApp;
 use std::path::Path;
 use desktop_mcp_core::io::Stream;
 use desktop_mcp_core::shell::{Run, ShellMode};
@@ -119,6 +120,11 @@ impl Desktop for MacDesktop {
 
     fn permissions(&self) -> Pin<Box<dyn Future<Output = PermissionState>>> {
         Box::pin(crate::main_loop::offload(crate::permissions::check))
+    }
+
+    fn running_apps(&self) -> Pin<Box<dyn Future<Output = Vec<RunningApp>>>> {
+        let apps = crate::open::running_apps();
+        Box::pin(async move { apps })
     }
 
     fn find_application(&self, name_or_bundle_id: &str) -> Pin<Box<dyn Future<Output = Option<Application>>>> {

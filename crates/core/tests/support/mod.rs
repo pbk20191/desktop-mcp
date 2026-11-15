@@ -43,6 +43,9 @@ impl FakeDesktop {
     }
 }
 impl Desktop for FakeDesktop {
+    fn running_apps(&self) -> Pin<Box<dyn Future<Output = Vec<desktop_mcp_core::wait::RunningApp>>>> {
+        unreachable!()
+    }
     fn permissions(&self) -> Pin<Box<dyn Future<Output = desktop_mcp_core::permissions::PermissionState>>> {
         unreachable!()
     }

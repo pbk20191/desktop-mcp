@@ -72,3 +72,7 @@ harness = false
 [[test]]
 name = "spotlight"
 harness = false
+
+[[test]]
+name = "apps"
+harness = false
