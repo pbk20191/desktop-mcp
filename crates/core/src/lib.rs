@@ -3,3 +3,4 @@ pub mod guest;
 pub mod io;
 pub mod mcp;
 pub mod http;
+pub mod session;

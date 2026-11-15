@@ -42,6 +42,11 @@ impl ServerUnderTest {
     /// Starts `$DESKTOP_MCP_BIN serve --transport streamable-http` on a free loopback port, with `HOME` pointing
     /// at a fresh directory so no user configuration is read or written.
     pub fn start() -> ServerUnderTest {
+        Self::start_with(&[])
+    }
+
+    /// As [`start`](Self::start), with more `serve` options.
+    pub fn start_with(options: &[&str]) -> ServerUnderTest {
         let binary = std::env::var_os("DESKTOP_MCP_BIN").expect("set DESKTOP_MCP_BIN to the desktop-mcp binary under test");
         let port = TcpListener::bind("127.0.0.1:0").expect("a free port").local_addr().unwrap().port();
         let home = std::env::temp_dir().join(format!("desktop-mcp-parity-{}-{}", std::process::id(), SERVERS.fetch_add(1, Ordering::SeqCst)));
@@ -49,6 +54,7 @@ impl ServerUnderTest {
         let stderr = std::fs::File::create(home.join("stderr.log")).expect("a log file");
         let child = Command::new(&binary)
             .args(["serve", "--transport", "streamable-http", "--host", "127.0.0.1", "--port", &port.to_string()])
+            .args(options)
             .env("HOME", &home)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -173,6 +179,19 @@ impl Connection {
         received
     }
 
+    /// The status line and headers only, for a response that streams on (the session's `GET`).
+    pub fn read_head(&mut self) -> Reply {
+        let mut buffer = Vec::new();
+        let mut byte = [0u8; 1];
+        while !buffer.ends_with(b"\r\n\r\n") {
+            let count = self.stream.read(&mut byte).expect("read the reply head");
+            assert!(count > 0, "the connection closed before a reply: {:?}", String::from_utf8_lossy(&buffer));
+            buffer.push(byte[0]);
+        }
+        let (status, headers) = parse_head(&String::from_utf8_lossy(&buffer[..buffer.len() - 4]));
+        Reply { status, headers, body: Vec::new() }
+    }
+
     pub fn read_reply(&mut self) -> Reply {
         let mut buffer = Vec::new();
         let head_end = loop {
@@ -184,10 +203,7 @@ impl Connection {
             assert!(count > 0, "the connection closed before a reply: {:?}", String::from_utf8_lossy(&buffer));
             buffer.extend_from_slice(&chunk[..count]);
         };
-        let head = String::from_utf8_lossy(&buffer[..head_end]).into_owned();
-        let mut lines = head.split("\r\n");
-        let status: u16 = lines.next().and_then(|line| line.split(' ').nth(1)).and_then(|code| code.parse().ok()).expect("a status line");
-        let headers: Vec<(String, String)> = lines.filter_map(|line| line.split_once(':')).map(|(name, value)| (name.trim().to_string(), value.trim().to_string())).collect();
+        let (status, headers) = parse_head(&String::from_utf8_lossy(&buffer[..head_end]));
         let mut rest = buffer[head_end + 4..].to_vec();
         let header = |name: &str| headers.iter().find(|(key, _)| key.eq_ignore_ascii_case(name)).map(|(_, value)| value.clone());
         let body = if header("transfer-encoding").is_some_and(|value| value.eq_ignore_ascii_case("chunked")) {
@@ -234,6 +250,42 @@ impl Connection {
         assert!(count > 0, "the connection closed inside a chunked body");
         pending.extend_from_slice(&chunk[..count]);
     }
+}
+
+fn parse_head(head: &str) -> (u16, Vec<(String, String)>) {
+    let mut lines = head.split("\r\n");
+    let status = lines.next().and_then(|line| line.split(' ').nth(1)).and_then(|code| code.parse().ok()).expect("a status line");
+    let headers = lines.filter_map(|line| line.split_once(':')).map(|(name, value)| (name.trim().to_string(), value.trim().to_string())).collect();
+    (status, headers)
+}
+
+/// Server-sent events as (event name, data) pairs.
+pub fn sse_events(body: &[u8]) -> Vec<(Option<String>, String)> {
+    String::from_utf8_lossy(body)
+        .replace("\r\n", "\n")
+        .split("\n\n")
+        .filter(|block| !block.trim().is_empty())
+        .map(|block| {
+            let mut event = None;
+            let mut data = Vec::new();
+            for line in block.lines() {
+                if let Some(name) = line.strip_prefix("event:") {
+                    event = Some(name.trim().to_string());
+                } else if let Some(value) = line.strip_prefix("data:") {
+                    data.push(value.strip_prefix(' ').unwrap_or(value).to_string());
+                }
+            }
+            (event, data.join("\n"))
+        })
+        .collect()
+}
+
+/// The one JSON-RPC message of an SSE reply.
+pub fn sse_message(reply: &Reply) -> Value {
+    assert_eq!(reply.status, 200, "{:?}", String::from_utf8_lossy(&reply.body));
+    let messages: Vec<_> = sse_events(&reply.body).into_iter().filter(|(_, data)| !data.is_empty()).collect();
+    assert_eq!(messages.len(), 1, "one message expected in {:?}", String::from_utf8_lossy(&reply.body));
+    serde_json::from_str(&messages[0].1).expect("JSON in the event")
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {

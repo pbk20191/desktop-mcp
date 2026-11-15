@@ -14,6 +14,7 @@ desktop-mcp-macos = { path = "crates/macos" }
 rmcp = { version = "=3.10.0", default-features = false, features = ["server", "macros", "local"] }
 tokio = { version = "1", features = ["rt", "time", "sync", "macros"] }
 tokio-util = "0.7"
+uuid = { version = "1", features = ["v4"] }
 hyper = { version = "1", features = ["http1", "server"] }
 http = "1"
 http-body = "1"

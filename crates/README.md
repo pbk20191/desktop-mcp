@@ -5,15 +5,24 @@ progress: the Swift port under [`macos/`](../macos/) is the one to use.
 
 ## What works
 
-`desktop-mcp serve --transport streamable-http [--host localhost] [--port 8000]` answers stateless
-`POST /mcp` (and `/mcp/`): `initialize`, `tools/list`, and `tools/call` of `Wait` with a `duration`.
+`desktop-mcp serve --transport streamable-http [--host localhost] [--port 8000] [--session-timeout 1800]`
+serves `/mcp` (and `/mcp/`) with one tool so far, `Wait` with a `duration`:
+
+- Stateless by default: `POST` with one JSON-RPC message, answered with `application/json`.
+- Sessions on request: an `initialize` whose `Accept` includes `text/event-stream` gets an
+  `Mcp-Session-Id`. Requests carrying it are answered as server-sent events (an empty-data event,
+  then the answer); `GET` opens the one stream for server-initiated messages (409 for a second);
+  `DELETE` ends the session; an unknown or ended session is 404. A session ends after
+  `--session-timeout` seconds without a `POST` (a running call counts, an open `GET` does not),
+  after sending 64 MiB, or to make room when 64 exist (the least recently used idle one; 503 when
+  all are busy). `notifications/cancelled` and a client leaving a call cancel that call only.
 The status codes follow the Swift port: 406 without `application/json` in `Accept`, 415 for a
 non-JSON `Content-Type`, 400 for a batch or invalid JSON, 405 with `Allow: POST` for `GET` and
 `DELETE`, 202 for a notification. A client that disconnects cancels its tool call, and `Connection: close` and HTTP/1.0 clients get
 their whole answer before the connection closes. SIGINT and
 SIGTERM end the server with exit status 0.
 
-Not there yet: sessions and the `GET` stream, stdio, the Unix socket, `connect`, `install`, auth,
+Not there yet: stdio, the Unix socket, `connect`, `install`, auth,
 the allowlist, OAuth, TLS, `config.toml`, and every tool but `Wait` by duration.
 
 ## How it is built
@@ -29,7 +38,11 @@ the allowlist, OAuth, TLS, `config.toml`, and every tool but `Wait` by duration.
 - **HTTP by hyper** over `NwIo` (`crates/macos/src/nw.rs`). Received bytes stay in `dispatch_data`
   until they are copied once into hyper's buffer. libdispatch is used through the `dispatch2` crate;
   Network.framework has no binding crate, so its C functions are declared in `nw.rs`.
-- **Stateless requests** each get a fresh rmcp service, as in rmcp's own HTTP server.
+- **Stateless requests** each get a fresh rmcp service, as in rmcp's own HTTP server. A session keeps
+  one service behind a channel transport (`crates/core/src/session.rs`); answers go to the `POST`
+  that asked, anything else to the session's `GET` stream. While a session lives, the guest
+  runtime turns once a second (its idle sweeper and rmcp's own timers need it); with no session
+  and no connection, nothing runs.
 
 | Crate | Contents |
 |---|---|

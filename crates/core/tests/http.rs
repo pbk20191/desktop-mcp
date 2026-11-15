@@ -1,55 +1,15 @@
 //! The HTTP app's routing, without a socket.
-use bytes::Bytes;
-use desktop_mcp_core::guest::{Activity, MainLoop, Tick};
-use desktop_mcp_core::http::{handle, App};
-use desktop_mcp_core::mcp::{Desktop, Server};
-use http::{Request, Response, StatusCode};
-use http_body_util::{BodyExt, Full};
-use serde_json::{json, Value};
-use std::cell::{Cell, RefCell};
-use std::future::Future;
-use std::pin::Pin;
-use std::rc::Rc;
+mod support;
+use desktop_mcp_core::guest::Tick;
+use desktop_mcp_core::http::handle;
+use http::{Request, StatusCode};
+use serde_json::json;
 use std::time::Duration;
+use http_body_util::BodyExt;
+use support::{block_on, body, fixture, json_of};
 
-#[derive(Default)]
-struct FakeLoop { tick: Cell<Option<Tick>> }
-impl MainLoop for FakeLoop {
-    fn kick(&self) {}
-    fn set_tick(&self, rate: Tick) { self.tick.set(Some(rate)) }
-}
-/// A desktop whose `sleep` ends when the test says so.
-#[derive(Default)]
-struct FakeDesktop { release: RefCell<Option<tokio::sync::oneshot::Receiver<()>>> }
-impl Desktop for FakeDesktop {
-    fn sleep(&self, _duration: Duration) -> Pin<Box<dyn Future<Output = ()>>> {
-        let gate = self.release.borrow_mut().take();
-        Box::pin(async move {
-            if let Some(gate) = gate {
-                let _ = gate.await;
-            }
-        })
-    }
-}
-struct Fixture { app: Rc<App>, main_loop: Rc<FakeLoop>, desktop: Rc<FakeDesktop> }
-fn fixture() -> Fixture {
-    let (main_loop, desktop) = (Rc::new(FakeLoop::default()), Rc::new(FakeDesktop::default()));
-    let for_server = desktop.clone();
-    let app = Rc::new(App { make_server: Box::new(move || Server::new(for_server.clone(), &["Wait"])), activity: Activity::new(main_loop.clone()) });
-    Fixture { app, main_loop, desktop }
-}
-fn block_on<T>(future: impl Future<Output = T>) -> T {
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
-    tokio::task::LocalSet::new().block_on(&runtime, future)
-}
 fn post(path: &str) -> http::request::Builder {
     Request::builder().method("POST").uri(path).header("Accept", "application/json").header("Content-Type", "application/json")
-}
-fn body(text: &str) -> Full<Bytes> {
-    Full::new(Bytes::from(text.to_string()))
-}
-async fn json_of(response: Response<Full<Bytes>>) -> Value {
-    serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).expect("a JSON body")
 }
 const LIST: &str = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
 
@@ -169,15 +129,14 @@ fn other_path_is_404() {
 fn request_guard_is_held_only_during_the_call() {
     block_on(async {
         let fixture = fixture();
-        let (release, gate) = tokio::sync::oneshot::channel();
-        *fixture.desktop.release.borrow_mut() = Some(gate);
+        let release = fixture.desktop.hold_next_sleep();
         let wait = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"Wait","arguments":{"duration":1}}}).to_string();
         let app = fixture.app.clone();
         let call = tokio::task::spawn_local(async move { handle(&app, post("/mcp").body(body(&wait)).unwrap()).await });
         // Let the call reach the tool.
         for _ in 0..50 {
             tokio::time::sleep(Duration::from_millis(2)).await;
-            if fixture.desktop.release.borrow().is_none() {
+            if fixture.desktop.sleeping() {
                 break;
             }
         }
@@ -193,14 +152,13 @@ fn request_guard_is_held_only_during_the_call() {
 fn dropping_the_request_ends_the_tool_call() {
     block_on(async {
         let fixture = fixture();
-        let (release, gate) = tokio::sync::oneshot::channel::<()>();
-        *fixture.desktop.release.borrow_mut() = Some(gate);
+        let release = fixture.desktop.hold_next_sleep();
         let wait = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"Wait","arguments":{"duration":1}}}).to_string();
         let app = fixture.app.clone();
         let call = tokio::task::spawn_local(async move { handle(&app, post("/mcp").body(body(&wait)).unwrap()).await });
         for _ in 0..50 {
             tokio::time::sleep(Duration::from_millis(2)).await;
-            if fixture.desktop.release.borrow().is_none() {
+            if fixture.desktop.sleeping() {
                 break;
             }
         }
