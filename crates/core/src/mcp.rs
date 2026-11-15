@@ -3,6 +3,7 @@ use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ClientJsonRpcMessage, ContentBlock, Implementation, JsonRpcMessage, ServerCapabilities, ServerConfig, ServerJsonRpcMessage};
 use rmcp::transport::OneshotTransport;
+use crate::clipboard::{Clipboard, ClipboardWrite};
 use crate::html::Element;
 use crate::io::Stream;
 use crate::shell::{self, Run, ShellMode};
@@ -28,6 +29,10 @@ pub trait Desktop: 'static {
     /// An HTML page's `html` element, parsed the way a browser would after decoding `body` from `charset` (UTF-8
     /// when absent or unknown). `None` when nothing could be parsed.
     fn parse_html(&self, body: &[u8], charset: Option<&str>) -> Option<Element>;
+    /// The clipboard's text, file paths and image (as PNG scaled to at most `image_max_side`).
+    fn read_clipboard(&self, image_max_side: u32) -> Pin<Box<dyn Future<Output = Clipboard>>>;
+    /// Replaces the clipboard's contents.
+    fn write_clipboard(&self, contents: ClipboardWrite) -> Pin<Box<dyn Future<Output = Result<(), String>>>>;
 }
 
 /// One MCP server. Stateless requests get a fresh one each; a session keeps one.
@@ -52,13 +57,28 @@ impl Server {
 /// A tool's failure, shown to the model as an error result (not a protocol error).
 struct ToolError(String);
 
+/// What a tool answers: one text, or several blocks.
+struct Content(Vec<ContentBlock>);
+
+impl From<String> for Content {
+    fn from(text: String) -> Content {
+        Content(vec![ContentBlock::text(text)])
+    }
+}
+
+impl From<Vec<ContentBlock>> for Content {
+    fn from(blocks: Vec<ContentBlock>) -> Content {
+        Content(blocks)
+    }
+}
+
 /// Runs a tool's work until it finishes or its request is cancelled (`notifications/cancelled`, or the client
 /// went away), and turns the outcome into the result the model sees. Cancellation drops the work on the spot,
 /// so whatever it holds (a child process, a timer) is released then.
-async fn run_tool(tool: &str, cancellation: CancellationToken, work: impl Future<Output = Result<String, ToolError>>) -> CallToolResult {
+async fn run_tool<T: Into<Content>>(tool: &str, cancellation: CancellationToken, work: impl Future<Output = Result<T, ToolError>>) -> CallToolResult {
     tokio::select! {
         outcome = work => match outcome {
-            Ok(text) => CallToolResult::success(vec![ContentBlock::text(text)]),
+            Ok(content) => CallToolResult::success(content.into().0),
             Err(ToolError(message)) => CallToolResult::error(vec![ContentBlock::text(format!("Error executing tool {tool}: {message}"))]),
         },
         _ = cancellation.cancelled() => CallToolResult::error(vec![ContentBlock::text("Cancelled.")]),
@@ -117,8 +137,40 @@ struct ScrapeArgs {
     url: String,
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum ClipboardMode {
+    #[default]
+    Read,
+    Write,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct ClipboardArgs {
+    #[serde(default)]
+    mode: ClipboardMode,
+    text: Option<String>,
+    paths: Option<Vec<String>>,
+}
+
 #[tool_router]
 impl Server {
+    #[tool(
+        name = "Clipboard",
+        description = "Reads or writes the clipboard. mode='read' (default) returns the copied text, file paths and image; mode='write' replaces the clipboard with 'text' or with the files in 'paths' (which must exist), not both.",
+        annotations(title = "Clipboard", read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = false)
+    )]
+    async fn clipboard(&self, Parameters(args): Parameters<ClipboardArgs>, cancellation: CancellationToken) -> CallToolResult {
+        let desktop = self.desktop.as_ref();
+        run_tool("Clipboard", cancellation, async move {
+            match args.mode {
+                ClipboardMode::Read => Ok(crate::clipboard::read(desktop).await),
+                ClipboardMode::Write => crate::clipboard::write(desktop, args.text, args.paths).await.map(|text| vec![ContentBlock::text(text)]).map_err(ToolError),
+            }
+        })
+        .await
+    }
+
     #[tool(
         name = "Scrape",
         description = "Fetch content from a URL. Performs a lightweight HTTP request and returns the page content as text.",

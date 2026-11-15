@@ -2,6 +2,7 @@
 use block2::RcBlock;
 use desktop_mcp_core::mcp::Desktop;
 use crate::nw::NwIo;
+use desktop_mcp_core::clipboard::{Clipboard, ClipboardWrite};
 use desktop_mcp_core::html::Element;
 use desktop_mcp_core::io::Stream;
 use desktop_mcp_core::shell::{Run, ShellMode};
@@ -26,11 +27,19 @@ impl Drop for Timer {
 }
 
 #[derive(Default)]
-pub struct MacDesktop;
+pub struct MacDesktop {
+    /// The pasteboard the Clipboard tool uses; the general one when `None`.
+    pasteboard: Option<String>,
+}
 
 impl MacDesktop {
     pub fn new() -> MacDesktop {
-        MacDesktop
+        MacDesktop::default()
+    }
+
+    /// Uses the named pasteboard instead of the general one.
+    pub fn with_pasteboard(name: &str) -> MacDesktop {
+        MacDesktop { pasteboard: Some(name.to_string()) }
     }
 }
 
@@ -63,6 +72,16 @@ impl Desktop for MacDesktop {
 
     fn parse_html(&self, body: &[u8], charset: Option<&str>) -> Option<Element> {
         crate::html::parse(body, charset)
+    }
+
+    fn read_clipboard(&self, image_max_side: u32) -> Pin<Box<dyn Future<Output = Clipboard>>> {
+        let name = self.pasteboard.clone();
+        Box::pin(crate::main_loop::offload(move || crate::clipboard::read(name.as_deref(), image_max_side)))
+    }
+
+    fn write_clipboard(&self, contents: ClipboardWrite) -> Pin<Box<dyn Future<Output = Result<(), String>>>> {
+        let name = self.pasteboard.clone();
+        Box::pin(crate::main_loop::offload(move || crate::clipboard::write(name.as_deref(), contents)))
     }
 }
 

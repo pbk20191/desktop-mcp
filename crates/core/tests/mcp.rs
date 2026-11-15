@@ -1,6 +1,7 @@
 //! The MCP server, driven message by message with a fake desktop.
 use desktop_mcp_core::mcp::{answer_stateless, Desktop, Server};
 use desktop_mcp_core::shell::{Run, ShellMode};
+use desktop_mcp_core::clipboard::{Clipboard, ClipboardWrite, Image};
 use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::future::Future;
@@ -13,8 +14,22 @@ struct FakeDesktop {
     slept: RefCell<Vec<Duration>>,
     shells: RefCell<Vec<(String, ShellMode, Duration)>>,
     shell_answer: RefCell<Option<Result<Run, String>>>,
+    clipboard: RefCell<Clipboard>,
+    image_limits: RefCell<Vec<u32>>,
+    written: RefCell<Vec<ClipboardWrite>>,
+    refuse_writes: bool,
 }
 impl Desktop for FakeDesktop {
+    fn read_clipboard(&self, image_max_side: u32) -> Pin<Box<dyn Future<Output = Clipboard>>> {
+        self.image_limits.borrow_mut().push(image_max_side);
+        let contents = self.clipboard.borrow().clone();
+        Box::pin(async move { contents })
+    }
+    fn write_clipboard(&self, contents: ClipboardWrite) -> Pin<Box<dyn Future<Output = Result<(), String>>>> {
+        self.written.borrow_mut().push(contents);
+        let refused = self.refuse_writes;
+        Box::pin(async move { if refused { Err("Could not write to the clipboard.".to_string()) } else { Ok(()) } })
+    }
     fn resolve(&self, _host: &str) -> Pin<Box<dyn Future<Output = Result<Vec<std::net::IpAddr>, String>>>> {
         Box::pin(async { Err("no network in these tests".to_string()) })
     }
@@ -46,7 +61,7 @@ impl FakeDesktop {
 fn ask(desktop: &Rc<FakeDesktop>, message: Value) -> Option<Value> {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
     let local = tokio::task::LocalSet::new();
-    let server = Server::new(desktop.clone(), &["Wait", "Shell", "Scrape"]);
+    let server = Server::new(desktop.clone(), &["Wait", "Shell", "Scrape", "Clipboard"]);
     local.block_on(&runtime, async move {
         let answer = answer_stateless(server, serde_json::from_value(message).unwrap()).await;
         answer.map(|message| serde_json::to_value(message).unwrap())
@@ -64,7 +79,7 @@ fn listed_tools(desktop: &Rc<FakeDesktop>) -> Vec<Value> {
 fn only_the_requested_tools_are_listed() {
     let desktop = Rc::new(FakeDesktop::default());
     let names: Vec<String> = listed_tools(&desktop).iter().map(|tool| tool["name"].as_str().unwrap().to_string()).collect();
-    assert_eq!(names, ["Scrape", "Shell", "Wait"]);
+    assert_eq!(names, ["Clipboard", "Scrape", "Shell", "Wait"]);
     let desktop = Rc::new(FakeDesktop::default());
     let server = Server::new(desktop.clone(), &["Wait"]);
     let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
@@ -183,4 +198,96 @@ fn shell_needs_a_command() {
     let answer = call(&desktop, "Shell", json!({}));
     assert!(answer["error"].is_object() || answer["result"]["isError"] == true, "{answer}");
     assert!(desktop.shells.borrow().is_empty());
+}
+
+fn with_clipboard(contents: Clipboard) -> Rc<FakeDesktop> {
+    let desktop = FakeDesktop::default();
+    *desktop.clipboard.borrow_mut() = contents;
+    Rc::new(desktop)
+}
+fn texts(answer: &Value) -> Vec<String> {
+    answer["result"]["content"].as_array().unwrap().iter().filter(|c| c["type"] == "text").map(|c| c["text"].as_str().unwrap().to_string()).collect()
+}
+
+#[test]
+fn an_empty_clipboard_says_so() {
+    let desktop = with_clipboard(Clipboard::default());
+    let answer = call(&desktop, "Clipboard", json!({}));
+    assert_eq!(texts(&answer), ["The clipboard is empty."]);
+    assert_eq!(*desktop.image_limits.borrow(), [1568]);
+}
+
+#[test]
+fn clipboard_text_is_read() {
+    let desktop = with_clipboard(Clipboard { text: Some("안녕 hi".into()), ..Clipboard::default() });
+    assert_eq!(texts(&call(&desktop, "Clipboard", json!({"mode": "read"}))), ["안녕 hi"]);
+}
+
+#[test]
+fn long_clipboard_text_is_truncated() {
+    let desktop = with_clipboard(Clipboard { text: Some("a".repeat(100_010)), ..Clipboard::default() });
+    assert_eq!(texts(&call(&desktop, "Clipboard", json!({}))), [format!("{}… (truncated, 100010 characters)", "a".repeat(100_000))]);
+}
+
+#[test]
+fn clipboard_text_and_files_are_reported_together() {
+    let desktop = with_clipboard(Clipboard { text: Some("a.txt".into()), files: vec!["/tmp/a.txt".into(), "/tmp/문서 b.txt".into()], image: None });
+    assert_eq!(texts(&call(&desktop, "Clipboard", json!({}))), ["a.txt\n\nFiles:\n/tmp/a.txt\n/tmp/문서 b.txt"]);
+}
+
+#[test]
+fn a_clipboard_image_comes_as_png_with_its_size() {
+    let desktop = with_clipboard(Clipboard { image: Some(Image { png: vec![1, 2, 3], width: 1568, height: 523 }), ..Clipboard::default() });
+    let answer = call(&desktop, "Clipboard", json!({}));
+    assert_eq!(texts(&answer), ["Image (1568×523)."]);
+    let image = &answer["result"]["content"][1];
+    assert_eq!((image["type"].as_str(), image["mimeType"].as_str(), image["data"].as_str()), (Some("image"), Some("image/png"), Some("AQID")));
+    let desktop = with_clipboard(Clipboard { text: Some("caption".into()), image: Some(Image { png: vec![0], width: 4, height: 2 }), ..Clipboard::default() });
+    assert_eq!(texts(&call(&desktop, "Clipboard", json!({}))), ["caption"]);
+}
+
+#[test]
+fn clipboard_text_is_written() {
+    let desktop = Rc::new(FakeDesktop::default());
+    assert_eq!(texts(&call(&desktop, "Clipboard", json!({"mode": "write", "text": "안녕 hi"}))), ["Copied 5 characters."]);
+    assert_eq!(*desktop.written.borrow(), [ClipboardWrite::Text("안녕 hi".into())]);
+}
+
+#[test]
+fn clipboard_files_are_written_when_they_exist() {
+    let directory = tempfile::tempdir().unwrap();
+    let (first, second) = (directory.path().join("a.txt"), directory.path().join("문서 b.txt"));
+    std::fs::write(&first, "x").unwrap();
+    std::fs::write(&second, "x").unwrap();
+    let desktop = Rc::new(FakeDesktop::default());
+    let paths = [first.to_str().unwrap(), second.to_str().unwrap()];
+    assert_eq!(texts(&call(&desktop, "Clipboard", json!({"mode": "write", "paths": paths}))), ["Copied 2 files."]);
+    assert_eq!(*desktop.written.borrow(), [ClipboardWrite::Files(vec![first.clone(), second])]);
+    assert_eq!(texts(&call(&desktop, "Clipboard", json!({"mode": "write", "paths": [first.to_str().unwrap()], "text": null}))), ["Copied 1 file."]);
+}
+
+#[test]
+fn a_tilde_path_is_expanded() {
+    let desktop = Rc::new(FakeDesktop::default());
+    let home = std::env::var("HOME").unwrap();
+    let answer = call(&desktop, "Clipboard", json!({"mode": "write", "paths": ["~/definitely-not-here-desktop-mcp"]}));
+    assert_eq!(texts(&answer), [format!("Error executing tool Clipboard: No such file: {home}/definitely-not-here-desktop-mcp")]);
+}
+
+#[test]
+fn clipboard_writes_are_checked() {
+    let desktop = Rc::new(FakeDesktop::default());
+    for (arguments, message) in [
+        (json!({"mode": "write", "paths": ["/nope"]}), "No such file: /nope"),
+        (json!({"mode": "write", "text": "a", "paths": ["/tmp"]}), "Pass either text or paths, not both."),
+        (json!({"mode": "write"}), "write needs text or paths."),
+        (json!({"mode": "write", "paths": []}), "write needs text or paths."),
+    ] {
+        let answer = call(&desktop, "Clipboard", arguments.clone());
+        assert_eq!(answer["result"]["isError"], true, "{arguments}");
+        assert_eq!(texts(&answer), [format!("Error executing tool Clipboard: {message}")], "{arguments}");
+    }
+    assert!(desktop.written.borrow().is_empty());
+    let refusing = Rc::new(FakeDesktop { refuse_writes: true, ..FakeDesktop::default() });
+    assert_eq!(texts(&call(&refusing, "Clipboard", json!({"mode": "write", "text": "a"}))), ["Error executing tool Clipboard: Could not write to the clipboard."]);
 }

@@ -32,7 +32,10 @@ clap = { version = "4", features = ["derive"] }
 block2 = "0.6"
 dispatch2 = { version = "0.3", default-features = false, features = ["std", "block2", "libc"] }
 objc2 = { version = "0.6", default-features = false, features = ["std"] }
-objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFRunLoop", "CFDate", "CFData", "CFArray", "CFPropertyList", "CFDictionary", "CFNumber", "CFString", "CFError"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSJSONSerialization", "NSData", "NSError", "NSString", "NSArray", "NSXMLDocument", "NSXMLElement", "NSXMLNode", "NSXMLNodeOptions", "NSEnumerator"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFRunLoop", "CFDate", "CFData", "CFArray", "CFPropertyList", "CFDictionary", "CFNumber", "CFString", "CFError", "CFCGTypes"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSJSONSerialization", "NSData", "NSError", "NSString", "NSArray", "NSXMLDocument", "NSXMLElement", "NSXMLNode", "NSXMLNodeOptions", "NSEnumerator", "NSURL", "NSDictionary", "NSValue", "NSObject"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGImage", "CGContext", "CGBitmapContext", "CGColorSpace"] }
+objc2-image-io = { version = "0.3", default-features = false, features = ["std", "CGImageSource", "CGImageDestination", "objc2-core-graphics"] }
 objc2-security = { version = "0.3", default-features = false, features = ["std", "SecBase", "SecCertificate", "SecIdentity", "SecImportExport", "SecKey", "SecProtocolObject", "SecProtocolOptions", "SecProtocolTypes"] }
 libc = "0.2"

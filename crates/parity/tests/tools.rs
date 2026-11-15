@@ -75,3 +75,18 @@ fn scrape_refuses_this_machine_and_other_schemes() {
         assert_eq!(text(&answer), format!("Error executing tool Scrape: {reason}"), "{url}");
     }
 }
+
+/// Only arguments that are refused before the pasteboard is touched: the suite must not change the user's clipboard.
+#[test]
+fn clipboard_writes_are_checked_before_the_clipboard_is_touched() {
+    let server = ServerUnderTest::start();
+    for (arguments, message) in [
+        (json!({"mode": "write", "text": "a", "paths": ["/tmp"]}), "Pass either text or paths, not both."),
+        (json!({"mode": "write"}), "write needs text or paths."),
+        (json!({"mode": "write", "paths": ["/nonexistent/desktop-mcp"]}), "No such file: /nonexistent/desktop-mcp"),
+    ] {
+        let answer = server.post(&call("Clipboard", arguments.clone())).json();
+        assert_eq!(answer["result"]["isError"], true, "{arguments}");
+        assert_eq!(text(&answer), format!("Error executing tool Clipboard: {message}"), "{arguments}");
+    }
+}

@@ -16,6 +16,9 @@ dispatch2.workspace = true
 objc2-core-foundation.workspace = true
 objc2-security.workspace = true
 objc2-foundation.workspace = true
+objc2-app-kit.workspace = true
+objc2-core-graphics.workspace = true
+objc2-image-io.workspace = true
 libc.workspace = true
 serde_json.workspace = true
 base64.workspace = true
@@ -49,4 +52,8 @@ harness = false
 
 [[test]]
 name = "resolve"
+harness = false
+
+[[test]]
+name = "clipboard"
 harness = false

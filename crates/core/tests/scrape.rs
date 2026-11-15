@@ -63,6 +63,12 @@ fn redirect(status: u16, location: &str) -> Response<Full<bytes::Bytes>> {
 }
 
 impl Desktop for FakeWeb {
+    fn read_clipboard(&self, _image_max_side: u32) -> Pin<Box<dyn Future<Output = desktop_mcp_core::clipboard::Clipboard>>> {
+        unreachable!()
+    }
+    fn write_clipboard(&self, _contents: desktop_mcp_core::clipboard::ClipboardWrite) -> Pin<Box<dyn Future<Output = Result<(), String>>>> {
+        unreachable!()
+    }
     fn sleep(&self, _duration: Duration) -> Pin<Box<dyn Future<Output = ()>>> {
         if self.instant_sleep { Box::pin(async {}) } else { Box::pin(std::future::pending()) }
     }

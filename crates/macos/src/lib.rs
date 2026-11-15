@@ -5,6 +5,7 @@ pub mod nw;
 pub mod desktop;
 pub mod process;
 pub mod html;
+pub mod clipboard;
 pub mod signals;
 pub mod tls;
 pub mod fd;

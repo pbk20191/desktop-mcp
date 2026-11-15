@@ -43,6 +43,12 @@ impl FakeDesktop {
     }
 }
 impl Desktop for FakeDesktop {
+    fn read_clipboard(&self, _image_max_side: u32) -> Pin<Box<dyn Future<Output = desktop_mcp_core::clipboard::Clipboard>>> {
+        Box::pin(async { Default::default() })
+    }
+    fn write_clipboard(&self, _contents: desktop_mcp_core::clipboard::ClipboardWrite) -> Pin<Box<dyn Future<Output = Result<(), String>>>> {
+        Box::pin(async { Err("no clipboard in these tests".to_string()) })
+    }
     fn resolve(&self, _host: &str) -> Pin<Box<dyn Future<Output = Result<Vec<std::net::IpAddr>, String>>>> {
         Box::pin(async { Err("no network in these tests".to_string()) })
     }
