@@ -4,6 +4,8 @@ use desktop_mcp_core::mcp::Desktop;
 use crate::nw::NwIo;
 use desktop_mcp_core::clipboard::{Clipboard, ClipboardWrite};
 use desktop_mcp_core::html::Element;
+use desktop_mcp_core::open::{Application, Target as OpenTarget};
+use std::path::Path;
 use desktop_mcp_core::io::Stream;
 use desktop_mcp_core::shell::{Run, ShellMode};
 use std::net::IpAddr;
@@ -82,6 +84,20 @@ impl Desktop for MacDesktop {
     fn write_clipboard(&self, contents: ClipboardWrite) -> Pin<Box<dyn Future<Output = Result<(), String>>>> {
         let name = self.pasteboard.clone();
         Box::pin(crate::main_loop::offload(move || crate::clipboard::write(name.as_deref(), contents)))
+    }
+
+    fn open(&self, target: &OpenTarget, app: Option<&Path>) -> Pin<Box<dyn Future<Output = Result<(), String>>>> {
+        Box::pin(crate::open::open(target.clone(), app.map(Path::to_path_buf)))
+    }
+
+    fn reveal(&self, path: &Path) -> Pin<Box<dyn Future<Output = ()>>> {
+        crate::open::reveal(path);
+        Box::pin(async {})
+    }
+
+    fn find_application(&self, name_or_bundle_id: &str) -> Pin<Box<dyn Future<Output = Option<Application>>>> {
+        let name = name_or_bundle_id.to_string();
+        Box::pin(crate::main_loop::offload(move || crate::open::application(&name)))
     }
 }
 

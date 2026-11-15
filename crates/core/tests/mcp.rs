@@ -2,6 +2,8 @@
 use desktop_mcp_core::mcp::{answer_stateless, Desktop, Server};
 use desktop_mcp_core::shell::{Run, ShellMode};
 use desktop_mcp_core::clipboard::{Clipboard, ClipboardWrite, Image};
+use desktop_mcp_core::open::{Application, Target};
+use std::path::{Path, PathBuf};
 use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::future::Future;
@@ -18,8 +20,23 @@ struct FakeDesktop {
     image_limits: RefCell<Vec<u32>>,
     written: RefCell<Vec<ClipboardWrite>>,
     refuse_writes: bool,
+    opened: RefCell<Vec<(Target, Option<PathBuf>)>>,
+    revealed: RefCell<Vec<PathBuf>>,
+    applications: Vec<(&'static str, Application)>,
 }
 impl Desktop for FakeDesktop {
+    fn open(&self, target: &Target, app: Option<&Path>) -> Pin<Box<dyn Future<Output = Result<(), String>>>> {
+        self.opened.borrow_mut().push((target.clone(), app.map(Path::to_path_buf)));
+        Box::pin(async { Ok(()) })
+    }
+    fn reveal(&self, path: &Path) -> Pin<Box<dyn Future<Output = ()>>> {
+        self.revealed.borrow_mut().push(path.to_path_buf());
+        Box::pin(async {})
+    }
+    fn find_application(&self, name: &str) -> Pin<Box<dyn Future<Output = Option<Application>>>> {
+        let found = self.applications.iter().find(|(known, _)| *known == name).map(|(_, application)| application.clone());
+        Box::pin(async move { found })
+    }
     fn read_clipboard(&self, image_max_side: u32) -> Pin<Box<dyn Future<Output = Clipboard>>> {
         self.image_limits.borrow_mut().push(image_max_side);
         let contents = self.clipboard.borrow().clone();
@@ -61,7 +78,7 @@ impl FakeDesktop {
 fn ask(desktop: &Rc<FakeDesktop>, message: Value) -> Option<Value> {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
     let local = tokio::task::LocalSet::new();
-    let server = Server::new(desktop.clone(), &["Wait", "Shell", "Scrape", "Clipboard"]);
+    let server = Server::new(desktop.clone(), &["Wait", "Shell", "Scrape", "Clipboard", "Open"]);
     local.block_on(&runtime, async move {
         let answer = answer_stateless(server, serde_json::from_value(message).unwrap()).await;
         answer.map(|message| serde_json::to_value(message).unwrap())
@@ -79,7 +96,7 @@ fn listed_tools(desktop: &Rc<FakeDesktop>) -> Vec<Value> {
 fn only_the_requested_tools_are_listed() {
     let desktop = Rc::new(FakeDesktop::default());
     let names: Vec<String> = listed_tools(&desktop).iter().map(|tool| tool["name"].as_str().unwrap().to_string()).collect();
-    assert_eq!(names, ["Clipboard", "Scrape", "Shell", "Wait"]);
+    assert_eq!(names, ["Clipboard", "Open", "Scrape", "Shell", "Wait"]);
     let desktop = Rc::new(FakeDesktop::default());
     let server = Server::new(desktop.clone(), &["Wait"]);
     let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
@@ -290,4 +307,61 @@ fn clipboard_writes_are_checked() {
     assert!(desktop.written.borrow().is_empty());
     let refusing = Rc::new(FakeDesktop { refuse_writes: true, ..FakeDesktop::default() });
     assert_eq!(texts(&call(&refusing, "Clipboard", json!({"mode": "write", "text": "a"}))), ["Error executing tool Clipboard: Could not write to the clipboard."]);
+}
+
+fn text_editor() -> Rc<FakeDesktop> {
+    Rc::new(FakeDesktop { applications: vec![("TextEdit", Application { path: "/System/Applications/TextEdit.app".into(), name: "텍스트 편집기".into() })], ..FakeDesktop::default() })
+}
+
+#[test]
+fn a_file_is_opened_with_its_default_application() {
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("문서 a b.txt");
+    std::fs::write(&file, "").unwrap();
+    let desktop = text_editor();
+    assert_eq!(texts(&call(&desktop, "Open", json!({"target": file}))), [format!("Opened {}.", file.display())]);
+    assert_eq!(*desktop.opened.borrow(), [(Target::File(file), None)]);
+}
+
+#[test]
+fn a_url_is_opened_as_given() {
+    let desktop = text_editor();
+    assert_eq!(texts(&call(&desktop, "Open", json!({"target": "  https://example.com/a?b=1 "}))), ["Opened https://example.com/a?b=1."]);
+    assert_eq!(*desktop.opened.borrow(), [(Target::Url("https://example.com/a?b=1".into()), None)]);
+}
+
+#[test]
+fn an_application_can_be_named() {
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("a.txt");
+    std::fs::write(&file, "").unwrap();
+    let desktop = text_editor();
+    assert_eq!(texts(&call(&desktop, "Open", json!({"target": file, "app": "TextEdit"}))), [format!("Opened {} with 텍스트 편집기.", file.display())]);
+    assert_eq!(*desktop.opened.borrow(), [(Target::File(file), Some(PathBuf::from("/System/Applications/TextEdit.app")))]);
+}
+
+#[test]
+fn a_file_is_revealed() {
+    let directory = tempfile::tempdir().unwrap();
+    let desktop = text_editor();
+    let answer = call(&desktop, "Open", json!({"target": directory.path(), "mode": "reveal", "app": "TextEdit"}));
+    assert_eq!(texts(&answer), [format!("Revealed {} in Finder.", directory.path().display())]);
+    assert_eq!(*desktop.revealed.borrow(), [directory.path().to_path_buf()]);
+    assert!(desktop.opened.borrow().is_empty());
+}
+
+#[test]
+fn open_refusals() {
+    let desktop = text_editor();
+    for (arguments, message) in [
+        (json!({"target": "  "}), "target is required."),
+        (json!({"target": "/nope/x"}), "No such file: /nope/x"),
+        (json!({"target": "https://example.com", "mode": "reveal"}), "reveal needs an existing file or folder path."),
+        (json!({"target": "https://example.com", "app": "NoSuchApp"}), "Application 'NoSuchApp' not found."),
+    ] {
+        let answer = call(&desktop, "Open", arguments.clone());
+        assert_eq!(answer["result"]["isError"], true, "{arguments}");
+        assert_eq!(texts(&answer), [format!("Error executing tool Open: {message}")], "{arguments}");
+    }
+    assert!(desktop.opened.borrow().is_empty() && desktop.revealed.borrow().is_empty());
 }

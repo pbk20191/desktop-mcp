@@ -90,3 +90,19 @@ fn clipboard_writes_are_checked_before_the_clipboard_is_touched() {
         assert_eq!(text(&answer), format!("Error executing tool Clipboard: {message}"), "{arguments}");
     }
 }
+
+/// Only refusals: anything else would open windows on the desktop.
+#[test]
+fn open_refuses_what_it_cannot_open() {
+    let server = ServerUnderTest::start();
+    for (arguments, message) in [
+        (json!({"target": " "}), "target is required."),
+        (json!({"target": "/nonexistent/desktop-mcp"}), "No such file: /nonexistent/desktop-mcp"),
+        (json!({"target": "https://example.com", "mode": "reveal"}), "reveal needs an existing file or folder path."),
+        (json!({"target": "https://example.com", "app": "NoSuchApp-desktop-mcp"}), "Application 'NoSuchApp-desktop-mcp' not found."),
+    ] {
+        let answer = server.post(&call("Open", arguments.clone())).json();
+        assert_eq!(answer["result"]["isError"], true, "{arguments}");
+        assert_eq!(text(&answer), format!("Error executing tool Open: {message}"), "{arguments}");
+    }
+}

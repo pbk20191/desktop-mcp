@@ -57,3 +57,7 @@ harness = false
 [[test]]
 name = "clipboard"
 harness = false
+
+[[test]]
+name = "open"
+harness = false

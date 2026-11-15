@@ -5,6 +5,8 @@ use rmcp::model::{CallToolResult, ClientJsonRpcMessage, ContentBlock, Implementa
 use rmcp::transport::OneshotTransport;
 use crate::clipboard::{Clipboard, ClipboardWrite};
 use crate::html::Element;
+use crate::open::{Application, Target as OpenTarget};
+use std::path::Path;
 use crate::io::Stream;
 use crate::shell::{self, Run, ShellMode};
 use std::net::IpAddr;
@@ -33,6 +35,12 @@ pub trait Desktop: 'static {
     fn read_clipboard(&self, image_max_side: u32) -> Pin<Box<dyn Future<Output = Clipboard>>>;
     /// Replaces the clipboard's contents.
     fn write_clipboard(&self, contents: ClipboardWrite) -> Pin<Box<dyn Future<Output = Result<(), String>>>>;
+    /// Opens a URL or file with its default application, or with the application at `app`, bringing it forward.
+    fn open(&self, target: &OpenTarget, app: Option<&Path>) -> Pin<Box<dyn Future<Output = Result<(), String>>>>;
+    /// Shows `path` selected in the file manager.
+    fn reveal(&self, path: &Path) -> Pin<Box<dyn Future<Output = ()>>>;
+    /// The application with this bundle id or name.
+    fn find_application(&self, name_or_bundle_id: &str) -> Pin<Box<dyn Future<Output = Option<Application>>>>;
 }
 
 /// One MCP server. Stateless requests get a fresh one each; a session keeps one.
@@ -153,8 +161,35 @@ struct ClipboardArgs {
     paths: Option<Vec<String>>,
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum OpenMode {
+    #[default]
+    Open,
+    Reveal,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct OpenArgs {
+    /// Absolute path, ~-path, or URL
+    target: String,
+    #[serde(default)]
+    mode: OpenMode,
+    app: Option<String>,
+}
+
 #[tool_router]
 impl Server {
+    #[tool(
+        name = "Open",
+        description = "Opens a file, folder or URL with the default application, or with the application given by 'app' (name or bundle id). mode='reveal' shows an existing file or folder in Finder instead.",
+        annotations(title = "Open", read_only_hint = false, destructive_hint = false, idempotent_hint = false, open_world_hint = true)
+    )]
+    async fn open(&self, Parameters(args): Parameters<OpenArgs>, cancellation: CancellationToken) -> CallToolResult {
+        let reveal = args.mode == OpenMode::Reveal;
+        run_tool("Open", cancellation, async move { crate::open::run(self.desktop.as_ref(), &args.target, reveal, args.app.as_deref()).await.map_err(ToolError) }).await
+    }
+
     #[tool(
         name = "Clipboard",
         description = "Reads or writes the clipboard. mode='read' (default) returns the copied text, file paths and image; mode='write' replaces the clipboard with 'text' or with the files in 'paths' (which must exist), not both.",

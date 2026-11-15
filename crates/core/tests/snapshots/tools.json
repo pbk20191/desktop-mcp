@@ -47,6 +47,49 @@
   {
     "annotations": {
       "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": false,
+      "title": "Open"
+    },
+    "description": "Opens a file, folder or URL with the default application, or with the application given by 'app' (name or bundle id). mode='reveal' shows an existing file or folder in Finder instead.",
+    "inputSchema": {
+      "$defs": {
+        "OpenMode": {
+          "enum": [
+            "open",
+            "reveal"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "app": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mode": {
+          "$ref": "#/$defs/OpenMode",
+          "default": "open"
+        },
+        "target": {
+          "description": "Absolute path, ~-path, or URL",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "type": "object"
+    },
+    "name": "Open"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": true,
       "readOnlyHint": true,

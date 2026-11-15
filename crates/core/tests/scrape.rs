@@ -63,6 +63,15 @@ fn redirect(status: u16, location: &str) -> Response<Full<bytes::Bytes>> {
 }
 
 impl Desktop for FakeWeb {
+    fn open(&self, _target: &desktop_mcp_core::open::Target, _app: Option<&std::path::Path>) -> Pin<Box<dyn Future<Output = Result<(), String>>>> {
+        unreachable!()
+    }
+    fn reveal(&self, _path: &std::path::Path) -> Pin<Box<dyn Future<Output = ()>>> {
+        unreachable!()
+    }
+    fn find_application(&self, _name: &str) -> Pin<Box<dyn Future<Output = Option<desktop_mcp_core::open::Application>>>> {
+        unreachable!()
+    }
     fn read_clipboard(&self, _image_max_side: u32) -> Pin<Box<dyn Future<Output = desktop_mcp_core::clipboard::Clipboard>>> {
         unreachable!()
     }

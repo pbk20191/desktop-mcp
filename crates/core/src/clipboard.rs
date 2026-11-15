@@ -82,7 +82,8 @@ pub async fn write(desktop: &dyn Desktop, text: Option<String>, paths: Option<Ve
     Ok(report)
 }
 
-fn expand_tilde(path: &str) -> PathBuf {
+/// `path` with a leading `~` or `~/` replaced by the home directory.
+pub(crate) fn expand_tilde(path: &str) -> PathBuf {
     let home = || std::env::var_os("HOME").map(PathBuf::from);
     match path.strip_prefix('~') {
         Some("") => home().unwrap_or_else(|| PathBuf::from(path)),
