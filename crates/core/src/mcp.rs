@@ -3,6 +3,7 @@ use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ClientJsonRpcMessage, ContentBlock, Implementation, JsonRpcMessage, ServerCapabilities, ServerConfig, ServerJsonRpcMessage};
 use rmcp::transport::OneshotTransport;
+use crate::shell::{self, Run, ShellMode};
 use rmcp::{schemars, tool, tool_handler, tool_router, RoleServer, ServerHandler};
 use std::future::Future;
 use std::pin::Pin;
@@ -14,6 +15,9 @@ use tokio_util::sync::CancellationToken;
 pub trait Desktop: 'static {
     /// Completes after `duration`, measured exactly (not by the guest runtime's coarse timers).
     fn sleep(&self, duration: Duration) -> Pin<Box<dyn Future<Output = ()>>>;
+    /// Runs `command` in `mode`'s interpreter with no stdin, killing it (and whatever it started) after
+    /// `timeout` or when the future is dropped. `Err` when it cannot start.
+    fn shell(&self, command: &str, mode: ShellMode, timeout: Duration) -> Pin<Box<dyn Future<Output = Result<Run, String>>>>;
 }
 
 /// One MCP server. Stateless requests get a fresh one each; a session keeps one.
@@ -89,8 +93,33 @@ struct WaitArgs {
     role: Option<String>,
 }
 
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct ShellArgs {
+    command: String,
+    #[serde(default)]
+    mode: ShellMode,
+    #[serde(default = "ten")]
+    timeout: i64,
+}
+
 #[tool_router]
 impl Server {
+    #[tool(
+        name = "Shell",
+        description = "Execute commands on macOS. Modes: 'shell' (default) for bash/zsh commands, 'osascript' for AppleScript. Use for file system, process management, system operations, and automation scripts. SECURITY WARNING: Commands are executed with the same permissions as the terminal/application running this server. Review and understand all actions before execution, especially those involving file operations, system modifications, or external processes.",
+        annotations(title = "Shell", read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = true)
+    )]
+    async fn shell(&self, Parameters(args): Parameters<ShellArgs>, cancellation: CancellationToken) -> CallToolResult {
+        run_tool("Shell", cancellation, async {
+            let timeout = shell::clamp_timeout(args.timeout, std::env::var(shell::MAX_TIMEOUT_ENV).ok().as_deref());
+            let run = self.desktop.shell(&args.command, args.mode, Duration::from_secs(timeout.max(0) as u64)).await;
+            let (output, status) = shell::report(run, args.timeout, timeout);
+            let label = if args.mode == ShellMode::Osascript { "AppleScript" } else { "Shell" };
+            Ok(format!("{label} Response: {output}\nStatus Code: {status}"))
+        })
+        .await
+    }
+
     #[tool(
         name = "Wait",
         description = "Waits a fixed 'duration' in seconds, or with 'until' waits for a condition, checking with backoff until it holds or 'timeout' seconds (default 10) pass, then fails. 'duration' is ignored with 'until'. Conditions: 'app_running' / 'app_quit' ('app': name or bundle id); 'window' / 'window_gone' ('app' and/or 'title', a case-insensitive substring; 'window' returns the matching Window list lines); 'element' ('title' and/or 'role', an exact AX role such as AXButton, in 'app' or else the app owning the menu bar; title matches title, description or value; returns '<role> \"<title>\" at [x,y]', the centre in Click coordinates). Window and element conditions need Accessibility.",

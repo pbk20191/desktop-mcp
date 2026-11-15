@@ -1,6 +1,7 @@
 //! The tools' behaviour on macOS.
 use block2::RcBlock;
 use desktop_mcp_core::mcp::Desktop;
+use desktop_mcp_core::shell::{Run, ShellMode};
 use dispatch2::{DispatchObject, DispatchQueue, DispatchRetained, DispatchSource, DispatchTime};
 use std::cell::Cell;
 use std::future::Future;
@@ -30,28 +31,57 @@ impl MacDesktop {
 }
 
 impl Desktop for MacDesktop {
-    /// A libdispatch timer, so it needs no tick of the guest runtime and is as exact as the system allows
-    /// (a leeway of a hundredth of the delay, at most 100 ms).
     fn sleep(&self, duration: Duration) -> Pin<Box<dyn Future<Output = ()>>> {
-        Box::pin(async move {
-            // Delays libdispatch cannot express (centuries) never end; the request's cancellation does.
-            let Ok(start) = DispatchTime::try_from(duration) else { return std::future::pending().await };
-            let (fired, wait) = tokio::sync::oneshot::channel::<()>();
-            let fired = Cell::new(Some(fired));
-            let kind = &raw const dispatch2::_dispatch_source_type_timer;
-            let source = unsafe { DispatchSource::new(kind.cast_mut(), 0, 0, Some(DispatchQueue::main())) };
-            let leeway = (duration.as_nanos() / 100).min(100_000_000) as u64;
-            source.set_timer(start, NO_REPEAT, leeway);
-            let handler = RcBlock::new(move || {
-                if let Some(fired) = fired.take() {
-                    let _ = fired.send(());
-                }
-            });
-            unsafe { source.set_event_handler_with_block(RcBlock::as_ptr(&handler)) };
-            source.resume();
-            let timer = Timer(source);
-            let _ = wait.await;
-            drop(timer);
-        })
+        Box::pin(sleep(duration))
     }
+
+    /// `/bin/bash -c`, or `osascript -e` (AppleScript, or JXA when the first line asks for it). Both are child
+    /// processes: one per call, so calls run concurrently, a timeout kills the whole process group, and a crash
+    /// in a script engine takes down nothing but that call.
+    fn shell(&self, command: &str, mode: ShellMode, timeout: Duration) -> Pin<Box<dyn Future<Output = Result<Run, String>>>> {
+        let argv = match mode {
+            ShellMode::Shell => vec!["/bin/bash".to_string(), "-c".to_string(), command.to_string()],
+            ShellMode::Osascript => std::iter::once("/usr/bin/osascript".to_string()).chain(osascript_arguments(command)).collect(),
+        };
+        Box::pin(crate::process::run(argv, timeout))
+    }
+}
+
+/// osascript's arguments for a script given as text. The language comes from the first line: a shebang naming
+/// JavaScript (`#!/usr/bin/osascript -l JavaScript`) or a `// language: JavaScript` comment selects JXA; anything
+/// else is AppleScript. A shebang line is dropped, since `-e` would hand it to the interpreter; the comment
+/// stays, being valid JavaScript.
+pub fn osascript_arguments(source: &str) -> Vec<String> {
+    let (first_line, rest) = match source.split_once('\n') {
+        Some((first, rest)) => (first.strip_suffix('\r').unwrap_or(first), rest),
+        None => (source, ""),
+    };
+    let lowered = first_line.to_lowercase();
+    let java_script = lowered.contains("javascript") && (lowered.starts_with("#!") || (lowered.starts_with("//") && lowered.contains("lang")));
+    let body = if first_line.starts_with("#!") { rest } else { source };
+    let language = if java_script { vec!["-l".to_string(), "JavaScript".to_string()] } else { vec![] };
+    language.into_iter().chain(["-e".to_string(), body.to_string()]).collect()
+}
+
+/// Completes after `duration` on a libdispatch timer, so it needs no tick of the guest runtime and is as exact
+/// as the system allows (a leeway of a hundredth of the delay, at most 100 ms).
+pub(crate) async fn sleep(duration: Duration) {
+    // Delays libdispatch cannot express (centuries) never end; the request's cancellation does.
+    let Ok(start) = DispatchTime::try_from(duration) else { return std::future::pending().await };
+    let (fired, wait) = tokio::sync::oneshot::channel::<()>();
+    let fired = Cell::new(Some(fired));
+    let kind = &raw const dispatch2::_dispatch_source_type_timer;
+    let source = unsafe { DispatchSource::new(kind.cast_mut(), 0, 0, Some(DispatchQueue::main())) };
+    let leeway = (duration.as_nanos() / 100).min(100_000_000) as u64;
+    source.set_timer(start, NO_REPEAT, leeway);
+    let handler = RcBlock::new(move || {
+        if let Some(fired) = fired.take() {
+            let _ = fired.send(());
+        }
+    });
+    unsafe { source.set_event_handler_with_block(RcBlock::as_ptr(&handler)) };
+    source.resume();
+    let timer = Timer(source);
+    let _ = wait.await;
+    drop(timer);
 }

@@ -42,3 +42,7 @@ harness = false
 [[test]]
 name = "fd"
 harness = false
+
+[[test]]
+name = "shell"
+harness = false

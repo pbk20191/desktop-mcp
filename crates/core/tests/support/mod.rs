@@ -3,6 +3,7 @@
 use bytes::Bytes;
 use desktop_mcp_core::guest::{Activity, MainLoop, Tick};
 use desktop_mcp_core::http::{App, Body, Security};
+use desktop_mcp_core::shell::{Run, ShellMode};
 use desktop_mcp_core::mcp::{Desktop, Server};
 use desktop_mcp_core::session::{SessionSettings, Sessions};
 use http::{Request, Response};
@@ -42,6 +43,9 @@ impl FakeDesktop {
     }
 }
 impl Desktop for FakeDesktop {
+    fn shell(&self, _command: &str, _mode: ShellMode, _timeout: Duration) -> Pin<Box<dyn Future<Output = Result<Run, String>>>> {
+        Box::pin(async { Err("no shell in these tests".to_string()) })
+    }
     fn sleep(&self, _duration: Duration) -> Pin<Box<dyn Future<Output = ()>>> {
         let gate = self.gate.borrow_mut().take();
         Box::pin(async move {

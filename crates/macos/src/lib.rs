@@ -3,6 +3,7 @@
 pub mod main_loop;
 pub mod nw;
 pub mod desktop;
+pub mod process;
 pub mod signals;
 pub mod tls;
 pub mod fd;

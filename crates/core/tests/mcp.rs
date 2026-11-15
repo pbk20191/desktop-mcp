@@ -1,5 +1,6 @@
 //! The MCP server, driven message by message with a fake desktop.
 use desktop_mcp_core::mcp::{answer_stateless, Desktop, Server};
+use desktop_mcp_core::shell::{Run, ShellMode};
 use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::future::Future;
@@ -8,11 +9,27 @@ use std::rc::Rc;
 use std::time::Duration;
 
 #[derive(Default)]
-struct FakeDesktop { slept: RefCell<Vec<Duration>> }
+struct FakeDesktop {
+    slept: RefCell<Vec<Duration>>,
+    shells: RefCell<Vec<(String, ShellMode, Duration)>>,
+    shell_answer: RefCell<Option<Result<Run, String>>>,
+}
 impl Desktop for FakeDesktop {
     fn sleep(&self, duration: Duration) -> Pin<Box<dyn Future<Output = ()>>> {
         self.slept.borrow_mut().push(duration);
         Box::pin(async {})
+    }
+    fn shell(&self, command: &str, mode: ShellMode, timeout: Duration) -> Pin<Box<dyn Future<Output = Result<Run, String>>>> {
+        self.shells.borrow_mut().push((command.to_string(), mode, timeout));
+        let answer = self.shell_answer.borrow_mut().take().expect("a canned shell answer");
+        Box::pin(async move { answer })
+    }
+}
+impl FakeDesktop {
+    fn answering(answer: Result<Run, String>) -> Rc<FakeDesktop> {
+        let desktop = FakeDesktop::default();
+        *desktop.shell_answer.borrow_mut() = Some(answer);
+        Rc::new(desktop)
     }
 }
 
@@ -20,7 +37,7 @@ impl Desktop for FakeDesktop {
 fn ask(desktop: &Rc<FakeDesktop>, message: Value) -> Option<Value> {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
     let local = tokio::task::LocalSet::new();
-    let server = Server::new(desktop.clone(), &["Wait"]);
+    let server = Server::new(desktop.clone(), &["Wait", "Shell"]);
     local.block_on(&runtime, async move {
         let answer = answer_stateless(server, serde_json::from_value(message).unwrap()).await;
         answer.map(|message| serde_json::to_value(message).unwrap())
@@ -38,7 +55,12 @@ fn listed_tools(desktop: &Rc<FakeDesktop>) -> Vec<Value> {
 fn only_the_requested_tools_are_listed() {
     let desktop = Rc::new(FakeDesktop::default());
     let names: Vec<String> = listed_tools(&desktop).iter().map(|tool| tool["name"].as_str().unwrap().to_string()).collect();
-    assert_eq!(names, ["Wait"]);
+    assert_eq!(names, ["Shell", "Wait"]);
+    let desktop = Rc::new(FakeDesktop::default());
+    let server = Server::new(desktop.clone(), &["Wait"]);
+    let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+    let answer = tokio::task::LocalSet::new().block_on(&runtime, answer_stateless(server, serde_json::from_value(json!({"jsonrpc":"2.0","id":1,"method":"tools/list"})).unwrap()));
+    assert_eq!(serde_json::to_value(answer).unwrap()["result"]["tools"].as_array().unwrap().len(), 1);
 }
 
 #[test]
@@ -107,4 +129,49 @@ fn unknown_tool_is_a_jsonrpc_error() {
 fn notification_gets_no_answer() {
     let desktop = Rc::new(FakeDesktop::default());
     assert_eq!(ask(&desktop, json!({"jsonrpc":"2.0","method":"notifications/initialized"})), None);
+}
+
+fn finished(stdout: &str, status: i32) -> Result<Run, String> {
+    Ok(Run { stdout: stdout.into(), stderr: String::new(), status, timed_out: false })
+}
+
+#[test]
+fn shell_runs_the_command_with_the_default_mode_and_timeout() {
+    let desktop = FakeDesktop::answering(finished("hi\n", 0));
+    let answer = call(&desktop, "Shell", json!({"command": "echo hi"}));
+    assert_eq!(answer["result"]["isError"], false);
+    assert_eq!(answer["result"]["content"][0]["text"], "Shell Response: hi\nStatus Code: 0");
+    assert_eq!(*desktop.shells.borrow(), [("echo hi".to_string(), ShellMode::Shell, Duration::from_secs(10))]);
+}
+
+#[test]
+fn osascript_mode_is_labelled_applescript() {
+    let desktop = FakeDesktop::answering(finished("3", 0));
+    let answer = call(&desktop, "Shell", json!({"command": "return 1 + 2", "mode": "osascript", "timeout": 5}));
+    assert_eq!(answer["result"]["content"][0]["text"], "AppleScript Response: 3\nStatus Code: 0");
+    assert_eq!(*desktop.shells.borrow(), [("return 1 + 2".to_string(), ShellMode::Osascript, Duration::from_secs(5))]);
+}
+
+#[test]
+fn a_failing_command_is_still_a_successful_call() {
+    let desktop = FakeDesktop::answering(finished("", 2));
+    let answer = call(&desktop, "Shell", json!({"command": "false"}));
+    assert_eq!(answer["result"]["isError"], false);
+    assert_eq!(answer["result"]["content"][0]["text"], "Shell Response: \nStatus Code: 2");
+}
+
+#[test]
+fn a_negative_timeout_runs_with_none() {
+    let desktop = FakeDesktop::answering(Ok(Run { stdout: String::new(), stderr: String::new(), status: -9, timed_out: true }));
+    let answer = call(&desktop, "Shell", json!({"command": "sleep 1", "timeout": -3}));
+    assert_eq!(desktop.shells.borrow()[0].2, Duration::ZERO);
+    assert_eq!(answer["result"]["content"][0]["text"], "Shell Response: Command timed out after -3 seconds\nStatus Code: -1");
+}
+
+#[test]
+fn shell_needs_a_command() {
+    let desktop = Rc::new(FakeDesktop::default());
+    let answer = call(&desktop, "Shell", json!({}));
+    assert!(answer["error"].is_object() || answer["result"]["isError"] == true, "{answer}");
+    assert!(desktop.shells.borrow().is_empty());
 }
