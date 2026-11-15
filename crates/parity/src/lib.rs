@@ -38,6 +38,50 @@ pub const JSON_HEADERS: &[(&str, &str)] = &[("Accept", "application/json"), ("Co
 
 static SERVERS: AtomicUsize = AtomicUsize::new(0);
 
+/// How to start the server under test.
+#[derive(Default)]
+pub struct Launch<'a> {
+    /// More `serve` options.
+    pub options: &'a [&'a str],
+    /// More environment variables.
+    pub env: &'a [(&'a str, &'a str)],
+    /// The contents of `~/.desktop-mcp/config.toml` in the scratch HOME.
+    pub config: Option<&'a str>,
+}
+
+/// A fresh directory to serve as HOME, with `config` as `~/.desktop-mcp/config.toml` when given.
+fn scratch_home(config: Option<&str>) -> PathBuf {
+    let home = std::env::temp_dir().join(format!("desktop-mcp-parity-{}-{}", std::process::id(), SERVERS.fetch_add(1, Ordering::SeqCst)));
+    std::fs::create_dir_all(home.join(".desktop-mcp")).expect("a scratch HOME");
+    if let Some(config) = config {
+        std::fs::write(home.join(".desktop-mcp/config.toml"), config).expect("a config file");
+    }
+    home
+}
+
+/// Runs `$DESKTOP_MCP_BIN <arguments>` in a scratch HOME to its end: the exit status and what it wrote to stderr.
+/// For invocations that are expected to stop by themselves (a refused configuration).
+pub fn run_to_exit(arguments: &[&str]) -> (ExitStatus, String) {
+    let binary = std::env::var_os("DESKTOP_MCP_BIN").expect("set DESKTOP_MCP_BIN to the desktop-mcp binary under test");
+    let home = scratch_home(None);
+    let mut child = Command::new(&binary).args(arguments).env("HOME", &home).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().expect("start");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("wait") {
+            break status;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("{arguments:?} did not exit within 10 s");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let mut stderr = String::new();
+    let _ = child.stderr.take().unwrap().read_to_string(&mut stderr);
+    let _ = std::fs::remove_dir_all(&home);
+    (status, stderr)
+}
+
 impl ServerUnderTest {
     /// Starts `$DESKTOP_MCP_BIN serve --transport streamable-http` on a free loopback port, with `HOME` pointing
     /// at a fresh directory so no user configuration is read or written.
@@ -47,15 +91,20 @@ impl ServerUnderTest {
 
     /// As [`start`](Self::start), with more `serve` options.
     pub fn start_with(options: &[&str]) -> ServerUnderTest {
+        Self::launch(&Launch { options, ..Launch::default() })
+    }
+
+    /// Starts the server as `launch` describes and waits until it listens.
+    pub fn launch(launch: &Launch) -> ServerUnderTest {
         let binary = std::env::var_os("DESKTOP_MCP_BIN").expect("set DESKTOP_MCP_BIN to the desktop-mcp binary under test");
         let port = TcpListener::bind("127.0.0.1:0").expect("a free port").local_addr().unwrap().port();
-        let home = std::env::temp_dir().join(format!("desktop-mcp-parity-{}-{}", std::process::id(), SERVERS.fetch_add(1, Ordering::SeqCst)));
-        std::fs::create_dir_all(&home).expect("a scratch HOME");
+        let home = scratch_home(launch.config);
         let stderr = std::fs::File::create(home.join("stderr.log")).expect("a log file");
         let child = Command::new(&binary)
             .args(["serve", "--transport", "streamable-http", "--host", "127.0.0.1", "--port", &port.to_string()])
-            .args(options)
+            .args(launch.options)
             .env("HOME", &home)
+            .envs(launch.env.iter().copied())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(stderr)

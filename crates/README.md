@@ -22,8 +22,16 @@ non-JSON `Content-Type`, 400 for a batch or invalid JSON, 405 with `Allow: POST`
 their whole answer before the connection closes. SIGINT and
 SIGTERM end the server with exit status 0.
 
-Not there yet: stdio, the Unix socket, `connect`, `install`, auth,
-the allowlist, OAuth, TLS, `config.toml`, and every tool but `Wait` by duration.
+Before any of that, as in the Swift port: browser requests must come from a loopback `Origin`
+(403 otherwise; `OPTIONS` answers CORS), `--ip-allowlist` limits client addresses,
+`--auth-key` requires `Authorization: Bearer <key>`, and `--oauth-client-id`/`--oauth-client-secret`
+turn on the built-in OAuth server (authorization code with PKCE, loopback redirects only).
+`/health` and the OAuth endpoints need no key. Settings come from the command line, then the
+`DESKTOP_MCP_*` environment variables, then `~/.desktop-mcp/config.toml` (or `--config`); binding a
+non-loopback host without authentication is refused unless `--allow-insecure-remote`.
+
+Not there yet: HTTPS (`--ssl-certfile`/`--ssl-keyfile` are refused), stdio, the Unix socket,
+`connect`, `install`, and every tool but `Wait` by duration.
 
 ## How it is built
 

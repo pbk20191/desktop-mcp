@@ -4,3 +4,7 @@ pub mod io;
 pub mod mcp;
 pub mod http;
 pub mod session;
+pub mod config;
+pub mod plan;
+pub mod security;
+pub mod oauth;

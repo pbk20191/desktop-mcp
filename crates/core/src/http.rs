@@ -7,13 +7,16 @@
 use crate::guest::Activity;
 use crate::io::Listener;
 use crate::mcp::{answer_stateless, Server};
+use crate::oauth::{self, OAuth};
+use crate::security::{constant_time_eq, is_loopback_host, IpNetwork};
 use crate::session::{Session, Sessions};
 use bytes::Bytes;
-use http::header::{ACCEPT, ALLOW, CACHE_CONTROL, CONTENT_TYPE};
+use http::header::{ACCEPT, ALLOW, AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, HOST, LOCATION, ORIGIN, VARY, WWW_AUTHENTICATE};
 use http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode};
 use http_body_util::{BodyExt, Full};
 use rmcp::model::{ClientJsonRpcMessage, JsonRpcMessage};
 use std::convert::Infallible;
+use std::net::IpAddr;
 use std::pin::Pin;
 use std::rc::Rc;
 
@@ -25,7 +28,26 @@ pub struct App {
     pub make_server: Box<dyn Fn() -> Server>,
     pub activity: Rc<Activity>,
     pub sessions: Rc<Sessions>,
+    pub security: Security,
 }
+
+/// Who may call: checked before any route, in the original's order (Origin, `OPTIONS`, allowlist, auth).
+#[derive(Default)]
+pub struct Security {
+    /// `Authorization: Bearer <key>` on every request but the public paths.
+    pub auth_key: Option<String>,
+    /// When not empty, only these client addresses (`/health` excepted).
+    pub ip_allowlist: Vec<IpNetwork>,
+    /// The built-in authorization server; its access tokens are accepted like the key.
+    pub oauth: Option<Rc<OAuth>>,
+}
+
+/// The client's IP address, as the transport saw it. The connection task puts it in each request's extensions.
+#[derive(Clone, Copy, Debug)]
+pub struct PeerAddress(pub Option<IpAddr>);
+
+/// Paths that need no authentication.
+const PUBLIC_PATHS: [&str; 5] = ["/health", "/.well-known/oauth-authorization-server", "/oauth/register", "/oauth/authorize", "/oauth/token"];
 
 const SESSION_ID: &str = "mcp-session-id";
 const PARSE_ERROR: i64 = -32700;
@@ -50,6 +72,37 @@ fn json(status: StatusCode, body: String) -> Response<Body> {
 
 fn error(status: StatusCode, code: i64, message: &str) -> Response<Body> {
     json(status, serde_json::json!({"jsonrpc": "2.0", "id": null, "error": {"code": code, "message": message}}).to_string())
+}
+
+/// `{"error": "…"}`, the body of every refusal.
+fn refusal(status: StatusCode, message: &str) -> Response<Body> {
+    json(status, serde_json::json!({ "error": message }).to_string())
+}
+
+fn oauth_reply(reply: oauth::Reply) -> Response<Body> {
+    let status = StatusCode::from_u16(reply.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let mut response = match reply.body {
+        Some(body) => json(status, body.to_string()),
+        None => status_only(status),
+    };
+    if let Some(location) = reply.location.and_then(|location| HeaderValue::from_str(&location).ok()) {
+        response.headers_mut().insert(LOCATION, location);
+    }
+    response
+}
+
+/// Loopback `http(s)` origins on any port.
+fn is_allowed_origin(origin: &str) -> bool {
+    let Some((scheme, rest)) = origin.split_once("://") else { return false };
+    if !matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https") {
+        return false;
+    }
+    let authority = rest.split('/').next().unwrap_or_default();
+    let host = match authority.strip_prefix('[') {
+        Some(bracketed) => bracketed.split(']').next().unwrap_or_default(),
+        None => authority.split(':').next().unwrap_or_default(),
+    };
+    !host.is_empty() && is_loopback_host(host)
 }
 
 fn with_session(mut response: Response<Body>, id: &str) -> Response<Body> {
@@ -100,6 +153,96 @@ fn is_initialize(value: &serde_json::Value) -> bool {
 
 /// Answers one request.
 pub async fn handle<B>(app: &App, request: Request<B>) -> Response<Body>
+where
+    B: http_body::Body,
+    B::Error: std::fmt::Debug,
+{
+    // A browser names the page that made the request. Only pages served from this machine may talk to the
+    // server; otherwise any website could drive an unauthenticated loopback server through the visitor's
+    // browser (the MCP specification requires this check).
+    let origin = request.headers().get(ORIGIN).cloned();
+    if let Some(origin) = &origin {
+        let text = origin.to_str().unwrap_or_default();
+        if !is_allowed_origin(text) {
+            return refusal(StatusCode::FORBIDDEN, &format!("Forbidden: origin '{text}' is not allowed"));
+        }
+    }
+    if request.method() == Method::OPTIONS {
+        let mut response = status_only(StatusCode::OK);
+        let headers = response.headers_mut();
+        headers.insert("access-control-allow-origin", origin.clone().unwrap_or(HeaderValue::from_static("*")));
+        headers.insert("access-control-allow-methods", HeaderValue::from_static("*"));
+        headers.insert("access-control-allow-headers", HeaderValue::from_static("*"));
+        headers.insert(VARY, HeaderValue::from_static("origin"));
+        return response;
+    }
+    let mut response = guarded(app, request).await;
+    if let Some(origin) = origin {
+        response.headers_mut().insert("access-control-allow-origin", origin);
+        response.headers_mut().insert(VARY, HeaderValue::from_static("origin"));
+    }
+    response
+}
+
+async fn guarded<B>(app: &App, request: Request<B>) -> Response<Body>
+where
+    B: http_body::Body,
+    B::Error: std::fmt::Debug,
+{
+    let path = request.uri().path().to_string();
+    let security = &app.security;
+    if !security.ip_allowlist.is_empty() && path != "/health" {
+        let Some(address) = request.extensions().get::<PeerAddress>().and_then(|peer| peer.0) else {
+            return refusal(StatusCode::FORBIDDEN, "Forbidden: missing client address");
+        };
+        if !security.ip_allowlist.iter().any(|network| network.contains(address)) {
+            return refusal(StatusCode::FORBIDDEN, &format!("Forbidden: {address} is not in the IP allowlist"));
+        }
+    }
+    if (security.auth_key.is_some() || security.oauth.is_some()) && !PUBLIC_PATHS.contains(&path.as_str()) {
+        let header = request.headers().get(AUTHORIZATION).and_then(|value| value.to_str().ok()).unwrap_or_default();
+        let token = header.strip_prefix("Bearer ");
+        let valid = |token: &str| security.auth_key.as_deref().is_some_and(|key| constant_time_eq(token, key)) || security.oauth.as_ref().is_some_and(|oauth| oauth.validate(token));
+        match token {
+            Some(token) if valid(token) => {}
+            Some(_) if security.auth_key.is_some() => return refusal(StatusCode::UNAUTHORIZED, "Invalid authentication token").tap_bearer(),
+            None if security.auth_key.is_some() => return refusal(StatusCode::UNAUTHORIZED, "Missing or invalid Authorization header. Expected: Bearer <token>").tap_bearer(),
+            _ => return refusal(StatusCode::UNAUTHORIZED, "Unauthorized"),
+        }
+    }
+    if let Some(oauth) = &security.oauth {
+        let method = request.method().clone();
+        match (method.as_str(), path.as_str()) {
+            ("GET", "/.well-known/oauth-authorization-server") => {
+                let host = request.headers().get(HOST).and_then(|value| value.to_str().ok());
+                return json(StatusCode::OK, oauth.metadata(host).to_string());
+            }
+            ("POST", "/oauth/register") => return oauth_reply(oauth.register()),
+            ("GET", "/oauth/authorize") => return oauth_reply(oauth.authorize(request.uri().query().unwrap_or_default())),
+            ("POST", "/oauth/token") => {
+                let content_type = request.headers().get(CONTENT_TYPE).and_then(|value| value.to_str().ok()).unwrap_or_default().to_string();
+                let body = request.into_body().collect().await.map(|collected| collected.to_bytes()).unwrap_or_default();
+                return oauth_reply(oauth.token(&content_type, &body));
+            }
+            _ => {}
+        }
+    }
+    route(app, request).await
+}
+
+trait BearerChallenge {
+    fn tap_bearer(self) -> Self;
+}
+
+impl BearerChallenge for Response<Body> {
+    /// Adds `WWW-Authenticate: Bearer`, which tells a client to authenticate with a bearer token.
+    fn tap_bearer(mut self) -> Self {
+        self.headers_mut().insert(WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
+        self
+    }
+}
+
+async fn route<B>(app: &App, request: Request<B>) -> Response<Body>
 where
     B: http_body::Body,
     B::Error: std::fmt::Debug,
@@ -234,8 +377,10 @@ pub async fn serve<L: Listener>(mut listener: L, app: Rc<App>) {
         let app = app.clone();
         tokio::task::spawn_local(async move {
             let _connection = app.activity.connection();
-            let service = hyper::service::service_fn(|request| {
+            let peer = PeerAddress(crate::io::Peer::peer_address(&io));
+            let service = hyper::service::service_fn(|mut request: Request<hyper::body::Incoming>| {
                 let app = app.clone();
+                request.extensions_mut().insert(peer);
                 async move { Ok::<_, Infallible>(handle(&app, request).await) }
             });
             // A connection that fails (the peer went away mid-message) only ends itself.

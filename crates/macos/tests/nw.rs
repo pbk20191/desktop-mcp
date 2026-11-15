@@ -199,9 +199,24 @@ fn shutdown_after_a_large_write_delivers_everything() {
     assert_eq!(received, SIZE, "the peer got {received} of {SIZE} bytes before the connection closed");
 }
 
+fn reports_the_peer_address() {
+    use desktop_mcp_core::io::Peer;
+    let address = run(|_| async {
+        let mut listener = NwListener::bind("127.0.0.1", 0).await.expect("bind");
+        let port = listener.port();
+        std::thread::spawn(move || {
+            let _stream = connect(port);
+            std::thread::sleep(Duration::from_millis(300));
+        });
+        listener.accept().await.expect("a connection").peer_address()
+    });
+    assert_eq!(address, Some("127.0.0.1".parse().unwrap()));
+}
+
 fn main() {
     support::run(&[
         ("binds_a_system_port", binds_a_system_port),
+        ("reports_the_peer_address", reports_the_peer_address),
         ("bind_fails_on_a_port_in_use", bind_fails_on_a_port_in_use),
         ("localhost_binds_loopback", localhost_binds_loopback),
         ("echoes_small", echoes_small),

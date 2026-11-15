@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 use bytes::Bytes;
 use desktop_mcp_core::guest::{Activity, MainLoop, Tick};
-use desktop_mcp_core::http::{App, Body};
+use desktop_mcp_core::http::{App, Body, Security};
 use desktop_mcp_core::mcp::{Desktop, Server};
 use desktop_mcp_core::session::{SessionSettings, Sessions};
 use http::{Request, Response};
@@ -63,12 +63,21 @@ pub fn fixture() -> Fixture {
 }
 
 pub fn fixture_with(settings: SessionSettings) -> Fixture {
+    fixture_full(settings, Security::default())
+}
+
+pub fn fixture_secured(security: Security) -> Fixture {
+    fixture_full(SessionSettings::default(), security)
+}
+
+pub fn fixture_full(settings: SessionSettings, security: Security) -> Fixture {
     let (main_loop, desktop) = (Rc::new(FakeLoop::default()), Rc::new(FakeDesktop::default()));
     let for_server = desktop.clone();
     let app = Rc::new(App {
         make_server: Box::new(move || Server::new(for_server.clone(), &["Wait"])),
         activity: Activity::new(main_loop.clone()),
         sessions: Sessions::new(settings),
+        security,
     });
     Fixture { app, main_loop, desktop }
 }

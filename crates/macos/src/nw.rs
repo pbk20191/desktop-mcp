@@ -4,10 +4,11 @@
 //! Network.framework has no binding crate (`objc2-network` is an empty placeholder), so the C functions used
 //! are declared here. Everything of libdispatch's (the main queue, `dispatch_data`) comes from `dispatch2`.
 use block2::{Block, RcBlock};
-use desktop_mcp_core::io::Listener;
+use desktop_mcp_core::io::{Listener, Peer};
 use dispatch2::{DispatchData, DispatchObject, DispatchQueue, DispatchRetained};
 use std::cell::{Cell, RefCell};
 use std::ffi::{c_char, c_void, CString};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::future::Future;
 use std::pin::Pin;
 use std::ptr::NonNull;
@@ -22,6 +23,7 @@ type Object = *mut c_void;
 const LISTENER_READY: i32 = 2;
 const LISTENER_FAILED: i32 = 3;
 const LISTENER_CANCELLED: i32 = 4;
+const ENDPOINT_TYPE_ADDRESS: i32 = 1;
 
 #[link(name = "Network", kind = "framework")]
 extern "C" {
@@ -44,6 +46,9 @@ extern "C" {
     fn nw_connection_set_queue(connection: Object, queue: &DispatchQueue);
     fn nw_connection_start(connection: Object);
     fn nw_connection_cancel(connection: Object);
+    fn nw_connection_copy_endpoint(connection: Object) -> Object;
+    fn nw_endpoint_get_type(endpoint: Object) -> i32;
+    fn nw_endpoint_get_address(endpoint: Object) -> *const libc::sockaddr;
     // C `bool` block arguments are declared `u8`: block2 has no encoding for `bool`.
     /// `content` is a borrowed `dispatch_data_t`, or null.
     fn nw_connection_receive(connection: Object, minimum: u32, maximum: u32, completion: &Block<dyn Fn(*mut c_void, Object, u8, Object)>);
@@ -162,6 +167,7 @@ struct IoState {
 /// dropped (`DispatchData::subrange`). Writes copy once (hyper only lends its bytes).
 pub struct NwIo {
     connection: Object,
+    peer: Option<IpAddr>,
     /// `Arc`, not `Rc`: the completion blocks hold a clone each, and the system may release a block on a thread
     /// of its own, so the count has to be atomic (as a Swift or Objective-C capture's is). The state itself is
     /// only ever read or written on the main thread.
@@ -174,7 +180,44 @@ impl NwIo {
         let state = IoState { queue: None, receiving: false, end_of_stream: false, read_waker: None, unsent: 0, write_failed: false, write_waker: None, closing: false, closed: false };
         #[allow(clippy::arc_with_non_send_sync)]
         let state = Arc::new(RefCell::new(state));
-        NwIo { connection, state }
+        NwIo { connection, peer: remote_address(connection), state }
+    }
+}
+
+/// The address of a connection's remote end.
+fn remote_address(connection: Object) -> Option<IpAddr> {
+    unsafe {
+        let endpoint = nw_connection_copy_endpoint(connection);
+        if endpoint.is_null() {
+            return None;
+        }
+        let address = if nw_endpoint_get_type(endpoint) == ENDPOINT_TYPE_ADDRESS { sockaddr_ip(nw_endpoint_get_address(endpoint)) } else { None };
+        nw_release(endpoint);
+        address
+    }
+}
+
+/// The IP address in a `sockaddr_in` or `sockaddr_in6`.
+unsafe fn sockaddr_ip(address: *const libc::sockaddr) -> Option<IpAddr> {
+    if address.is_null() {
+        return None;
+    }
+    match i32::from((*address).sa_family) {
+        libc::AF_INET => {
+            let v4 = &*(address as *const libc::sockaddr_in);
+            Some(IpAddr::V4(Ipv4Addr::from(u32::from_be(v4.sin_addr.s_addr))))
+        }
+        libc::AF_INET6 => {
+            let v6 = &*(address as *const libc::sockaddr_in6);
+            Some(IpAddr::V6(Ipv6Addr::from(v6.sin6_addr.s6_addr)))
+        }
+        _ => None,
+    }
+}
+
+impl Peer for NwIo {
+    fn peer_address(&self) -> Option<IpAddr> {
+        self.peer
     }
 }
 
