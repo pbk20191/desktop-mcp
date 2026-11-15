@@ -5,3 +5,4 @@ pub mod nw;
 pub mod desktop;
 pub mod signals;
 pub mod tls;
+pub mod fd;

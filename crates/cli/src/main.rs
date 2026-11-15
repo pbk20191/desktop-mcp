@@ -64,6 +64,9 @@ struct ServeArgs {
     /// Seconds a session may stay idle before it is dropped; 0 keeps sessions until the client ends them. (default: 1800)
     #[arg(long)]
     session_timeout: Option<u64>,
+    /// Also serve the stdio binding on this Unix domain socket (what `install` sets up).
+    #[arg(long)]
+    socket: Option<String>,
 }
 
 impl ServeArgs {
@@ -82,6 +85,7 @@ impl ServeArgs {
             exclude_tools: self.exclude_tools.clone(),
             include_tools: self.include_tools.clone(),
             session_timeout: self.session_timeout,
+            socket_path: self.socket.clone(),
         }
     }
 }
@@ -106,10 +110,6 @@ fn main() -> ExitCode {
     for warning in &plan.warnings {
         log(warning);
     }
-    if plan.transport == "stdio" {
-        eprintln!("stdio is not available in this build yet");
-        return ExitCode::from(2);
-    }
     serve(plan)
 }
 
@@ -123,16 +123,24 @@ fn plan(args: &ServeArgs) -> Result<ServePlan, String> {
 /// The tools this build has.
 const TOOLS: &[&str] = &["Wait"];
 
+/// The name of the Launch Agent plist's `Sockets` entry that `install` writes.
+const LAUNCHD_SOCKET: &str = "Listener";
+
 #[cfg(target_os = "macos")]
 fn serve(plan: ServePlan) -> ExitCode {
     use desktop_mcp_core::guest::Activity;
     use desktop_mcp_core::http::{self, App, Security};
+    use desktop_mcp_core::io::Listener;
     use desktop_mcp_core::mcp::{Desktop, Server};
     use desktop_mcp_core::oauth::OAuth;
     use desktop_mcp_core::session::{SessionSettings, Sessions};
+    use desktop_mcp_core::stream::serve_stream;
+    use desktop_mcp_macos::fd::{FdIo, UnixListener};
     use desktop_mcp_macos::{desktop::MacDesktop, main_loop, nw::NwListener, signals, tls::TlsIdentity};
     use std::rc::Rc;
 
+    // A write to a closed stdout or socket must fail with EPIPE, not end the process.
+    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
     let tls = match &plan.tls {
         Some(tls) => match TlsIdentity::load(tls.certificate.as_ref(), tls.private_key.as_ref()) {
             Ok(identity) => Some(Rc::new(identity)),
@@ -143,15 +151,22 @@ fn serve(plan: ServePlan) -> ExitCode {
         },
         None => None,
     };
-
     let tools: Vec<&'static str> = TOOLS.iter().copied().filter(|tool| !plan.excluded_tools.iter().any(|excluded| excluded == tool)).collect();
-    let security = Security {
-        auth_key: plan.auth_key.clone(),
-        ip_allowlist: plan.ip_allowlist.clone(),
-        oauth: plan.oauth.as_ref().map(|client| Rc::new(OAuth::new(&format!("{}://{}:{}", plan.scheme(), plan.host, plan.port), &client.client_id, &client.client_secret))),
-    };
+    let desktop: Rc<dyn Desktop> = Rc::new(MacDesktop::new());
+    let make_server: Rc<dyn Fn() -> Server> = Rc::new(move || Server::new(desktop.clone(), &tools));
+
     // One root future; the process exits by returning from it.
     main_loop::run(|main_loop| async move {
+        let activity = Activity::new(main_loop);
+        if plan.transport == "stdio" {
+            let _session = activity.connection();
+            tokio::select! {
+                _ = serve_stream(FdIo::stdio(), make_server()) => {}
+                _ = signals::termination() => {}
+            }
+            return ExitCode::SUCCESS;
+        }
+
         let listener = match NwListener::bind_with(&plan.host, plan.port, tls).await {
             Ok(listener) => listener,
             Err(reason) => {
@@ -160,10 +175,33 @@ fn serve(plan: ServePlan) -> ExitCode {
             }
         };
         log(&format!("Serving streamable-http on {}://{}:{}/mcp (rust)", plan.scheme(), plan.host, listener.port()));
-        let desktop: Rc<dyn Desktop> = Rc::new(MacDesktop::new());
+        // The socket is beside HTTP, not in its way: when it cannot be had, HTTP is served alone.
+        if let Some(path) = &plan.socket_path {
+            match UnixListener::listen(path.as_ref(), Some(LAUNCHD_SOCKET)) {
+                Ok(mut socket) => {
+                    log(&format!("Serving stdio over {path}{}", if socket.activated_by_launchd() { " (socket from launchd)" } else { "" }));
+                    let (make_server, activity) = (make_server.clone(), activity.clone());
+                    tokio::task::spawn_local(async move {
+                        while let Some(io) = socket.accept().await {
+                            let (server, connection) = (make_server(), activity.connection());
+                            tokio::task::spawn_local(async move {
+                                serve_stream(io, server).await;
+                                drop(connection);
+                            });
+                        }
+                    });
+                }
+                Err(reason) => log(&format!("Socket {path}: {reason}; serving HTTP only")),
+            }
+        }
+        let security = Security {
+            auth_key: plan.auth_key.clone(),
+            ip_allowlist: plan.ip_allowlist.clone(),
+            oauth: plan.oauth.as_ref().map(|client| Rc::new(OAuth::new(&format!("{}://{}:{}", plan.scheme(), plan.host, plan.port), &client.client_id, &client.client_secret))),
+        };
         let app = Rc::new(App {
-            make_server: Box::new(move || Server::new(desktop.clone(), &tools)),
-            activity: Activity::new(main_loop),
+            make_server: Box::new(move || make_server()),
+            activity,
             sessions: Sessions::new(SessionSettings { idle_timeout: plan.session_timeout, ..SessionSettings::default() }),
             security,
         });

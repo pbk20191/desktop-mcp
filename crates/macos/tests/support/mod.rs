@@ -14,7 +14,20 @@ pub fn run(tests: &[Test]) -> ! {
             continue;
         }
         ran += 1;
-        match std::panic::catch_unwind(test) {
+        // A test that hangs (a tokio timer with no tick, say) fails instead of stalling the run.
+        let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let watched = finished.clone();
+        let name_for_watchdog = *name;
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(60));
+            if !watched.load(std::sync::atomic::Ordering::SeqCst) {
+                println!("test {name_for_watchdog} ... FAILED (no result within 60 s)");
+                std::process::exit(101);
+            }
+        });
+        let outcome = std::panic::catch_unwind(test);
+        finished.store(true, std::sync::atomic::Ordering::SeqCst);
+        match outcome {
             Ok(()) => println!("test {name} ... ok"),
             Err(_) => {
                 println!("test {name} ... FAILED");

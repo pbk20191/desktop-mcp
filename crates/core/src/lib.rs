@@ -8,3 +8,4 @@ pub mod config;
 pub mod plan;
 pub mod security;
 pub mod oauth;
+pub mod stream;

@@ -34,7 +34,13 @@ non-loopback host without authentication is refused unless `--allow-insecure-rem
 The PEM certificate and key (RSA or EC; PKCS#8, PKCS#1 or SEC1) are read into memory with
 Security.framework, never into a keychain, and Network.framework does the TLS.
 
-Not there yet: stdio, the Unix socket, `connect`, `install`, and every tool but `Wait` by duration.
+`--transport stdio` (the default) serves one session on stdin/stdout, newline-delimited JSON; at end of
+input it still answers the requests it has read (not those the client cancelled), then exits. `--socket <path>`
+serves the same binding on a Unix socket beside HTTP, one session per connection, for the same user only
+(mode 0600, and the peer's uid is checked); under launchd it takes the plist's `Listener` socket. A socket
+that is in use leaves HTTP serving alone.
+
+Not there yet: `connect`, `install`/`uninstall`, `auth`, `permissions`, and every tool but `Wait` by duration.
 
 ## How it is built
 
@@ -61,7 +67,7 @@ Not there yet: stdio, the Unix socket, `connect`, `install`, and every tool but 
 | Crate | Contents |
 |---|---|
 | `core` | guest runtime, MCP server and tools, HTTP app. No platform code |
-| `macos` | main run loop executor, Network.framework, signals, the tools' macOS behaviour |
+| `macos` | main run loop executor, Network.framework, `dispatch_io` streams and the Unix socket, TLS, signals, the tools' macOS behaviour |
 | `cli` | the `desktop-mcp` binary |
 | `parity` | black-box tests that drive a binary given in `DESKTOP_MCP_BIN` |
 

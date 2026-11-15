@@ -36,3 +36,7 @@ harness = false
 [[test]]
 name = "tls"
 harness = false
+
+[[test]]
+name = "fd"
+harness = false

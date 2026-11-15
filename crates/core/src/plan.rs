@@ -32,6 +32,8 @@ pub struct CommandLine {
     pub include_tools: Option<String>,
     /// Seconds; 0 keeps sessions until the client ends them.
     pub session_timeout: Option<u64>,
+    /// A Unix socket to serve the stdio binding on as well (streamable-http only); command line only.
+    pub socket_path: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,6 +61,7 @@ pub struct ServePlan {
     pub excluded_tools: Vec<String>,
     pub included_tools: Vec<String>,
     pub session_timeout: Option<Duration>,
+    pub socket_path: Option<String>,
     /// Non-fatal notes for the log.
     pub warnings: Vec<String>,
 }
@@ -88,6 +91,16 @@ impl ServePlan {
         }
         if !TRANSPORTS.contains(&transport.as_str()) {
             return Err(format!("Invalid transport: {transport}"));
+        }
+        let socket_path = non_empty(cli.socket_path.as_deref());
+        if let Some(path) = &socket_path {
+            if transport != "streamable-http" {
+                return Err("--socket requires --transport streamable-http.".into());
+            }
+            // What fits in `sockaddr_un.sun_path`.
+            if path.len() > 103 {
+                return Err(format!("Socket path too long (max 103 bytes): {path}"));
+            }
         }
         let host = cli.host.clone().unwrap_or_else(|| config.server.host.clone());
         let port = cli.port.unwrap_or(config.server.port);
@@ -136,7 +149,7 @@ impl ServePlan {
             Some(seconds) => Some(Duration::from_secs(seconds)),
             None => Some(Duration::from_secs(1800)),
         };
-        Ok(ServePlan { transport, host, port, auth_key, allow_insecure_remote, ip_allowlist, tls, oauth, excluded_tools, included_tools, session_timeout, warnings })
+        Ok(ServePlan { transport, host, port, auth_key, allow_insecure_remote, ip_allowlist, tls, oauth, excluded_tools, included_tools, session_timeout, socket_path, warnings })
     }
 
     pub fn scheme(&self) -> &'static str {

@@ -185,3 +185,15 @@ fn loopback_and_tokens() {
     assert!(!constant_time_eq("abc", "abd"));
     assert!(!constant_time_eq("abc", "abcd"));
 }
+
+#[test]
+fn socket_requires_streamable_http_and_a_short_path() {
+    let mut cli = CommandLine { transport: Some("streamable-http".into()), socket_path: Some("/tmp/a.sock".into()), ..CommandLine::default() };
+    assert_eq!(resolve(&cli).unwrap().socket_path.as_deref(), Some("/tmp/a.sock"));
+    cli.transport = Some("stdio".into());
+    assert_eq!(resolve(&cli).unwrap_err(), "--socket requires --transport streamable-http.");
+    cli.transport = Some("streamable-http".into());
+    cli.socket_path = Some(format!("/{}", "a".repeat(110)));
+    assert!(resolve(&cli).unwrap_err().contains("Socket path too long (max 103 bytes)"));
+    assert_eq!(resolve(&CommandLine::default()).unwrap().socket_path, None);
+}

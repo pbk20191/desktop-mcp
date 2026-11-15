@@ -59,6 +59,48 @@ fn scratch_home(config: Option<&str>) -> PathBuf {
     home
 }
 
+/// Runs `$DESKTOP_MCP_BIN <arguments>` with `input` as its stdin, closed after the last line: its exit
+/// status and the JSON lines it wrote to stdout.
+pub fn run_stdio(arguments: &[&str], input: &[Value]) -> (ExitStatus, Vec<Value>) {
+    let binary = std::env::var_os("DESKTOP_MCP_BIN").expect("set DESKTOP_MCP_BIN to the desktop-mcp binary under test");
+    let home = scratch_home(None);
+    let mut child = Command::new(&binary).args(arguments).env("HOME", &home).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().expect("start");
+    let mut stdin = child.stdin.take().unwrap();
+    for message in input {
+        stdin.write_all(format!("{message}\n").as_bytes()).unwrap();
+    }
+    drop(stdin);
+    let mut stdout = child.stdout.take().unwrap();
+    let reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = stdout.read_to_string(&mut text);
+        text
+    });
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("wait") {
+            break status;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("{arguments:?} did not exit within 20 s of its input ending");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let text = reader.join().unwrap();
+    let _ = std::fs::remove_dir_all(&home);
+    (status, text.lines().filter(|line| !line.trim().is_empty()).map(|line| serde_json::from_str(line).unwrap_or_else(|_| panic!("not a JSON line: {line:?}"))).collect())
+}
+
+/// A short socket path for this test run (a Unix socket path is limited to 103 bytes).
+pub fn socket_path(name: &str) -> PathBuf {
+    let directory = PathBuf::from(format!("/tmp/dmcp-parity-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join(format!("{name}-{}.sock", SERVERS.fetch_add(1, Ordering::SeqCst)));
+    let _ = std::fs::remove_file(&path);
+    path
+}
+
 /// Runs `$DESKTOP_MCP_BIN <arguments>` in a scratch HOME to its end: the exit status and what it wrote to stderr.
 /// For invocations that are expected to stop by themselves (a refused configuration).
 pub fn run_to_exit(arguments: &[&str]) -> (ExitStatus, String) {

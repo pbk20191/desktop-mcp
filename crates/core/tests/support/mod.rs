@@ -88,6 +88,12 @@ pub fn block_on<T>(future: impl Future<Output = T>) -> T {
     tokio::task::LocalSet::new().block_on(&runtime, future)
 }
 
+/// As [`block_on`], with tokio's clock paused: it jumps ahead whenever everything waits on a timer.
+pub fn block_on_paused<T>(future: impl Future<Output = T>) -> T {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_time().start_paused(true).build().unwrap();
+    tokio::task::LocalSet::new().block_on(&runtime, future)
+}
+
 pub fn body(text: &str) -> Full<Bytes> {
     Full::new(Bytes::from(text.to_string()))
 }
@@ -140,4 +146,105 @@ pub fn request(method: &str, accept: &str, session: Option<&str>, message: &str)
 
 pub fn initialize() -> String {
     serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}).to_string()
+}
+
+/// An in-memory byte stream for the stdio binding: the test writes what the server reads and reads what it writes.
+#[derive(Clone, Default)]
+pub struct Pipe {
+    state: Rc<RefCell<PipeState>>,
+}
+
+#[derive(Default)]
+struct PipeState {
+    input: std::collections::VecDeque<u8>,
+    input_closed: bool,
+    reader: Option<std::task::Waker>,
+    output: Vec<u8>,
+    output_closed: bool,
+    writer_watch: Option<std::task::Waker>,
+}
+
+impl Pipe {
+    pub fn send_line(&self, line: &str) {
+        let mut state = self.state.borrow_mut();
+        state.input.extend(line.as_bytes());
+        state.input.push_back(b'\n');
+        if let Some(waker) = state.reader.take() {
+            waker.wake();
+        }
+    }
+    pub fn send_raw(&self, bytes: &[u8]) {
+        let mut state = self.state.borrow_mut();
+        state.input.extend(bytes);
+        if let Some(waker) = state.reader.take() {
+            waker.wake();
+        }
+    }
+    /// The client closes its end of the server's input (EOF).
+    pub fn close_input(&self) {
+        let mut state = self.state.borrow_mut();
+        state.input_closed = true;
+        if let Some(waker) = state.reader.take() {
+            waker.wake();
+        }
+    }
+    /// The client stops reading: further writes fail.
+    pub fn close_output(&self) {
+        self.state.borrow_mut().output_closed = true;
+    }
+    /// The complete lines written so far, as JSON.
+    pub fn lines(&self) -> Vec<serde_json::Value> {
+        let state = self.state.borrow();
+        let text = String::from_utf8_lossy(&state.output).into_owned();
+        text.split_terminator('\n').map(|line| serde_json::from_str(line).unwrap_or_else(|_| panic!("not a JSON line: {line:?}"))).collect()
+    }
+    /// Waits until `count` lines have been written.
+    pub async fn wait_lines(&self, count: usize) -> Vec<serde_json::Value> {
+        for _ in 0..1000 {
+            if self.lines().len() >= count {
+                return self.lines();
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        panic!("{} lines written, {count} expected: {:?}", self.lines().len(), self.lines());
+    }
+}
+
+impl hyper::rt::Read for Pipe {
+    fn poll_read(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>, mut buffer: hyper::rt::ReadBufCursor<'_>) -> std::task::Poll<std::io::Result<()>> {
+        let mut state = self.state.borrow_mut();
+        if state.input.is_empty() {
+            if state.input_closed {
+                return std::task::Poll::Ready(Ok(()));
+            }
+            state.reader = Some(cx.waker().clone());
+            return std::task::Poll::Pending;
+        }
+        let count = state.input.len().min(buffer.remaining());
+        let bytes: Vec<u8> = state.input.drain(..count).collect();
+        buffer.put_slice(&bytes);
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+impl hyper::rt::Write for Pipe {
+    fn poll_write(self: Pin<&mut Self>, _cx: &mut std::task::Context<'_>, bytes: &[u8]) -> std::task::Poll<std::io::Result<usize>> {
+        let mut state = self.state.borrow_mut();
+        if state.output_closed {
+            return std::task::Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()));
+        }
+        // A short write now and then, as a pipe does.
+        let count = bytes.len().min(7);
+        state.output.extend_from_slice(&bytes[..count]);
+        if let Some(waker) = state.writer_watch.take() {
+            waker.wake();
+        }
+        std::task::Poll::Ready(Ok(count))
+    }
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
 }
