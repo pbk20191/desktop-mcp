@@ -7,6 +7,7 @@ use desktop_mcp_core::html::Element;
 use desktop_mcp_core::open::{Application, Target as OpenTarget};
 use desktop_mcp_core::shortcuts::ShortcutRun;
 use desktop_mcp_core::spotlight::{Found, Search};
+use desktop_mcp_core::permissions::PermissionState;
 use std::path::Path;
 use desktop_mcp_core::io::Stream;
 use desktop_mcp_core::shell::{Run, ShellMode};
@@ -114,6 +115,10 @@ impl Desktop for MacDesktop {
 
     fn search_files(&self, search: Search) -> Pin<Box<dyn Future<Output = Result<Found, String>>>> {
         Box::pin(crate::main_loop::offload(move || crate::spotlight::search(search)))
+    }
+
+    fn permissions(&self) -> Pin<Box<dyn Future<Output = PermissionState>>> {
+        Box::pin(crate::main_loop::offload(crate::permissions::check))
     }
 
     fn find_application(&self, name_or_bundle_id: &str) -> Pin<Box<dyn Future<Output = Option<Application>>>> {

@@ -63,6 +63,9 @@ fn redirect(status: u16, location: &str) -> Response<Full<bytes::Bytes>> {
 }
 
 impl Desktop for FakeWeb {
+    fn permissions(&self) -> Pin<Box<dyn Future<Output = desktop_mcp_core::permissions::PermissionState>>> {
+        unreachable!()
+    }
     fn search_files(&self, _search: desktop_mcp_core::spotlight::Search) -> Pin<Box<dyn Future<Output = Result<desktop_mcp_core::spotlight::Found, String>>>> {
         unreachable!()
     }

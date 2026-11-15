@@ -8,6 +8,7 @@ use crate::html::Element;
 use crate::open::{Application, Target as OpenTarget};
 use crate::shortcuts::ShortcutRun;
 use crate::spotlight::{Found, Kind as SearchKind, Search};
+use crate::permissions::PermissionState;
 use std::path::Path;
 use crate::io::Stream;
 use crate::shell::{self, Run, ShellMode};
@@ -51,6 +52,8 @@ pub trait Desktop: 'static {
     fn run_shortcut(&self, name: &str, input: Option<&str>, timeout: Duration) -> Pin<Box<dyn Future<Output = Result<ShortcutRun, String>>>>;
     /// Searches the file index. `Err` when the platform rejects the query.
     fn search_files(&self, search: Search) -> Pin<Box<dyn Future<Output = Result<Found, String>>>>;
+    /// The grants as they are now. Never prompts.
+    fn permissions(&self) -> Pin<Box<dyn Future<Output = PermissionState>>>;
 }
 
 /// One MCP server. Stateless requests get a fresh one each; a session keeps one.
@@ -261,6 +264,15 @@ struct SpotlightArgs {
 
 #[tool_router]
 impl Server {
+    #[tool(
+        name = "Permissions",
+        description = "Reports which macOS permissions desktop-mcp holds: Accessibility, Screen Recording, and Automation of System Events (granted, not granted or not determined), and which tools need each. Never prompts. A tool that needs a missing permission fails with a message saying how to grant it.",
+        annotations(title = "Permissions", read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
+    )]
+    async fn permissions(&self, cancellation: CancellationToken) -> CallToolResult {
+        run_tool("Permissions", cancellation, async { Ok(crate::permissions::format(self.desktop.permissions().await)) }).await
+    }
+
     #[tool(
         name = "Spotlight",
         description = "Searches the Spotlight index for files. By default 'query' is words that must each appear in the file name or text, name matches first, then content-only matches; raw=true passes 'query' as a Spotlight query (e.g. kMDItemContentModificationDate > $time.today(-7)). 'scope' is a list of folders (default: home; kind=application without scope searches the app folders /Applications, /System/Applications, ~/Applications). 'kind' narrows the type. Returns up to 'limit' (max 200) lines '<path>\\t<kind>\\t<modified>\\t<size>', newest first within each group; content=true adds the first 300 characters of each plain-text file.",

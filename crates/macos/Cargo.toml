@@ -20,6 +20,7 @@ objc2-app-kit.workspace = true
 objc2-core-graphics.workspace = true
 objc2-image-io.workspace = true
 objc2-core-services.workspace = true
+objc2-application-services.workspace = true
 libc.workspace = true
 uuid.workspace = true
 serde_json.workspace = true

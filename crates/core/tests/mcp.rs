@@ -5,6 +5,7 @@ use desktop_mcp_core::clipboard::{Clipboard, ClipboardWrite, Image};
 use desktop_mcp_core::open::{Application, Target};
 use desktop_mcp_core::shortcuts::ShortcutRun;
 use desktop_mcp_core::spotlight::{Found, Item as FoundItem, Kind, Query, Search};
+use desktop_mcp_core::permissions::{format as permissions_report, Automation, PermissionState};
 use std::path::{Path, PathBuf};
 use serde_json::{json, Value};
 use std::cell::RefCell;
@@ -36,8 +37,13 @@ struct FakeDesktop {
     found: RefCell<Vec<Result<Found, String>>>,
     /// How long each search pretends to take.
     search_takes: Duration,
+    permissions: Option<PermissionState>,
 }
 impl Desktop for FakeDesktop {
+    fn permissions(&self) -> Pin<Box<dyn Future<Output = PermissionState>>> {
+        let state = self.permissions.expect("a permission state");
+        Box::pin(async move { state })
+    }
     fn search_files(&self, search: Search) -> Pin<Box<dyn Future<Output = Result<Found, String>>>> {
         self.searches.borrow_mut().push(search);
         std::thread::sleep(self.search_takes);
@@ -112,7 +118,7 @@ impl FakeDesktop {
 fn ask(desktop: &Rc<FakeDesktop>, message: Value) -> Option<Value> {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
     let local = tokio::task::LocalSet::new();
-    let server = Server::new(desktop.clone(), &["Wait", "Shell", "Scrape", "Clipboard", "Open", "Notification", "RunShortcut", "Spotlight"]);
+    let server = Server::new(desktop.clone(), &["Wait", "Shell", "Scrape", "Clipboard", "Open", "Notification", "RunShortcut", "Spotlight", "Permissions"]);
     local.block_on(&runtime, async move {
         let answer = answer_stateless(server, serde_json::from_value(message).unwrap()).await;
         answer.map(|message| serde_json::to_value(message).unwrap())
@@ -130,7 +136,7 @@ fn listed_tools(desktop: &Rc<FakeDesktop>) -> Vec<Value> {
 fn only_the_requested_tools_are_listed() {
     let desktop = Rc::new(FakeDesktop::default());
     let names: Vec<String> = listed_tools(&desktop).iter().map(|tool| tool["name"].as_str().unwrap().to_string()).collect();
-    assert_eq!(names, ["Clipboard", "Notification", "Open", "RunShortcut", "Scrape", "Shell", "Spotlight", "Wait"]);
+    assert_eq!(names, ["Clipboard", "Notification", "Open", "Permissions", "RunShortcut", "Scrape", "Shell", "Spotlight", "Wait"]);
     let desktop = Rc::new(FakeDesktop::default());
     let server = Server::new(desktop.clone(), &["Wait"]);
     let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
@@ -552,4 +558,25 @@ fn spotlight_refusals() {
     let answer = call(&desktop, "Spotlight", json!({"query": "a", "limit": 0}));
     assert_eq!(desktop.searches.borrow().last().unwrap().limit, 1);
     let _ = answer;
+}
+
+const NEEDS: &str = "Needs Accessibility: App (resize, move), Click, Type, Scroll, Move, Shortcut, Snapshot, Desktop, Window, Menu, Wait (until)\nNeeds Screen Recording: Snapshot (use_vision), OCR";
+
+#[test]
+fn the_permission_report() {
+    let state = |accessibility, screen_recording, automation| PermissionState { accessibility, screen_recording, automation };
+    assert_eq!(permissions_report(state(true, true, Automation::Granted)), format!("Accessibility: granted\nScreen Recording: granted\nAutomation (System Events): granted\n{NEEDS}"));
+    assert_eq!(permissions_report(state(true, false, Automation::NotDetermined)), format!("Accessibility: granted\nScreen Recording: not granted\nAutomation (System Events): not determined\n{NEEDS}"));
+    assert_eq!(permissions_report(state(false, true, Automation::Denied)), format!("Accessibility: not granted\nScreen Recording: granted\nAutomation (System Events): not granted\n{NEEDS}"));
+    let seen = state(false, false, Automation::NotDetermined);
+    let desktop = Rc::new(FakeDesktop { permissions: Some(seen), ..FakeDesktop::default() });
+    assert_eq!(texts(&call(&desktop, "Permissions", json!({}))), [permissions_report(seen)]);
+}
+
+#[test]
+fn the_accessibility_message_says_how_to_grant_it() {
+    assert_eq!(
+        desktop_mcp_core::permissions::ACCESSIBILITY_MESSAGE,
+        "Accessibility is not granted to desktop-mcp. Grant it in System Settings > Privacy & Security > Accessibility, then restart desktop-mcp."
+    );
 }

@@ -137,3 +137,14 @@ fn spotlight_finds_safari_and_refuses_bad_queries() {
     let answer = server.post(&call("Spotlight", json!({"query": "  "}))).json();
     assert_eq!(text(&answer), "Error executing tool Spotlight: query is required.");
 }
+
+/// Both ports see the same grants (the binaries differ, so this compares the report's shape, not the values).
+#[test]
+fn permissions_are_reported_without_prompting() {
+    let server = ServerUnderTest::start();
+    let report = text(&server.post(&call("Permissions", json!({}))).json()).to_string();
+    let lines: Vec<&str> = report.lines().collect();
+    assert_eq!(lines.len(), 5, "{report}");
+    assert!(lines[0].starts_with("Accessibility: ") && lines[1].starts_with("Screen Recording: ") && lines[2].starts_with("Automation (System Events): "), "{report}");
+    assert_eq!(lines[3..], ["Needs Accessibility: App (resize, move), Click, Type, Scroll, Move, Shortcut, Snapshot, Desktop, Window, Menu, Wait (until)", "Needs Screen Recording: Snapshot (use_vision), OCR"]);
+}
