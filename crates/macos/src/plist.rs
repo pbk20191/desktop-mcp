@@ -1,46 +1,29 @@
-//! Property lists, read with CoreFoundation: whatever format the file is in (XML or binary), as launchd reads it.
-use objc2_core_foundation::{CFArray, CFBoolean, CFData, CFDictionary, CFNumber, CFPropertyListCreateWithData, CFRetained, CFString, CFType};
+//! Property lists, read with CoreFoundation (XML or binary, as launchd reads them) and handed on as JSON by
+//! `NSJSONSerialization`: a property list's objects are toll-free bridged Foundation objects.
+use objc2::runtime::AnyObject;
+use objc2_core_foundation::{CFData, CFPropertyListCreateWithData, CFRetained, CFType};
+use objc2_foundation::{NSJSONSerialization, NSJSONWritingOptions};
 use serde_json::Value;
 use std::path::Path;
 
-/// The dictionary property list in `path` (a Launch Agent's), as JSON (dictionaries, arrays, strings, numbers
-/// and booleans; dates and data become `null`).
+/// The dictionary property list in `path` (a Launch Agent's), as JSON.
 pub fn read(path: &Path) -> Result<Value, String> {
     let bytes = std::fs::read(path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
     parse(&bytes).filter(Value::is_object).ok_or_else(|| format!("{} is not a property list dictionary", path.display()))
 }
 
+/// A property list whose top level is a dictionary or an array, as JSON; `None` for anything else, or one
+/// holding what JSON cannot (dates, data).
 pub fn parse(bytes: &[u8]) -> Option<Value> {
     let data = CFData::from_bytes(bytes);
     let list: CFRetained<CFType> = unsafe { CFPropertyListCreateWithData(None, Some(&data), 0, std::ptr::null_mut(), std::ptr::null_mut()) }?;
-    Some(to_json(&list))
-}
-
-fn to_json(object: &CFType) -> Value {
-    if let Some(string) = object.downcast_ref::<CFString>() {
-        Value::String(string.to_string())
-    } else if let Some(boolean) = object.downcast_ref::<CFBoolean>() {
-        Value::Bool(boolean.as_bool())
-    } else if let Some(number) = object.downcast_ref::<CFNumber>() {
-        if number.is_float_type() {
-            number.as_f64().and_then(serde_json::Number::from_f64).map_or(Value::Null, Value::Number)
-        } else {
-            number.as_i64().map_or(Value::Null, Value::from)
-        }
-    } else if let Some(array) = object.downcast_ref::<CFArray>() {
-        Value::Array((0..array.count()).map(|index| unsafe { &*(array.value_at_index(index) as *const CFType) }).map(to_json).collect())
-    } else if let Some(dictionary) = object.downcast_ref::<CFDictionary>() {
-        let count = dictionary.count() as usize;
-        let (mut keys, mut values) = (vec![std::ptr::null(); count], vec![std::ptr::null(); count]);
-        unsafe { dictionary.keys_and_values(keys.as_mut_ptr(), values.as_mut_ptr()) };
-        let entries = keys.into_iter().zip(values).filter_map(|(key, value)| {
-            let key = unsafe { &*(key as *const CFType) }.downcast_ref::<CFString>()?.to_string();
-            Some((key, to_json(unsafe { &*(value as *const CFType) })))
-        });
-        Value::Object(entries.collect())
-    } else {
-        Value::Null
+    // SAFETY: every Core Foundation property list object is a toll-free bridged Objective-C object.
+    let object = unsafe { &*(&*list as *const CFType as *const AnyObject) };
+    if !unsafe { NSJSONSerialization::isValidJSONObject(object) } {
+        return None;
     }
+    let json = unsafe { NSJSONSerialization::dataWithJSONObject_options_error(object, NSJSONWritingOptions::empty()) }.ok()?;
+    serde_json::from_slice(&json.to_vec()).ok()
 }
 
 /// The `ProgramArguments` of a Launch Agent plist; empty when it has none.
@@ -68,8 +51,10 @@ mod tests {
 
     #[test]
     fn something_else_is_not_an_agent_plist() {
-        // A bare word is a valid old-style plist (a string), but not a dictionary.
-        assert_eq!(parse(b"nope"), Some(Value::String("nope".into())));
+        // A bare word is a valid old-style plist, but a string: neither a dictionary nor JSON's top level.
+        assert_eq!(parse(b"nope"), None);
+        let dated = b"<plist version=\"1.0\"><dict><key>When</key><date>2026-11-15T00:00:00Z</date></dict></plist>";
+        assert_eq!(parse(dated), None, "a date has no JSON form");
         assert_eq!(parse(b"<plist><dict>"), None);
         let directory = std::env::temp_dir().join(format!("dmcp-plist-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
