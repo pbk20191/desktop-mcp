@@ -70,6 +70,10 @@ nw_object!(
     /// `nw_content_context_t`
     NWContentContext
 );
+nw_object!(
+    /// `nw_protocol_options_t`
+    NWProtocolOptions
+);
 
 /// An owned reference to a Network.framework object: released when dropped, retained when cloned. The
 /// counterpart of `dispatch2::DispatchRetained`.
@@ -148,11 +152,9 @@ pub const LISTENER_FAILED: i32 = 3;
 pub const LISTENER_CANCELLED: i32 = 4;
 pub const ENDPOINT_TYPE_ADDRESS: i32 = 1;
 
-/// A block of Network.framework's (`nw_parameters_configure_protocol_block_t`); only the constants below are used.
-#[repr(C)]
-pub struct ConfigureProtocol {
-    _inner: [u8; 0],
-}
+/// `nw_parameters_configure_protocol_block_t`: configures one protocol of new parameters. Network.framework
+/// also offers two ready ones, `_nw_parameters_configure_protocol_default_configuration` and `…_disable`.
+pub type ConfigureProtocol = block2::Block<dyn Fn(NonNull<NWProtocolOptions>)>;
 
 #[link(name = "Network", kind = "framework")]
 extern "C" {
@@ -171,6 +173,8 @@ extern "C" {
     pub fn nw_endpoint_get_type(endpoint: &NWEndpoint) -> i32;
     pub fn nw_endpoint_get_address(endpoint: &NWEndpoint) -> *const libc::sockaddr;
     pub fn nw_error_get_error_code(error: &NWError) -> i32;
+    /// A +1 `sec_protocol_options_t`, released with `sec_release`.
+    pub fn nw_tls_copy_sec_protocol_options(options: &NWProtocolOptions) -> objc2_security::sec_protocol_options_t;
 
     pub fn nw_listener_create(parameters: &NWParameters) -> Option<NWRetained<NWListener>>;
     pub fn nw_listener_set_queue(listener: &NWListener, queue: &DispatchQueue);

@@ -110,10 +110,6 @@ fn main() -> ExitCode {
         eprintln!("stdio is not available in this build yet");
         return ExitCode::from(2);
     }
-    if plan.tls.is_some() {
-        eprintln!("Error: HTTPS (--ssl-certfile/--ssl-keyfile) is not available in this build yet");
-        return ExitCode::FAILURE;
-    }
     serve(plan)
 }
 
@@ -134,8 +130,19 @@ fn serve(plan: ServePlan) -> ExitCode {
     use desktop_mcp_core::mcp::{Desktop, Server};
     use desktop_mcp_core::oauth::OAuth;
     use desktop_mcp_core::session::{SessionSettings, Sessions};
-    use desktop_mcp_macos::{desktop::MacDesktop, main_loop, nw::NwListener, signals};
+    use desktop_mcp_macos::{desktop::MacDesktop, main_loop, nw::NwListener, signals, tls::TlsIdentity};
     use std::rc::Rc;
+
+    let tls = match &plan.tls {
+        Some(tls) => match TlsIdentity::load(tls.certificate.as_ref(), tls.private_key.as_ref()) {
+            Ok(identity) => Some(Rc::new(identity)),
+            Err(reason) => {
+                eprintln!("Error: {reason}");
+                return ExitCode::FAILURE;
+            }
+        },
+        None => None,
+    };
 
     let tools: Vec<&'static str> = TOOLS.iter().copied().filter(|tool| !plan.excluded_tools.iter().any(|excluded| excluded == tool)).collect();
     let security = Security {
@@ -145,7 +152,7 @@ fn serve(plan: ServePlan) -> ExitCode {
     };
     // One root future; the process exits by returning from it.
     main_loop::run(|main_loop| async move {
-        let listener = match NwListener::bind(&plan.host, plan.port).await {
+        let listener = match NwListener::bind_with(&plan.host, plan.port, tls).await {
             Ok(listener) => listener,
             Err(reason) => {
                 eprintln!("Error: cannot serve on {}:{}: {reason}", plan.host, plan.port);

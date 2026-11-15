@@ -30,8 +30,11 @@ turn on the built-in OAuth server (authorization code with PKCE, loopback redire
 `DESKTOP_MCP_*` environment variables, then `~/.desktop-mcp/config.toml` (or `--config`); binding a
 non-loopback host without authentication is refused unless `--allow-insecure-remote`.
 
-Not there yet: HTTPS (`--ssl-certfile`/`--ssl-keyfile` are refused), stdio, the Unix socket,
-`connect`, `install`, and every tool but `Wait` by duration.
+`--ssl-certfile`/`--ssl-keyfile` serve HTTPS (HTTP/1.1; the Swift port also offers HTTP/2 here).
+The PEM certificate and key (RSA or EC; PKCS#8, PKCS#1 or SEC1) are read into memory with
+Security.framework, never into a keychain, and Network.framework does the TLS.
+
+Not there yet: stdio, the Unix socket, `connect`, `install`, and every tool but `Wait` by duration.
 
 ## How it is built
 
@@ -47,7 +50,8 @@ Not there yet: HTTPS (`--ssl-certfile`/`--ssl-keyfile` are refused), stdio, the 
   until they are copied once into hyper's buffer. libdispatch is used through the `dispatch2` crate;
   Network.framework has no binding crate, so its objects and functions are declared in
   `crates/macos/src/nw/sys.rs` after `dispatch2`'s model: an opaque type per object, and
-  `NWRetained<T>` for an owned reference (released on drop, retained on clone).
+  `NWRetained<T>` for an owned reference (released on drop, retained on clone). Security.framework
+  comes from `objc2-security` (`crates/macos/src/tls.rs`).
 - **Stateless requests** each get a fresh rmcp service, as in rmcp's own HTTP server. A session keeps
   one service behind a channel transport (`crates/core/src/session.rs`); answers go to the `POST`
   that asked, anything else to the session's `GET` stream. While a session lives, the guest

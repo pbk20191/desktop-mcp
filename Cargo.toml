@@ -32,5 +32,6 @@ clap = { version = "4", features = ["derive"] }
 block2 = "0.6"
 dispatch2 = { version = "0.3", default-features = false, features = ["std", "block2"] }
 objc2 = { version = "0.6", default-features = false, features = ["std"] }
-objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFRunLoop", "CFDate"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFRunLoop", "CFDate", "CFData", "CFArray"] }
+objc2-security = { version = "0.3", default-features = false, features = ["std", "SecBase", "SecCertificate", "SecIdentity", "SecImportExport", "SecKey", "SecProtocolObject", "SecProtocolOptions", "SecProtocolTypes"] }
 libc = "0.2"

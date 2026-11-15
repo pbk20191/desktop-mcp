@@ -14,12 +14,15 @@ use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
+use crate::tls::TlsIdentity;
 use sys::*;
 use tokio::sync::{mpsc, oneshot};
 
 /// A listening TCP socket.
 pub struct NwListener {
     listener: NWRetained<NWListener>,
+    /// Kept for as long as the listener may use it.
+    _tls: Option<Rc<TlsIdentity>>,
     port: u16,
     connections: mpsc::UnboundedReceiver<NwIo>,
 }
@@ -28,14 +31,31 @@ impl NwListener {
     /// Binds `host` (a name or an address; `localhost` binds 127.0.0.1) and `port` (0 lets the system choose).
     /// Resolves once the listener is ready, or with the reason it failed.
     pub async fn bind(host: &str, port: u16) -> Result<NwListener, String> {
+        Self::bind_with(host, port, None).await
+    }
+
+    /// As [`bind`](Self::bind), serving TLS with `tls` when given (ALPN `http/1.1`).
+    pub async fn bind_with(host: &str, port: u16, tls: Option<Rc<TlsIdentity>>) -> Result<NwListener, String> {
         let host = if host.eq_ignore_ascii_case("localhost") { "127.0.0.1" } else { host };
         let host_c = CString::new(host).map_err(|_| format!("invalid host {host:?}"))?;
         let port_c = CString::new(port.to_string()).expect("digits");
         let (ready_tx, ready_rx) = oneshot::channel::<Result<(), String>>();
         let (connection_tx, connections) = mpsc::unbounded_channel();
         let listener = unsafe {
-            let parameters = nw_parameters_create_secure_tcp(_nw_parameters_configure_protocol_disable, _nw_parameters_configure_protocol_default_configuration)
-                .ok_or("cannot create TCP parameters")?;
+            let configure_tls = tls.clone().map(|identity| {
+                RcBlock::new(move |options: NonNull<NWProtocolOptions>| {
+                    let security = nw_tls_copy_sec_protocol_options(options.as_ref());
+                    if !security.is_null() {
+                        crate::tls::configure(security, &identity);
+                        crate::tls::release(security.cast());
+                    }
+                })
+            });
+            let tls_block: &ConfigureProtocol = match &configure_tls {
+                Some(block) => block,
+                None => _nw_parameters_configure_protocol_disable,
+            };
+            let parameters = nw_parameters_create_secure_tcp(tls_block, _nw_parameters_configure_protocol_default_configuration).ok_or("cannot create TCP parameters")?;
             let endpoint = nw_endpoint_create_host(host_c.as_ptr(), port_c.as_ptr()).ok_or_else(|| format!("invalid address {host}:{port}"))?;
             nw_parameters_set_local_endpoint(&parameters, Some(&endpoint));
             nw_parameters_set_reuse_local_address(&parameters, true);
@@ -71,7 +91,7 @@ impl NwListener {
             nw_listener_start(&listener);
         }
         // From here the value owns the listener, so an early return cancels it.
-        let mut bound = NwListener { listener, port: 0, connections };
+        let mut bound = NwListener { listener, _tls: tls, port: 0, connections };
         ready_rx.await.map_err(|_| "the listener went away".to_string())??;
         bound.port = unsafe { nw_listener_get_port(&bound.listener) };
         Ok(bound)

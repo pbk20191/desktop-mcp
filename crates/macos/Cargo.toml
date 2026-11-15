@@ -14,7 +14,12 @@ block2.workspace = true
 objc2.workspace = true
 dispatch2.workspace = true
 objc2-core-foundation.workspace = true
+objc2-security.workspace = true
 libc.workspace = true
+base64.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [[test]]
 name = "main_loop"
@@ -26,4 +31,8 @@ harness = false
 
 [[test]]
 name = "desktop"
+harness = false
+
+[[test]]
+name = "tls"
 harness = false
