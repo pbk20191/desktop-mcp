@@ -25,6 +25,7 @@ where
     C: hyper::rt::Read + hyper::rt::Write + Unpin + 'static,
 {
     let (stdio, socket) = (Rc::new(RefCell::new(stdio)), Rc::new(RefCell::new(socket)));
+    let stdio_for_flush = stdio.clone();
     let input_ended = Rc::new(std::cell::Cell::new(false));
     let upstream = {
         let (stdio, socket, input_ended) = (stdio.clone(), socket.clone(), input_ended.clone());
@@ -52,10 +53,13 @@ where
             Relayed::ServerClosed
         }
     };
-    tokio::select! {
+    let outcome = tokio::select! {
         outcome = upstream => outcome,
         outcome = downstream => outcome,
-    }
+    };
+    // Waits for what was handed to stdout to be written: the process may exit as soon as this returns.
+    let _ = poll_fn(|cx| hyper::rt::Write::poll_shutdown(Pin::new(&mut *stdio_for_flush.borrow_mut()), cx)).await;
+    outcome
 }
 
 /// The next bytes, or `None` at the end of the stream (or on an error, which ends it as well).

@@ -43,6 +43,7 @@ fn input_eof_shuts_the_socket_then_the_servers_eof_finishes() {
         socket.close_input();
         assert_eq!(tokio::time::timeout(Duration::from_secs(2), task).await.unwrap().unwrap(), Relayed::Finished);
         assert_eq!(stdio.output(), b"{\"answer\":1}\n");
+        assert!(stdio.shut_down(), "stdout is flushed before the relay returns");
     })
 }
 

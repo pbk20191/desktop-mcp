@@ -380,6 +380,8 @@ where
     bridge.close();
     drop(output);
     let _ = writer.await;
+    // Waits for what was handed to stdout to be written: the process may exit as soon as this returns.
+    let _ = poll_fn(|cx| hyper::rt::Write::poll_shutdown(Pin::new(&mut *stdio.borrow_mut()), cx)).await;
 }
 
 async fn write_all<IO: hyper::rt::Write + Unpin>(io: &Rc<RefCell<IO>>, mut bytes: &[u8]) -> std::io::Result<()> {

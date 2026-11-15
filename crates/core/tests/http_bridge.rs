@@ -163,6 +163,7 @@ fn eof_waits_for_the_calls_in_flight() {
         release.send(()).unwrap();
         assert_eq!(answer(&bridge.stdio.wait_lines(2).await, 2)["result"]["content"][0]["text"], "Waited for 1 seconds.");
         tokio::time::timeout(Duration::from_secs(2), bridge.task).await.expect("the bridge ends once the calls are answered").unwrap();
+        assert!(bridge.stdio.shut_down(), "stdout is flushed before the bridge returns, or the process may exit with answers unwritten");
     })
 }
 
