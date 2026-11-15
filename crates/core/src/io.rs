@@ -14,3 +14,7 @@ pub trait Listener: 'static {
     /// The next connection; `None` once the listener has ended.
     fn accept(&mut self) -> impl Future<Output = Option<Self::Io>>;
 }
+
+/// An outgoing connection's byte stream.
+pub trait Stream: hyper::rt::Read + hyper::rt::Write + Unpin {}
+impl<T: hyper::rt::Read + hyper::rt::Write + Unpin> Stream for T {}

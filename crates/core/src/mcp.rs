@@ -3,7 +3,10 @@ use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ClientJsonRpcMessage, ContentBlock, Implementation, JsonRpcMessage, ServerCapabilities, ServerConfig, ServerJsonRpcMessage};
 use rmcp::transport::OneshotTransport;
+use crate::html::Element;
+use crate::io::Stream;
 use crate::shell::{self, Run, ShellMode};
+use std::net::IpAddr;
 use rmcp::{schemars, tool, tool_handler, tool_router, RoleServer, ServerHandler};
 use std::future::Future;
 use std::pin::Pin;
@@ -18,6 +21,13 @@ pub trait Desktop: 'static {
     /// Runs `command` in `mode`'s interpreter with no stdin, killing it (and whatever it started) after
     /// `timeout` or when the future is dropped. `Err` when it cannot start.
     fn shell(&self, command: &str, mode: ShellMode, timeout: Duration) -> Pin<Box<dyn Future<Output = Result<Run, String>>>>;
+    /// The addresses `host` (a name or a numeric address) resolves to, or the resolver's reason for none.
+    fn resolve(&self, host: &str) -> Pin<Box<dyn Future<Output = Result<Vec<IpAddr>, String>>>>;
+    /// A connection to `host`:`port`; with `tls`, over TLS that trusts what the system trusts.
+    fn connect(&self, host: &str, port: u16, tls: bool) -> Pin<Box<dyn Future<Output = Result<Box<dyn Stream>, String>>>>;
+    /// An HTML page's `html` element, parsed the way a browser would after decoding `body` from `charset` (UTF-8
+    /// when absent or unknown). `None` when nothing could be parsed.
+    fn parse_html(&self, body: &[u8], charset: Option<&str>) -> Option<Element>;
 }
 
 /// One MCP server. Stateless requests get a fresh one each; a session keeps one.
@@ -102,8 +112,22 @@ struct ShellArgs {
     timeout: i64,
 }
 
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct ScrapeArgs {
+    url: String,
+}
+
 #[tool_router]
 impl Server {
+    #[tool(
+        name = "Scrape",
+        description = "Fetch content from a URL. Performs a lightweight HTTP request and returns the page content as text.",
+        annotations(title = "Scrape", read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = true)
+    )]
+    async fn scrape(&self, Parameters(args): Parameters<ScrapeArgs>, cancellation: CancellationToken) -> CallToolResult {
+        run_tool("Scrape", cancellation, async { crate::scrape::run(self.desktop.as_ref(), &args.url).await.map_err(ToolError) }).await
+    }
+
     #[tool(
         name = "Shell",
         description = "Execute commands on macOS. Modes: 'shell' (default) for bash/zsh commands, 'osascript' for AppleScript. Use for file system, process management, system operations, and automation scripts. SECURITY WARNING: Commands are executed with the same permissions as the terminal/application running this server. Review and understand all actions before execution, especially those involving file operations, system modifications, or external processes.",

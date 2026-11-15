@@ -43,6 +43,15 @@ impl FakeDesktop {
     }
 }
 impl Desktop for FakeDesktop {
+    fn resolve(&self, _host: &str) -> Pin<Box<dyn Future<Output = Result<Vec<std::net::IpAddr>, String>>>> {
+        Box::pin(async { Err("no network in these tests".to_string()) })
+    }
+    fn connect(&self, _host: &str, _port: u16, _tls: bool) -> Pin<Box<dyn Future<Output = Result<Box<dyn desktop_mcp_core::io::Stream>, String>>>> {
+        Box::pin(async { Err("no network in these tests".to_string()) })
+    }
+    fn parse_html(&self, _body: &[u8], _charset: Option<&str>) -> Option<desktop_mcp_core::html::Element> {
+        None
+    }
     fn shell(&self, _command: &str, _mode: ShellMode, _timeout: Duration) -> Pin<Box<dyn Future<Output = Result<Run, String>>>> {
         Box::pin(async { Err("no shell in these tests".to_string()) })
     }

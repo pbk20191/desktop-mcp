@@ -3,6 +3,8 @@ pub mod guest;
 pub mod io;
 pub mod mcp;
 pub mod shell;
+pub mod html;
+pub mod scrape;
 pub mod http;
 pub mod session;
 pub mod config;

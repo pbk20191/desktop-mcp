@@ -33,6 +33,6 @@ block2 = "0.6"
 dispatch2 = { version = "0.3", default-features = false, features = ["std", "block2", "libc"] }
 objc2 = { version = "0.6", default-features = false, features = ["std"] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFRunLoop", "CFDate", "CFData", "CFArray", "CFPropertyList", "CFDictionary", "CFNumber", "CFString", "CFError"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSJSONSerialization", "NSData", "NSError"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSJSONSerialization", "NSData", "NSError", "NSString", "NSArray", "NSXMLDocument", "NSXMLElement", "NSXMLNode", "NSXMLNodeOptions", "NSEnumerator"] }
 objc2-security = { version = "0.3", default-features = false, features = ["std", "SecBase", "SecCertificate", "SecIdentity", "SecImportExport", "SecKey", "SecProtocolObject", "SecProtocolOptions", "SecProtocolTypes"] }
 libc = "0.2"

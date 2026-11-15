@@ -1,7 +1,11 @@
 //! The tools' behaviour on macOS.
 use block2::RcBlock;
 use desktop_mcp_core::mcp::Desktop;
+use crate::nw::NwIo;
+use desktop_mcp_core::html::Element;
+use desktop_mcp_core::io::Stream;
 use desktop_mcp_core::shell::{Run, ShellMode};
+use std::net::IpAddr;
 use dispatch2::{DispatchObject, DispatchQueue, DispatchRetained, DispatchSource, DispatchTime};
 use std::cell::Cell;
 use std::future::Future;
@@ -45,6 +49,50 @@ impl Desktop for MacDesktop {
         };
         Box::pin(crate::process::run(argv, timeout))
     }
+
+    /// `getaddrinfo`, on a libdispatch worker: it blocks.
+    fn resolve(&self, host: &str) -> Pin<Box<dyn Future<Output = Result<Vec<IpAddr>, String>>>> {
+        let host = host.to_string();
+        Box::pin(crate::main_loop::offload(move || resolve(&host)))
+    }
+
+    fn connect(&self, host: &str, port: u16, tls: bool) -> Pin<Box<dyn Future<Output = Result<Box<dyn Stream>, String>>>> {
+        let host = host.to_string();
+        Box::pin(async move { NwIo::connect(&host, port, tls).await.map(|io| Box::new(io) as Box<dyn Stream>) })
+    }
+
+    fn parse_html(&self, body: &[u8], charset: Option<&str>) -> Option<Element> {
+        crate::html::parse(body, charset)
+    }
+}
+
+fn resolve(host: &str) -> Result<Vec<IpAddr>, String> {
+    let name = std::ffi::CString::new(host).map_err(|_| "nodename nor servname provided, or not known".to_string())?;
+    let mut hints: libc::addrinfo = unsafe { std::mem::zeroed() };
+    hints.ai_socktype = libc::SOCK_STREAM;
+    let mut first: *mut libc::addrinfo = std::ptr::null_mut();
+    let rc = unsafe { libc::getaddrinfo(name.as_ptr(), std::ptr::null(), &hints, &mut first) };
+    if rc != 0 {
+        return Err(unsafe { std::ffi::CStr::from_ptr(libc::gai_strerror(rc)) }.to_string_lossy().into_owned());
+    }
+    let mut addresses = Vec::new();
+    let mut cursor = first;
+    while let Some(info) = unsafe { cursor.as_ref() } {
+        match info.ai_family {
+            libc::AF_INET => {
+                let address = unsafe { &*(info.ai_addr as *const libc::sockaddr_in) };
+                addresses.push(IpAddr::from(u32::from_be(address.sin_addr.s_addr).to_be_bytes()));
+            }
+            libc::AF_INET6 => {
+                let address = unsafe { &*(info.ai_addr as *const libc::sockaddr_in6) };
+                addresses.push(IpAddr::from(address.sin6_addr.s6_addr));
+            }
+            _ => {}
+        }
+        cursor = info.ai_next;
+    }
+    unsafe { libc::freeaddrinfo(first) };
+    Ok(addresses)
 }
 
 /// osascript's arguments for a script given as text. The language comes from the first line: a shebang naming

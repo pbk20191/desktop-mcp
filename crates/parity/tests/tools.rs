@@ -59,3 +59,19 @@ fn a_client_that_goes_away_stops_its_command() {
     assert!(!marker.exists(), "the command kept running after its client left");
     assert_eq!(server.post(&call("Shell", json!({"command": "true"}))).status, 200, "and the server still serves");
 }
+
+#[test]
+fn scrape_refuses_this_machine_and_other_schemes() {
+    let server = ServerUnderTest::start();
+    let port = server.port;
+    for (url, reason) in [
+        (format!("http://127.0.0.1:{port}/mcp"), "Private, loopback, link-local, multicast, and reserved addresses are blocked: 127.0.0.1"),
+        ("http://[::1]/".to_string(), "Private, loopback, link-local, multicast, and reserved addresses are blocked: ::1"),
+        ("file:///etc/passwd".to_string(), "URL scheme 'file' is not allowed; use http or https."),
+        ("http://user:pass@example.com/".to_string(), "URLs with embedded credentials are not allowed."),
+    ] {
+        let answer = server.post(&call("Scrape", json!({"url": url}))).json();
+        assert_eq!(answer["result"]["isError"], true, "{url}");
+        assert_eq!(text(&answer), format!("Error executing tool Scrape: {reason}"), "{url}");
+    }
+}

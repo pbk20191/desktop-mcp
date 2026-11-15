@@ -15,6 +15,15 @@ struct FakeDesktop {
     shell_answer: RefCell<Option<Result<Run, String>>>,
 }
 impl Desktop for FakeDesktop {
+    fn resolve(&self, _host: &str) -> Pin<Box<dyn Future<Output = Result<Vec<std::net::IpAddr>, String>>>> {
+        Box::pin(async { Err("no network in these tests".to_string()) })
+    }
+    fn connect(&self, _host: &str, _port: u16, _tls: bool) -> Pin<Box<dyn Future<Output = Result<Box<dyn desktop_mcp_core::io::Stream>, String>>>> {
+        Box::pin(async { Err("no network in these tests".to_string()) })
+    }
+    fn parse_html(&self, _body: &[u8], _charset: Option<&str>) -> Option<desktop_mcp_core::html::Element> {
+        None
+    }
     fn sleep(&self, duration: Duration) -> Pin<Box<dyn Future<Output = ()>>> {
         self.slept.borrow_mut().push(duration);
         Box::pin(async {})
@@ -37,7 +46,7 @@ impl FakeDesktop {
 fn ask(desktop: &Rc<FakeDesktop>, message: Value) -> Option<Value> {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
     let local = tokio::task::LocalSet::new();
-    let server = Server::new(desktop.clone(), &["Wait", "Shell"]);
+    let server = Server::new(desktop.clone(), &["Wait", "Shell", "Scrape"]);
     local.block_on(&runtime, async move {
         let answer = answer_stateless(server, serde_json::from_value(message).unwrap()).await;
         answer.map(|message| serde_json::to_value(message).unwrap())
@@ -55,7 +64,7 @@ fn listed_tools(desktop: &Rc<FakeDesktop>) -> Vec<Value> {
 fn only_the_requested_tools_are_listed() {
     let desktop = Rc::new(FakeDesktop::default());
     let names: Vec<String> = listed_tools(&desktop).iter().map(|tool| tool["name"].as_str().unwrap().to_string()).collect();
-    assert_eq!(names, ["Shell", "Wait"]);
+    assert_eq!(names, ["Scrape", "Shell", "Wait"]);
     let desktop = Rc::new(FakeDesktop::default());
     let server = Server::new(desktop.clone(), &["Wait"]);
     let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
