@@ -12,7 +12,7 @@ pub const DEFAULT_MIN_CONFIDENCE: f64 = 0.3;
 pub const REGION_ERROR: &str = "region must be [x, y, width, height] with positive width and height";
 pub const CONFIDENCE_ERROR: &str = "min_confidence must be between 0 and 1";
 pub const OUTSIDE_ERROR: &str = "region is outside every display.";
-pub const CAPTURE_ERROR: &str = "Screen capture failed. If this persists, grant Screen Recording in System Settings > Privacy & Security.";
+pub const CAPTURE_ERROR: &str = "Screen capture failed. If this persists, grant Screen Recording in System Settings > Privacy & Security (or call Permissions with request=true).";
 
 /// What to read. `region` in screen points; `None` means the focused window, else the main display.
 #[derive(Clone, Debug, PartialEq)]

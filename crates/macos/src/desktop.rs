@@ -6,7 +6,7 @@ use desktop_mcp_core::html::Element;
 use desktop_mcp_core::open::{Application, Target as OpenTarget};
 use desktop_mcp_core::shortcuts::ShortcutRun;
 use desktop_mcp_core::spotlight::{Found, Search};
-use desktop_mcp_core::permissions::PermissionState;
+use desktop_mcp_core::permissions::{Permission, PermissionState};
 use desktop_mcp_core::wait::RunningApp;
 use desktop_mcp_core::input::Event as InputEvent;
 use desktop_mcp_core::app::FrameChange;
@@ -124,6 +124,9 @@ impl Desktop for MacDesktop {
 
     fn permissions(&self) -> Pin<Box<dyn Future<Output = PermissionState>>> {
         Box::pin(crate::main_loop::offload(crate::permissions::check))
+    }
+    fn request_permission(&self, permission: Permission) -> Pin<Box<dyn Future<Output = ()>>> {
+        Box::pin(crate::main_loop::offload(move || crate::permissions::request(permission)))
     }
 
     fn running_apps(&self) -> Pin<Box<dyn Future<Output = Vec<RunningApp>>>> {

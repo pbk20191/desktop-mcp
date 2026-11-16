@@ -114,6 +114,9 @@ impl Desktop for FakeWeb {
     fn permissions(&self) -> Pin<Box<dyn Future<Output = desktop_mcp_core::permissions::PermissionState>>> {
         unreachable!()
     }
+    fn request_permission(&self, _permission: desktop_mcp_core::permissions::Permission) -> Pin<Box<dyn Future<Output = ()>>> {
+        unreachable!()
+    }
     fn search_files(&self, _search: desktop_mcp_core::spotlight::Search) -> Pin<Box<dyn Future<Output = Result<desktop_mcp_core::spotlight::Found, String>>>> {
         unreachable!()
     }

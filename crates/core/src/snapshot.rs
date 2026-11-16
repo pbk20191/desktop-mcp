@@ -177,7 +177,7 @@ pub fn text(state: &State, use_vision: bool) -> String {
     );
     if use_vision && state.screenshot.is_none() {
         // Capture fails transiently (display asleep or locked, hot-plug) or without permission.
-        text += "\nNote: Screenshot capture failed, so no annotated image is attached. The elements\nlisted above are still valid; call Snapshot again if you need the screenshot.\nIf this persists, grant Screen Recording in System Settings > Privacy & Security.\n";
+        text += "\nNote: Screenshot capture failed, so no annotated image is attached. The elements\nlisted above are still valid; call Snapshot again if you need the screenshot.\nIf this persists, grant Screen Recording in System Settings > Privacy & Security\n(or call Permissions with request=true).\n";
     }
     text
 }

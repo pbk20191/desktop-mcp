@@ -245,6 +245,17 @@ fn the_permission_report() {
     let seen = state(false, false, Automation::NotDetermined);
     let desktop = Rc::new(FakeDesktop { permissions: Some(seen), ..FakeDesktop::default() });
     assert_eq!(texts(&call(&desktop, "Permissions", json!({}))), [permissions_report(seen)]);
+    assert!(desktop.requested.borrow().is_empty(), "a report asks for nothing");
+}
+
+#[test]
+fn permissions_asks_only_for_what_is_missing() {
+    use desktop_mcp_core::permissions::{format_request, Permission};
+    let seen = PermissionState { accessibility: false, screen_recording: true, automation: Automation::NotDetermined };
+    let desktop = Rc::new(FakeDesktop { permissions: Some(seen), ..FakeDesktop::default() });
+    assert_eq!(texts(&call(&desktop, "Permissions", json!({"request": true}))), [format_request(seen, &[Permission::Accessibility])]);
+    assert_eq!(*desktop.requested.borrow(), [Permission::Accessibility]);
+    assert!(format_request(seen, &[Permission::Accessibility]).starts_with(&permissions_report(seen)));
 }
 
 #[test]

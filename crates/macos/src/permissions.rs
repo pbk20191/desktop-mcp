@@ -1,7 +1,9 @@
-//! The privacy grants desktop-mcp depends on. None of these checks prompts.
-use desktop_mcp_core::permissions::{Automation, PermissionState};
+//! The privacy grants desktop-mcp depends on. The checks never prompt; `request` does.
+use desktop_mcp_core::permissions::{Automation, Permission, PermissionState};
+use objc2_app_kit::NSWorkspace;
+use objc2_core_foundation::{CFBoolean, CFDictionary, CFString};
 use objc2_core_services::{errAEEventNotPermitted, typeWildCard, AEDeterminePermissionToAutomateTarget};
-use objc2_foundation::{NSAppleEventDescriptor, NSString};
+use objc2_foundation::{NSAppleEventDescriptor, NSString, NSURL};
 
 /// The current state. The Apple Events check is a round trip to tccd: call it off the main thread.
 pub fn check() -> PermissionState {
@@ -28,5 +30,26 @@ fn automation_of_system_events() -> Automation {
         status if status == errAEEventNotPermitted => Automation::Denied,
         // Would require consent, or System Events is not running, among others.
         _ => Automation::NotDetermined,
+    }
+}
+
+/// Asks for `permission`: the system's prompt (shown once; it also lists desktop-mcp on the settings page), then
+/// that page, where the grant is turned on either way.
+pub fn request(permission: Permission) {
+    let page = match permission {
+        Permission::Accessibility => {
+            let prompt = unsafe { objc2_application_services::kAXTrustedCheckOptionPrompt };
+            let yes = unsafe { objc2_core_foundation::kCFBooleanTrue }.expect("a constant");
+            let options = CFDictionary::<CFString, CFBoolean>::from_slices(&[prompt], &[yes]);
+            unsafe { objc2_application_services::AXIsProcessTrustedWithOptions(Some(options.as_opaque())) };
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+        }
+        Permission::ScreenRecording => {
+            objc2_core_graphics::CGRequestScreenCaptureAccess();
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+        }
+    };
+    if let Some(url) = NSURL::URLWithString(&NSString::from_str(page)) {
+        NSWorkspace::sharedWorkspace().openURL(&url);
     }
 }

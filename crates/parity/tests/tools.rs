@@ -109,11 +109,12 @@ fn input_tools_refuse_bad_arguments_before_posting() {
     }
     let answer = server.post(&call("Move", json!({"loc": []}))).json();
     assert_eq!(text(&answer), "Error executing tool Move: loc must be a list of exactly 2 integers [x, y]");
-    let accessibility = "Accessibility is not granted to desktop-mcp. Grant it in System Settings > Privacy & Security > Accessibility, then restart desktop-mcp.";
+    // The Rust port also points at Permissions(request=true).
+    let accessibility = "Accessibility is not granted to desktop-mcp. Grant it in System Settings > Privacy & Security > Accessibility";
     for (shortcut, refusal) in [("command+nosuchkey", "Unknown key: nosuchkey"), ("command++c", "shortcut must contain non-empty key names separated by '+'")] {
         let answer = server.post(&call("Shortcut", json!({"shortcut": shortcut}))).json();
         let said = text(&answer).to_string();
-        assert!(said == format!("Error executing tool Shortcut: {refusal}") || said == format!("Error executing tool Shortcut: {accessibility}"), "{said}");
+        assert!(said == format!("Error executing tool Shortcut: {refusal}") || said.starts_with(&format!("Error executing tool Shortcut: {accessibility}")), "{said}");
     }
 }
 

@@ -8,7 +8,7 @@ use desktop_mcp_core::clipboard::{Clipboard, ClipboardWrite};
 use desktop_mcp_core::open::{Application, Target};
 use desktop_mcp_core::shortcuts::ShortcutRun;
 use desktop_mcp_core::spotlight::{Found, Search};
-use desktop_mcp_core::permissions::PermissionState;
+use desktop_mcp_core::permissions::{Permission, PermissionState};
 use desktop_mcp_core::wait::RunningApp;
 use std::path::{Path, PathBuf};
 use desktop_mcp_core::mcp::{Desktop, Server};
@@ -84,6 +84,7 @@ pub struct FakeDesktop {
     /// How long each search pretends to take.
     pub search_takes: Duration,
     pub permissions: Option<PermissionState>,
+    pub requested: RefCell<Vec<Permission>>,
     /// The running apps at each look; the last answer repeats.
     pub looks: RefCell<Vec<Vec<RunningApp>>>,
     pub looked: Cell<usize>,
@@ -158,6 +159,10 @@ impl Desktop for FakeDesktop {
     fn permissions(&self) -> Pin<Box<dyn Future<Output = PermissionState>>> {
         let state = self.permissions.expect("a permission state");
         Box::pin(async move { state })
+    }
+    fn request_permission(&self, permission: Permission) -> Pin<Box<dyn Future<Output = ()>>> {
+        self.requested.borrow_mut().push(permission);
+        Box::pin(async {})
     }
     fn search_files(&self, search: Search) -> Pin<Box<dyn Future<Output = Result<Found, String>>>> {
         self.searches.borrow_mut().push(search);

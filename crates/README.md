@@ -86,8 +86,14 @@ Not ported: the `install`/`uninstall` (launchd agent) and `auth` commands. An ag
 the borrowing problem above, and a key stored in `config.toml` can be read by any program of this user; pass the
 HTTP key with `--auth-key` or `DESKTOP_MCP_AUTH_KEY` instead (for example `openssl rand -hex 32`). To use
 desktop-mcp, register `desktop-mcp serve --transport stdio` in the host's MCP settings, or build a Claude Desktop
-extension with `macos/scripts/build-mcpb.sh <binary>`. The `permissions` command waits for the client check
-design (it adds `Permissions(request=true)`).
+extension with `macos/scripts/build-mcpb.sh <binary>`.
+
+Asking for permissions: `Permissions` with `request=true` asks macOS for missing Accessibility and Screen Recording
+(the system prompt, which also lists the binary on the settings page, then that page) and says what it did;
+Automation is only reported. `desktop-mcp permissions` does the same from a terminal and prints the report. macOS
+asks for the process it holds responsible, so the command helps hosts started from that terminal, and a server
+started by Claude Desktop must use the tool. A tool refused for a missing permission says to call
+`Permissions(request=true)`.
 
 ## How it is built
 

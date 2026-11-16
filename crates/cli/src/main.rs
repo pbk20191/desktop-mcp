@@ -24,6 +24,12 @@ enum Command {
     /// when it has one, with HTTP as the fallback if the socket refuses the connection, else its HTTP address.
     /// Over the socket, stdin and stdout are piped to the server unchanged.
     Connect(ConnectArgs),
+    /// Ask macOS for the missing Accessibility and Screen Recording permissions and print what was done.
+    ///
+    /// macOS asks for the app it holds responsible: run from a terminal, that is the terminal app, which is what a
+    /// host started from that terminal needs. A server started by Claude Desktop asks for itself instead: use the
+    /// Permissions tool with request=true there.
+    Permissions,
 }
 
 #[derive(Args)]
@@ -128,6 +134,13 @@ fn main() -> ExitCode {
         Some(Command::Connect(_)) => {
             eprintln!("Error: `connect` is disabled. {}", desktop_mcp_core::plan::SOCKET_DISABLED);
             return ExitCode::FAILURE;
+        }
+        Some(Command::Permissions) => {
+            let state = desktop_mcp_macos::permissions::check();
+            let asked = desktop_mcp_core::permissions::missing(state);
+            asked.iter().for_each(|permission| desktop_mcp_macos::permissions::request(*permission));
+            println!("{}", desktop_mcp_core::permissions::format_request(state, &asked));
+            return ExitCode::SUCCESS;
         }
         None => cli.serve,
     };

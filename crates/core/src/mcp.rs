@@ -8,7 +8,7 @@ use crate::html::Element;
 use crate::open::{Application, Target as OpenTarget};
 use crate::shortcuts::ShortcutRun;
 use crate::spotlight::{Found, Kind as SearchKind, Search};
-use crate::permissions::PermissionState;
+use crate::permissions::{Permission, PermissionState};
 use crate::wait::RunningApp;
 use crate::input::{Button, Caret, Event as InputEvent};
 use crate::app::{FrameChange, Mode as AppMode};
@@ -60,6 +60,8 @@ pub trait Desktop: 'static {
     fn search_files(&self, search: Search) -> Pin<Box<dyn Future<Output = Result<Found, String>>>>;
     /// The grants as they are now. Never prompts.
     fn permissions(&self) -> Pin<Box<dyn Future<Output = PermissionState>>>;
+    /// Asks the system for `permission`: its prompt, and the settings page where it is turned on.
+    fn request_permission(&self, permission: Permission) -> Pin<Box<dyn Future<Output = ()>>>;
     /// The applications running now.
     fn running_apps(&self) -> Pin<Box<dyn Future<Output = Vec<RunningApp>>>>;
     /// Whether Accessibility is granted. Never prompts.
@@ -435,6 +437,12 @@ fn open_delay() -> f64 {
 }
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
+struct PermissionsArgs {
+    #[serde(default)]
+    request: bool,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
 struct DesktopArgs {
     #[serde(default)]
     mode: SpacesMode,
@@ -629,11 +637,22 @@ impl Server {
 
     #[tool(
         name = "Permissions",
-        description = "Reports which macOS permissions desktop-mcp holds: Accessibility, Screen Recording, and Automation of System Events (granted, not granted or not determined), and which tools need each. Never prompts. A tool that needs a missing permission fails with a message saying how to grant it.",
-        annotations(title = "Permissions", read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
+        description = "Reports which macOS permissions desktop-mcp holds: Accessibility, Screen Recording, and Automation of System Events (granted, not granted or not determined), and which tools need each. request=true also asks macOS for missing Accessibility and Screen Recording (its prompt, and the System Settings page where they are turned on); Automation is only reported. A tool that needs a missing permission fails with a message saying how to grant it.",
+        annotations(title = "Permissions", read_only_hint = false, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
     )]
-    async fn permissions(&self, cancellation: CancellationToken) -> CallToolResult {
-        run_tool("Permissions", cancellation, async { Ok(crate::permissions::format(self.desktop.permissions().await)) }).await
+    async fn permissions(&self, Parameters(args): Parameters<PermissionsArgs>, cancellation: CancellationToken) -> CallToolResult {
+        run_tool("Permissions", cancellation, async move {
+            let state = self.desktop.permissions().await;
+            if !args.request {
+                return Ok(crate::permissions::format(state));
+            }
+            let asked = crate::permissions::missing(state);
+            for permission in &asked {
+                self.desktop.request_permission(*permission).await;
+            }
+            Ok(crate::permissions::format_request(state, &asked))
+        })
+        .await
     }
 
     #[tool(
