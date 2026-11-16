@@ -244,6 +244,7 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: desktop-mcp-mcpb
@@ -252,6 +253,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # .github/release-notes.md (downloads, signatures, checking them) comes first; the generated notes follow.
           shopt -s nullglob
           gh release create "$GITHUB_REF_NAME" dist/desktop-mcp-windows.mcpb dist/desktop-mcp-macos.mcpb dist/*.pem dist/signing-*.txt \
-            --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+            --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --notes-file .github/release-notes.md --generate-notes
