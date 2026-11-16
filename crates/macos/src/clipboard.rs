@@ -74,12 +74,12 @@ fn scaled_png(data: &[u8], is_png: bool, max_side: u32) -> Option<Image> {
 }
 
 /// An sRGB, 8-bit, premultiplied RGBA bitmap.
-fn bitmap_context(width: usize, height: usize) -> Option<CFRetained<CGContext>> {
+pub(crate) fn bitmap_context(width: usize, height: usize) -> Option<CFRetained<CGContext>> {
     let space = CGColorSpace::with_name(Some(unsafe { kCGColorSpaceSRGB }))?;
     unsafe { CGBitmapContextCreate(std::ptr::null_mut(), width, height, 8, 0, Some(&space), CGImageAlphaInfo::PremultipliedLast.0) }
 }
 
-fn encode_png(image: &CGImage) -> Option<Vec<u8>> {
+pub(crate) fn encode_png(image: &CGImage) -> Option<Vec<u8>> {
     let data = CFMutableData::new(None, 0)?;
     let destination = unsafe { CGImageDestination::with_data(&data, &CFString::from_static_str("public.png"), 1, None) }?;
     unsafe { destination.add_image(image, None) };

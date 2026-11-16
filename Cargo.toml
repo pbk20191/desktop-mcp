@@ -35,9 +35,10 @@ objc2 = { version = "0.6", default-features = false, features = ["std"] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFRunLoop", "CFDate", "CFData", "CFArray", "CFPropertyList", "CFDictionary", "CFNumber", "CFString", "CFError", "CFCGTypes", "CFDate", "CFAttributedString", "CFURL"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSJSONSerialization", "NSData", "NSError", "NSString", "NSArray", "NSXMLDocument", "NSXMLElement", "NSXMLNode", "NSXMLNodeOptions", "NSEnumerator", "NSURL", "NSDictionary", "NSValue", "NSObject", "NSFileManager", "NSAppleEventDescriptor", "objc2-core-services", "NSGeometry"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "libc", "NSPasteboard", "NSWorkspace", "NSRunningApplication", "NSScreen", "NSGraphics", "objc2-core-foundation"] }
-objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGImage", "CGContext", "CGBitmapContext", "CGColorSpace", "CGWindow", "CGEvent", "CGEventTypes", "CGRemoteOperation", "CGEventSource", "CGDirectDisplay", "CGError"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGImage", "CGContext", "CGBitmapContext", "CGColorSpace", "CGWindow", "CGEvent", "CGEventTypes", "CGRemoteOperation", "CGEventSource", "CGDirectDisplay", "CGError", "CGColor"] }
 objc2-core-services = { version = "0.3", default-features = false, features = ["std", "MDQuery", "MDItem", "Metadata", "AE", "AEDataModel", "AppleEvents"] }
 objc2-application-services = { version = "0.3", default-features = false, features = ["std", "HIServices", "AXUIElement", "AXValue", "AXError", "AXValueConstants", "AXAttributeConstants", "AXRoleConstants", "AXActionConstants", "libc"] }
+objc2-core-text = { version = "0.3", default-features = false, features = ["std", "CTFont", "CTLine", "CTStringAttributes", "objc2-core-graphics"] }
 objc2-image-io = { version = "0.3", default-features = false, features = ["std", "CGImageSource", "CGImageDestination", "objc2-core-graphics"] }
 objc2-security = { version = "0.3", default-features = false, features = ["std", "SecBase", "SecCertificate", "SecIdentity", "SecImportExport", "SecKey", "SecProtocolObject", "SecProtocolOptions", "SecProtocolTypes"] }
 libc = "0.2"

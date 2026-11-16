@@ -180,10 +180,20 @@ impl Desktop for MacDesktop {
         Box::pin(crate::main_loop::offload(move || crate::menu::answer(app.as_deref(), owner, request)))
     }
 
-    fn snapshot(&self, _use_vision: bool) -> Pin<Box<dyn Future<Output = desktop_mcp_core::snapshot::State>>> {
+    fn snapshot(&self, use_vision: bool) -> Pin<Box<dyn Future<Output = desktop_mcp_core::snapshot::State>>> {
         // The menu bar owner is read here, on the main thread; everything else on workers.
         let owner = crate::menu::menu_bar_owner();
-        Box::pin(crate::main_loop::offload(move || crate::snapshot::state(Some(owner).flatten())))
+        Box::pin(async move {
+            let mut state = crate::main_loop::offload(move || crate::snapshot::state(owner)).await;
+            if use_vision {
+                crate::screenshot::ensure_permission();
+                // Scaled from the Retina capture to the active display's points, so image and Click coordinates
+                // agree.
+                let scale = state.active.as_ref().map(|a| a.bounding_box).and_then(|b| crate::displays::containing((b.left + b.right) as f64 / 2.0, (b.top + b.bottom) as f64 / 2.0)).map_or(1.0, |d| (1.0 / d.scale).min(1.0));
+                state.screenshot = crate::screenshot::annotated(state.tree.interactive.clone(), scale).await;
+            }
+            state
+        })
     }
 
     fn find_element(&self, app: Option<&str>, title: Option<&str>, role: Option<&str>, deadline: std::time::Instant) -> Pin<Box<dyn Future<Output = Option<desktop_mcp_core::element::FoundElement>>>> {
