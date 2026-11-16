@@ -164,3 +164,21 @@ fn wait_for_apps() {
     let answer = server.post(&call("Wait", json!({"until": "app_quit"}))).json();
     assert_eq!(text(&answer), "Error executing tool Wait: app required for app_quit.");
 }
+
+/// Input tools only through refusals that come before any event: nothing is clicked or typed.
+#[test]
+fn input_tools_refuse_bad_arguments_before_posting() {
+    let server = ServerUnderTest::start();
+    for (name, arguments) in [("Click", json!({"loc": [1]})), ("Type", json!({"loc": [1, 2, 3], "text": "x"}))] {
+        let answer = server.post(&call(name, arguments)).json();
+        assert_eq!(text(&answer), format!("Error executing tool {name}: Location must be a list of exactly 2 integers [x, y]"));
+    }
+    let answer = server.post(&call("Move", json!({"loc": []}))).json();
+    assert_eq!(text(&answer), "Error executing tool Move: loc must be a list of exactly 2 integers [x, y]");
+    let accessibility = "Accessibility is not granted to desktop-mcp. Grant it in System Settings > Privacy & Security > Accessibility, then restart desktop-mcp.";
+    for (shortcut, refusal) in [("command+nosuchkey", "Unknown key: nosuchkey"), ("command++c", "shortcut must contain non-empty key names separated by '+'")] {
+        let answer = server.post(&call("Shortcut", json!({"shortcut": shortcut}))).json();
+        let said = text(&answer).to_string();
+        assert!(said == format!("Error executing tool Shortcut: {refusal}") || said == format!("Error executing tool Shortcut: {accessibility}"), "{said}");
+    }
+}

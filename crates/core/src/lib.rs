@@ -11,6 +11,7 @@ pub mod shortcuts;
 pub mod spotlight;
 pub mod permissions;
 pub mod wait;
+pub mod input;
 pub mod http;
 pub mod session;
 pub mod config;

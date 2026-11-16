@@ -63,6 +63,21 @@ fn redirect(status: u16, location: &str) -> Response<Full<bytes::Bytes>> {
 }
 
 impl Desktop for FakeWeb {
+    fn accessibility_trusted(&self) -> bool {
+        unreachable!()
+    }
+    fn post(&self, _event: desktop_mcp_core::input::Event) {
+        unreachable!()
+    }
+    fn cursor_position(&self) -> (f64, f64) {
+        unreachable!()
+    }
+    fn secure_input_at(&self, _x: i64, _y: i64) -> Pin<Box<dyn Future<Output = bool>>> {
+        unreachable!()
+    }
+    fn select_typing_layout(&self) -> Option<Box<dyn FnOnce()>> {
+        unreachable!()
+    }
     fn running_apps(&self) -> Pin<Box<dyn Future<Output = Vec<desktop_mcp_core::wait::RunningApp>>>> {
         unreachable!()
     }

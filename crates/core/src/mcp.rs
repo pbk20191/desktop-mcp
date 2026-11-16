@@ -10,6 +10,7 @@ use crate::shortcuts::ShortcutRun;
 use crate::spotlight::{Found, Kind as SearchKind, Search};
 use crate::permissions::PermissionState;
 use crate::wait::RunningApp;
+use crate::input::{Button, Caret, Event as InputEvent};
 use std::path::Path;
 use crate::io::Stream;
 use crate::shell::{self, Run, ShellMode};
@@ -57,6 +58,17 @@ pub trait Desktop: 'static {
     fn permissions(&self) -> Pin<Box<dyn Future<Output = PermissionState>>>;
     /// The applications running now.
     fn running_apps(&self) -> Pin<Box<dyn Future<Output = Vec<RunningApp>>>>;
+    /// Whether Accessibility is granted. Never prompts.
+    fn accessibility_trusted(&self) -> bool;
+    /// Posts one input event.
+    fn post(&self, event: InputEvent);
+    /// Where the pointer is, in input points.
+    fn cursor_position(&self) -> (f64, f64);
+    /// Whether keys typed now go to a password field: the focused element, or the one at the point.
+    fn secure_input_at(&self, x: i64, y: i64) -> Pin<Box<dyn Future<Output = bool>>>;
+    /// Selects a keyboard layout that passes Unicode events through when the current input source would compose
+    /// them; returns what puts the previous one back, or `None` when nothing was switched.
+    fn select_typing_layout(&self) -> Option<Box<dyn FnOnce()>>;
 }
 
 /// One MCP server. Stateless requests get a fresh one each; a session keeps one.
@@ -265,8 +277,185 @@ struct SpotlightArgs {
     content: bool,
 }
 
+const LOCATION: &str = "Location must be a list of exactly 2 integers [x, y]";
+
+/// `loc` as a point, or `message` when it is not two numbers.
+fn point(loc: &[i64], message: &str) -> Result<(i64, i64), ToolError> {
+    match loc {
+        [x, y] => Ok((*x, *y)),
+        _ => Err(ToolError(message.to_string())),
+    }
+}
+
+fn one() -> i64 {
+    1
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct ClickArgs {
+    loc: Vec<i64>,
+    #[serde(default)]
+    button: Button,
+    #[serde(default = "one")]
+    clicks: i64,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct TypeArgs {
+    loc: Vec<i64>,
+    text: String,
+    #[serde(default)]
+    clear: bool,
+    #[serde(default)]
+    caret_position: Caret,
+    #[serde(default)]
+    press_enter: bool,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum ScrollType {
+    Horizontal,
+    #[default]
+    Vertical,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum ScrollDirection {
+    Up,
+    #[default]
+    Down,
+    Left,
+    Right,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct ScrollArgs {
+    loc: Option<Vec<i64>>,
+    #[serde(default, rename = "type")]
+    kind: ScrollType,
+    #[serde(default)]
+    direction: ScrollDirection,
+    #[serde(default = "one")]
+    wheel_times: i64,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct MoveArgs {
+    loc: Vec<i64>,
+    #[serde(default)]
+    drag: bool,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct ShortcutArgs {
+    shortcut: String,
+}
+
 #[tool_router]
 impl Server {
+    #[tool(
+        name = "Click",
+        description = "Performs mouse clicks at specified coordinates [x, y]. Supports button types: 'left' for selection/activation, 'right' for context menus, 'middle'. Supports clicks: 0=hover only, 1=single click, 2=double click.",
+        annotations(title = "Click", read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = false)
+    )]
+    async fn click(&self, Parameters(args): Parameters<ClickArgs>, cancellation: CancellationToken) -> CallToolResult {
+        let desktop = self.desktop.as_ref();
+        run_tool("Click", cancellation, async move {
+            let (x, y) = point(&args.loc, LOCATION)?;
+            crate::input::require_accessibility(desktop).map_err(ToolError)?;
+            if args.clicks == 0 {
+                crate::input::move_to(desktop, x, y);
+            } else {
+                crate::input::click(desktop, x, y, args.button, args.clicks).await;
+            }
+            let label = match args.clicks {
+                0 => "Hover",
+                1 => "Single",
+                2 => "Double",
+                _ => "None",
+            };
+            Ok(format!("{label} {} clicked at ({x},{y}).", args.button.name()))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "Type",
+        description = "Types text at specified coordinates [x, y]. Set clear=True to clear existing text first. Set press_enter=True to submit after typing. Set caret_position to 'start', 'end', or 'idle' (default).",
+        annotations(title = "Type", read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = false)
+    )]
+    async fn type_text(&self, Parameters(args): Parameters<TypeArgs>, cancellation: CancellationToken) -> CallToolResult {
+        let desktop = self.desktop.as_ref();
+        run_tool("Type", cancellation, async move {
+            let (x, y) = point(&args.loc, LOCATION)?;
+            crate::input::require_accessibility(desktop).map_err(ToolError)?;
+            // Checked after the click and before typing: the text of a password field never comes back.
+            if crate::input::type_at(desktop, x, y, &args.text, args.caret_position, args.clear, args.press_enter).await {
+                return Ok(format!("Typed {} characters into a secure field at ({x},{y}).", args.text.chars().count()));
+            }
+            Ok(format!("Typed {} at ({x},{y}).", args.text))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "Scroll",
+        description = "Scrolls at coordinates [x, y] or current mouse position if loc=None. Type: vertical (default) or horizontal. Direction: up/down for vertical, left/right for horizontal. wheel_times controls scroll amount.",
+        annotations(title = "Scroll", read_only_hint = false, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
+    )]
+    async fn scroll(&self, Parameters(args): Parameters<ScrollArgs>, cancellation: CancellationToken) -> CallToolResult {
+        let desktop = self.desktop.as_ref();
+        run_tool("Scroll", cancellation, async move {
+            let at = args.loc.as_deref().map(|loc| point(loc, LOCATION)).transpose()?;
+            crate::input::require_accessibility(desktop).map_err(ToolError)?;
+            let kind = if args.kind == ScrollType::Horizontal { "horizontal" } else { "vertical" };
+            let direction = serde_json::to_value(args.direction).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
+            if let Some(message) = crate::input::scroll(desktop, at, args.kind == ScrollType::Horizontal, &direction, args.wheel_times).await {
+                return Ok(message);
+            }
+            let at = at.map(|(x, y)| format!(" at ({x},{y}).")).unwrap_or_else(|| ".".to_string());
+            Ok(format!("Scrolled {kind} {direction} by {} wheel times{at}", args.wheel_times))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "Move",
+        description = "Moves mouse cursor to coordinates [x, y]. Set drag=True to perform a drag-and-drop operation from current position to target coordinates.",
+        annotations(title = "Move", read_only_hint = false, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
+    )]
+    async fn move_pointer(&self, Parameters(args): Parameters<MoveArgs>, cancellation: CancellationToken) -> CallToolResult {
+        let desktop = self.desktop.as_ref();
+        run_tool("Move", cancellation, async move {
+            let (x, y) = point(&args.loc, "loc must be a list of exactly 2 integers [x, y]")?;
+            crate::input::require_accessibility(desktop).map_err(ToolError)?;
+            if args.drag {
+                crate::input::drag(desktop, x, y).await;
+                return Ok(format!("Dragged to ({x},{y})."));
+            }
+            crate::input::move_to(desktop, x, y);
+            Ok(format!("Moved the mouse pointer to ({x},{y})."))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "Shortcut",
+        description = "Executes keyboard shortcuts using key combinations separated by +. Examples: \"command+c\" (copy), \"command+v\" (paste), \"command+tab\" (switch apps), \"command+space\" (Spotlight). Note: Use \"command\" instead of \"ctrl\" on macOS.",
+        annotations(title = "Shortcut", read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = false)
+    )]
+    async fn shortcut(&self, Parameters(args): Parameters<ShortcutArgs>, cancellation: CancellationToken) -> CallToolResult {
+        let desktop = self.desktop.as_ref();
+        run_tool("Shortcut", cancellation, async move {
+            crate::input::require_accessibility(desktop).map_err(ToolError)?;
+            crate::input::shortcut(desktop, &args.shortcut).await.map_err(ToolError)?;
+            Ok(format!("Pressed {}.", args.shortcut))
+        })
+        .await
+    }
+
     #[tool(
         name = "Permissions",
         description = "Reports which macOS permissions desktop-mcp holds: Accessibility, Screen Recording, and Automation of System Events (granted, not granted or not determined), and which tools need each. Never prompts. A tool that needs a missing permission fails with a message saying how to grant it.",

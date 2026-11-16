@@ -35,6 +35,16 @@ impl MainLoop for FakeLoop {
 /// A desktop that records what the tools ask of it and answers as each test sets it up.
 #[derive(Default)]
 pub struct FakeDesktop {
+    /// Every input event posted, in order.
+    pub posted: RefCell<Vec<desktop_mcp_core::input::Event>>,
+    /// Accessibility is refused when set.
+    pub untrusted: bool,
+    pub cursor: (f64, f64),
+    /// Whether the point being typed at is a password field.
+    pub secure_input: bool,
+    /// Whether typing needs a keyboard layout switched (and so restored).
+    pub switches_layout: bool,
+    pub layout_restored: Rc<Cell<usize>>,
     /// When set, the next `sleep` waits for it (see `hold_next_sleep`).
     pub gate: RefCell<Option<tokio::sync::oneshot::Receiver<()>>>,
     pub slept: RefCell<Vec<Duration>>,
@@ -64,6 +74,23 @@ pub struct FakeDesktop {
     pub looked: Cell<usize>,
 }
 impl Desktop for FakeDesktop {
+    fn accessibility_trusted(&self) -> bool {
+        !self.untrusted
+    }
+    fn post(&self, event: desktop_mcp_core::input::Event) {
+        self.posted.borrow_mut().push(event);
+    }
+    fn cursor_position(&self) -> (f64, f64) {
+        self.cursor
+    }
+    fn secure_input_at(&self, _x: i64, _y: i64) -> Pin<Box<dyn Future<Output = bool>>> {
+        let secure = self.secure_input;
+        Box::pin(async move { secure })
+    }
+    fn select_typing_layout(&self) -> Option<Box<dyn FnOnce()>> {
+        let restored = self.layout_restored.clone();
+        self.switches_layout.then(|| Box::new(move || restored.set(restored.get() + 1)) as Box<dyn FnOnce()>)
+    }
     fn running_apps(&self) -> Pin<Box<dyn Future<Output = Vec<RunningApp>>>> {
         self.looked.set(self.looked.get() + 1);
         let mut looks = self.looks.borrow_mut();
@@ -481,4 +508,17 @@ impl desktop_mcp_core::http_bridge::Connect for InMemory {
         });
         Box::pin(async move { Ok(client) })
     }
+}
+
+/// Sends one `tools/call` to a fresh server offering `tools`, and returns the answer as JSON.
+pub fn call_tool(desktop: &Rc<FakeDesktop>, tools: &[&str], name: &str, arguments: serde_json::Value) -> serde_json::Value {
+    let server = Server::new(desktop.clone(), tools);
+    let message = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":arguments}});
+    let answer = block_on(desktop_mcp_core::mcp::answer_stateless(server, serde_json::from_value(message).unwrap()));
+    serde_json::to_value(answer.expect("an answer")).unwrap()
+}
+
+/// The text blocks of a tool's answer.
+pub fn texts(answer: &serde_json::Value) -> Vec<String> {
+    answer["result"]["content"].as_array().unwrap_or_else(|| panic!("no content in {answer}")).iter().filter(|c| c["type"] == "text").map(|c| c["text"].as_str().unwrap().to_string()).collect()
 }
