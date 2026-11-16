@@ -147,6 +147,9 @@ impl hyper::rt::Write for SocketIo {
         self.poll_written(cx)
     }
 
+    /// Waits for the writes; no half-close. `StreamSocket` has no shutdown, and closing its `OutputStream` (even
+    /// after `FlushAsync`) only makes later writes fail: a loopback peer saw no end of input within seconds. The
+    /// connection ends when the socket is closed.
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         self.poll_written(cx)
     }
