@@ -10,6 +10,7 @@ use desktop_mcp_core::spotlight::{Found, Search};
 use desktop_mcp_core::permissions::PermissionState;
 use desktop_mcp_core::wait::RunningApp;
 use desktop_mcp_core::input::Event as InputEvent;
+use desktop_mcp_core::app::FrameChange;
 use std::path::Path;
 use desktop_mcp_core::io::Stream;
 use desktop_mcp_core::shell::{Run, ShellMode};
@@ -146,6 +147,25 @@ impl Desktop for MacDesktop {
 
     fn select_typing_layout(&self) -> Option<Box<dyn FnOnce()>> {
         crate::input::select_typing_layout()
+    }
+
+    fn launch_app(&self, name: &str) -> Pin<Box<dyn Future<Output = bool>>> {
+        let name = name.to_string();
+        Box::pin(async move { crate::apps::launch(&name).await })
+    }
+
+    fn activate_app(&self, name: &str) -> Pin<Box<dyn Future<Output = bool>>> {
+        let name = name.to_string();
+        Box::pin(crate::main_loop::offload(move || crate::apps::activate_by_name(&name)))
+    }
+
+    fn change_front_window(&self, change: Option<FrameChange>) -> Pin<Box<dyn Future<Output = bool>>> {
+        Box::pin(crate::main_loop::offload(move || crate::apps::change_front_window(change)))
+    }
+
+    fn terminate(&self, pids: &[i32], force: bool) -> Pin<Box<dyn Future<Output = bool>>> {
+        let signalled = crate::apps::terminate(pids, force);
+        Box::pin(async move { signalled })
     }
 
     fn find_application(&self, name_or_bundle_id: &str) -> Pin<Box<dyn Future<Output = Option<Application>>>> {

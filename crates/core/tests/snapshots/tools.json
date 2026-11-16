@@ -5,6 +5,66 @@
       "idempotentHint": false,
       "openWorldHint": false,
       "readOnlyHint": false,
+      "title": "App"
+    },
+    "description": "Manages macOS applications with six modes: 'launch' (opens the application), 'resize' (adjusts active window size), 'move' (repositions active window), 'switch' (brings specific app into focus), 'quit' (asks every process with that name or bundle id to quit; the app may ask to save), 'force_quit' (terminates them without asking). Quit never targets desktop-mcp itself or loginwindow.",
+    "inputSchema": {
+      "$defs": {
+        "Mode": {
+          "enum": [
+            "launch",
+            "resize",
+            "move",
+            "switch",
+            "quit",
+            "force_quit"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/Mode",
+          "default": "launch"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "window_loc": {
+          "items": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "window_size": {
+          "items": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "App"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
       "title": "Click"
     },
     "description": "Performs mouse clicks at specified coordinates [x, y]. Supports button types: 'left' for selection/activation, 'right' for context menus, 'middle'. Supports clicks: 0=hover only, 1=single click, 2=double click.",

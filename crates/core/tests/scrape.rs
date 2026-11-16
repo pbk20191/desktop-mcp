@@ -63,6 +63,18 @@ fn redirect(status: u16, location: &str) -> Response<Full<bytes::Bytes>> {
 }
 
 impl Desktop for FakeWeb {
+    fn launch_app(&self, _name: &str) -> Pin<Box<dyn Future<Output = bool>>> {
+        unreachable!()
+    }
+    fn activate_app(&self, _name: &str) -> Pin<Box<dyn Future<Output = bool>>> {
+        unreachable!()
+    }
+    fn change_front_window(&self, _change: Option<desktop_mcp_core::app::FrameChange>) -> Pin<Box<dyn Future<Output = bool>>> {
+        unreachable!()
+    }
+    fn terminate(&self, _pids: &[i32], _force: bool) -> Pin<Box<dyn Future<Output = bool>>> {
+        unreachable!()
+    }
     fn accessibility_trusted(&self) -> bool {
         unreachable!()
     }

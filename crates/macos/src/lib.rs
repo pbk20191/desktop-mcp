@@ -14,6 +14,7 @@ pub mod permissions;
 pub mod ax;
 pub mod input;
 pub mod secure_field;
+pub mod apps;
 pub mod signals;
 pub mod tls;
 pub mod fd;

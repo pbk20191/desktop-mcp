@@ -18,7 +18,7 @@ use std::time::Duration;
 fn ask(desktop: &Rc<FakeDesktop>, message: Value) -> Option<Value> {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
     let local = tokio::task::LocalSet::new();
-    let server = Server::new(desktop.clone(), &["Wait", "Shell", "Scrape", "Clipboard", "Open", "Notification", "RunShortcut", "Spotlight", "Permissions", "Click", "Type", "Scroll", "Move", "Shortcut"]);
+    let server = Server::new(desktop.clone(), &["Wait", "Shell", "Scrape", "Clipboard", "Open", "Notification", "RunShortcut", "Spotlight", "Permissions", "Click", "Type", "Scroll", "Move", "Shortcut", "App"]);
     local.block_on(&runtime, async move {
         let answer = answer_stateless(server, serde_json::from_value(message).unwrap()).await;
         answer.map(|message| serde_json::to_value(message).unwrap())
@@ -36,7 +36,7 @@ fn listed_tools(desktop: &Rc<FakeDesktop>) -> Vec<Value> {
 fn only_the_requested_tools_are_listed() {
     let desktop = Rc::new(FakeDesktop::default());
     let names: Vec<String> = listed_tools(&desktop).iter().map(|tool| tool["name"].as_str().unwrap().to_string()).collect();
-    assert_eq!(names, ["Click", "Clipboard", "Move", "Notification", "Open", "Permissions", "RunShortcut", "Scrape", "Scroll", "Shell", "Shortcut", "Spotlight", "Type", "Wait"]);
+    assert_eq!(names, ["App", "Click", "Clipboard", "Move", "Notification", "Open", "Permissions", "RunShortcut", "Scrape", "Scroll", "Shell", "Shortcut", "Spotlight", "Type", "Wait"]);
     let desktop = Rc::new(FakeDesktop::default());
     let server = Server::new(desktop.clone(), &["Wait"]);
     let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();

@@ -17,8 +17,14 @@ pub fn read(path: &Path) -> Result<Value, String> {
 pub fn parse(bytes: &[u8]) -> Option<Value> {
     let data = CFData::from_bytes(bytes);
     let list: CFRetained<CFType> = unsafe { CFPropertyListCreateWithData(None, Some(&data), 0, std::ptr::null_mut(), std::ptr::null_mut()) }?;
+    to_json(&list)
+}
+
+/// A property-list object (a dictionary or an array of strings, numbers and booleans) as JSON; `None` when it
+/// holds what JSON cannot (dates, data).
+pub fn to_json(list: &CFType) -> Option<Value> {
     // SAFETY: every Core Foundation property list object is a toll-free bridged Objective-C object.
-    let object = unsafe { &*(&*list as *const CFType as *const AnyObject) };
+    let object = unsafe { &*(list as *const CFType as *const AnyObject) };
     if !unsafe { NSJSONSerialization::isValidJSONObject(object) } {
         return None;
     }

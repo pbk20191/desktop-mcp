@@ -11,6 +11,7 @@ use crate::spotlight::{Found, Kind as SearchKind, Search};
 use crate::permissions::PermissionState;
 use crate::wait::RunningApp;
 use crate::input::{Button, Caret, Event as InputEvent};
+use crate::app::{FrameChange, Mode as AppMode};
 use std::path::Path;
 use crate::io::Stream;
 use crate::shell::{self, Run, ShellMode};
@@ -69,6 +70,14 @@ pub trait Desktop: 'static {
     /// Selects a keyboard layout that passes Unicode events through when the current input source would compose
     /// them; returns what puts the previous one back, or `None` when nothing was switched.
     fn select_typing_layout(&self) -> Option<Box<dyn FnOnce()>>;
+    /// Opens an application by name, path or bundle id; whether it worked.
+    fn launch_app(&self, name: &str) -> Pin<Box<dyn Future<Output = bool>>>;
+    /// Brings the application with this name or bundle id forward; `false` when none is running.
+    fn activate_app(&self, name: &str) -> Pin<Box<dyn Future<Output = bool>>>;
+    /// Applies `change` to the frontmost app's main window (or with `None` only looks); whether there is one.
+    fn change_front_window(&self, change: Option<FrameChange>) -> Pin<Box<dyn Future<Output = bool>>>;
+    /// Asks these processes to quit, or with `force` terminates them; whether any was signalled.
+    fn terminate(&self, pids: &[i32], force: bool) -> Pin<Box<dyn Future<Output = bool>>>;
 }
 
 /// One MCP server. Stateless requests get a fresh one each; a session keeps one.
@@ -353,8 +362,29 @@ struct ShortcutArgs {
     shortcut: String,
 }
 
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct AppArgs {
+    #[serde(default)]
+    mode: AppMode,
+    name: Option<String>,
+    window_loc: Option<Vec<i64>>,
+    window_size: Option<Vec<i64>>,
+}
+
 #[tool_router]
 impl Server {
+    #[tool(
+        name = "App",
+        description = "Manages macOS applications with six modes: 'launch' (opens the application), 'resize' (adjusts active window size), 'move' (repositions active window), 'switch' (brings specific app into focus), 'quit' (asks every process with that name or bundle id to quit; the app may ask to save), 'force_quit' (terminates them without asking). Quit never targets desktop-mcp itself or loginwindow.",
+        annotations(title = "App", read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = false)
+    )]
+    async fn app(&self, Parameters(args): Parameters<AppArgs>, cancellation: CancellationToken) -> CallToolResult {
+        run_tool("App", cancellation, async move {
+            crate::app::run(self.desktop.as_ref(), args.mode, args.name.as_deref(), args.window_loc.as_deref(), args.window_size.as_deref()).await.map_err(ToolError)
+        })
+        .await
+    }
+
     #[tool(
         name = "Click",
         description = "Performs mouse clicks at specified coordinates [x, y]. Supports button types: 'left' for selection/activation, 'right' for context menus, 'middle'. Supports clicks: 0=hover only, 1=single click, 2=double click.",

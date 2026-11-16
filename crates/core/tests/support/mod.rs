@@ -35,6 +35,15 @@ impl MainLoop for FakeLoop {
 /// A desktop that records what the tools ask of it and answers as each test sets it up.
 #[derive(Default)]
 pub struct FakeDesktop {
+    pub launched: RefCell<Vec<String>>,
+    pub launch_fails: bool,
+    /// Apps `activate_app` finds, and the names it was asked for.
+    pub activatable: Vec<&'static str>,
+    pub activated: RefCell<Vec<String>>,
+    pub front_window: bool,
+    pub frame_changes: RefCell<Vec<desktop_mcp_core::app::FrameChange>>,
+    pub terminated: RefCell<Vec<(Vec<i32>, bool)>>,
+    pub terminate_fails: bool,
     /// Every input event posted, in order.
     pub posted: RefCell<Vec<desktop_mcp_core::input::Event>>,
     /// Accessibility is refused when set.
@@ -74,6 +83,26 @@ pub struct FakeDesktop {
     pub looked: Cell<usize>,
 }
 impl Desktop for FakeDesktop {
+    fn launch_app(&self, name: &str) -> Pin<Box<dyn Future<Output = bool>>> {
+        self.launched.borrow_mut().push(name.to_string());
+        let ok = !self.launch_fails;
+        Box::pin(async move { ok })
+    }
+    fn activate_app(&self, name: &str) -> Pin<Box<dyn Future<Output = bool>>> {
+        self.activated.borrow_mut().push(name.to_string());
+        let found = self.activatable.contains(&name);
+        Box::pin(async move { found })
+    }
+    fn change_front_window(&self, change: Option<desktop_mcp_core::app::FrameChange>) -> Pin<Box<dyn Future<Output = bool>>> {
+        self.frame_changes.borrow_mut().extend(change);
+        let found = self.front_window;
+        Box::pin(async move { found })
+    }
+    fn terminate(&self, pids: &[i32], force: bool) -> Pin<Box<dyn Future<Output = bool>>> {
+        self.terminated.borrow_mut().push((pids.to_vec(), force));
+        let ok = !self.terminate_fails;
+        Box::pin(async move { ok })
+    }
     fn accessibility_trusted(&self) -> bool {
         !self.untrusted
     }

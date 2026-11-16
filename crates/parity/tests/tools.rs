@@ -182,3 +182,14 @@ fn input_tools_refuse_bad_arguments_before_posting() {
         assert!(said == format!("Error executing tool Shortcut: {refusal}") || said == format!("Error executing tool Shortcut: {accessibility}"), "{said}");
     }
 }
+
+/// App only with names that match nothing: nothing is launched, activated or quit.
+#[test]
+fn app_refusals() {
+    let server = ServerUnderTest::start();
+    let said = |arguments: Value| text(&server.post(&call("App", arguments)).json()).to_string();
+    assert_eq!(said(json!({"mode": "launch"})), "App name or bundle ID required for launch.");
+    assert_eq!(said(json!({"mode": "switch", "name": "No Such App desktop-mcp"})), "Application 'No Such App desktop-mcp' not found.");
+    assert_eq!(said(json!({"mode": "quit", "name": "No Such App desktop-mcp"})), "Error executing tool App: Application 'No Such App desktop-mcp' is not running.");
+    assert_eq!(said(json!({"mode": "force_quit", "name": " "})), "Error executing tool App: App name or bundle ID required for force_quit.");
+}
