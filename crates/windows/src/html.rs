@@ -15,27 +15,58 @@ pub fn parse(body: &[u8], charset: Option<&str>) -> Option<Element> {
     let dom = html5ever::parse_document(RcDom::default(), Default::default()).one(text.as_ref());
     let document = dom.document;
     let root = document.children.borrow().iter().find(|child| matches!(child.data, NodeData::Element { .. })).cloned()?;
-    match convert(&root, 0) {
+    match convert(&root) {
         Some(Node::Element(element)) => Some(element),
         _ => None,
     }
 }
 
-fn convert(handle: &Handle, depth: usize) -> Option<Node> {
-    match &handle.data {
-        NodeData::Text { contents } => Some(Node::Text(contents.borrow().to_string())),
-        NodeData::Element { .. } if depth >= MAX_DEPTH => None,
-        NodeData::Element { name, attrs, template_contents, .. } => {
-            let mut children: Vec<Node> = handle.children.borrow().iter().filter_map(|child| convert(child, depth + 1)).collect();
-            if let Some(contents) = template_contents.borrow().as_ref() {
-                children.extend(contents.children.borrow().iter().filter_map(|child| convert(child, depth + 1)));
+/// One element being built: its handle's data, the children still to visit, and the nodes built so far.
+struct Frame {
+    name: String,
+    attributes: Vec<(String, String)>,
+    pending: std::vec::IntoIter<Handle>,
+    children: Vec<Node>,
+}
+
+fn frame(handle: &Handle) -> Option<Frame> {
+    let NodeData::Element { name, attrs, template_contents, .. } = &handle.data else { return None };
+    let mut pending: Vec<Handle> = handle.children.borrow().clone();
+    if let Some(contents) = template_contents.borrow().as_ref() {
+        pending.extend(contents.children.borrow().iter().cloned());
+    }
+    Some(Frame {
+        name: name.local.to_lowercase(),
+        attributes: attrs.borrow().iter().map(|attribute| (attribute.name.local.to_string(), attribute.value.to_string())).collect(),
+        pending: pending.into_iter(),
+        children: Vec::new(),
+    })
+}
+
+/// The tree under `handle`, built with a loop rather than recursion, so a deep page needs no stack; elements
+/// deeper than [`MAX_DEPTH`] are still left out, because the core walks the result recursively.
+fn convert(handle: &Handle) -> Option<Node> {
+    if let NodeData::Text { contents } = &handle.data {
+        return Some(Node::Text(contents.borrow().to_string()));
+    }
+    let mut stack = vec![frame(handle)?];
+    loop {
+        let depth = stack.len();
+        let top = stack.last_mut().expect("the root stays until it is returned");
+        match top.pending.next() {
+            Some(child) => match &child.data {
+                NodeData::Text { contents } => top.children.push(Node::Text(contents.borrow().to_string())),
+                NodeData::Element { .. } if depth < MAX_DEPTH => stack.extend(frame(&child)),
+                _ => {}
+            },
+            None => {
+                let done = stack.pop().expect("a frame is on the stack");
+                let element = Node::Element(Element { name: done.name, attributes: done.attributes, children: done.children });
+                match stack.last_mut() {
+                    Some(parent) => parent.children.push(element),
+                    None => return Some(element),
+                }
             }
-            Some(Node::Element(Element {
-                name: name.local.to_lowercase(),
-                attributes: attrs.borrow().iter().map(|attribute| (attribute.name.local.to_string(), attribute.value.to_string())).collect(),
-                children,
-            }))
         }
-        _ => None,
     }
 }
