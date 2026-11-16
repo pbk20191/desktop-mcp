@@ -124,9 +124,10 @@ fn clipped(rect: (f64, f64, f64, f64), window: (f64, f64, f64, f64)) -> Option<B
 const ENTRY_TYPES: [&str; 5] = ["Edit", "ComboBox", "Document", "Spinner", "Slider"];
 
 /// The element's name; an unnamed one is named by its automation id, else its control type (the C# port's fallback
-/// for scrollables).
+/// for scrollables). An automation id of digits only is a window handle (WinForms, Win32 dialogs) and names nothing.
 fn fallback_name(element: &ElementProps) -> String {
-    [element.name.trim(), element.automation_id.as_str(), element.control_type.as_str()].into_iter().find(|name| !name.is_empty()).unwrap_or_default().to_string()
+    let id = Some(element.automation_id.as_str()).filter(|id| !id.bytes().all(|byte| byte.is_ascii_digit())).unwrap_or_default();
+    [element.name.trim(), id, element.control_type.as_str()].into_iter().find(|name| !name.is_empty()).unwrap_or_default().to_string()
 }
 
 fn node(element: &ElementProps, window_name: &str, window: (f64, f64, f64, f64), metadata: Vec<(String, Meta)>) -> Option<TreeNode> {

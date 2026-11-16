@@ -119,12 +119,13 @@ impl TreeSource for Unnamed {
         Some(*node)
     }
     fn children(&self, node: &usize, _limit: usize) -> Vec<usize> {
-        if *node == 0 { vec![1, 2] } else { vec![] }
+        if *node == 0 { vec![1, 2, 3] } else { vec![] }
     }
     fn props(&self, node: &usize) -> ElementProps {
         match node {
             0 => props("Pane"),
             1 => ElementProps { name: String::new(), automation_id: "textBox1".into(), ..props("Edit") },
+            3 => ElementProps { name: String::new(), automation_id: "397496".into(), ..props("Edit") },
             _ => ElementProps { name: String::new(), ..props("Button") },
         }
     }
@@ -134,5 +135,5 @@ impl TreeSource for Unnamed {
 fn an_unnamed_text_box_is_listed_by_its_automation_id() {
     let walk = walk_window(&Unnamed, "Win", false, (0.0, 0.0, 800.0, 600.0), &Limits::default());
     let names: Vec<&str> = walk.interactive.iter().map(|element| element.name.as_str()).collect();
-    assert_eq!(names, ["textBox1"]);
+    assert_eq!(names, ["textBox1", "Edit"], "a numeric automation id (a window handle) names nothing");
 }
