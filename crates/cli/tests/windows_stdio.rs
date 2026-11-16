@@ -1,4 +1,5 @@
-//! The Windows binary over stdio: list, one Shell call, then end of input ends the process with status 0.
+//! The Windows binary over stdio: tools/list as pinned in `snapshots/windows-tools.json` (OCR included;
+//! `UPDATE_SNAPSHOTS=1` rewrites it), one Shell call, then end of input ends the process with status 0.
 #![cfg(windows)]
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
@@ -7,7 +8,7 @@ use std::time::{Duration, Instant};
 
 #[test]
 fn stdio_lists_runs_shell_and_exits_at_end_of_input() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_desktop-mcp")).args(["serve", "--transport", "stdio"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_desktop-mcp")).args(["serve", "--transport", "stdio"]).env("DESKTOP_MCP_INCLUDE_TOOLS", "OCR").env_remove("DESKTOP_MCP_EXCLUDE_TOOLS").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
     let mut stdin = child.stdin.take().unwrap();
     for message in [
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}),
@@ -25,8 +26,17 @@ fn stdio_lists_runs_shell_and_exits_at_end_of_input() {
     assert!(started.elapsed() < Duration::from_secs(30));
 
     let by_id = |id: i64| answers.iter().find(|answer| answer["id"] == id).unwrap_or_else(|| panic!("no answer {id} in {answers:?}"));
-    let names: Vec<&str> = by_id(2)["result"]["tools"].as_array().unwrap().iter().map(|tool| tool["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["App", "Click", "Clipboard", "Move", "MultiEdit", "MultiSelect", "Notification", "Scrape", "Screenshot", "Scroll", "Shell", "Shortcut", "Snapshot", "Type", "Wait", "Window"]);
+    let listed = serde_json::to_string_pretty(&by_id(2)["result"]).unwrap() + "
+";
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/snapshots/windows-tools.json");
+    if std::env::var_os("UPDATE_SNAPSHOTS").is_some() {
+        std::fs::write(path, &listed).unwrap();
+    }
+    let expected = std::fs::read_to_string(path).unwrap_or_default().replace("
+", "
+");
+    assert!(listed == expected, "tools/list changed; review it, then rerun with UPDATE_SNAPSHOTS=1.
+{listed}");
     let text = by_id(3)["result"]["content"][0]["text"].as_str().unwrap();
     assert!(text.starts_with("Shell Response: ") && text.contains("hi") && text.ends_with("Status Code: 0"), "{text}");
 }
