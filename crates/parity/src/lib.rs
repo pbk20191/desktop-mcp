@@ -168,7 +168,9 @@ impl ServerUnderTest {
             let mut server = ServerUnderTest { child: Some(child), port, home };
             let deadline = Instant::now() + Duration::from_secs(15);
             loop {
-                if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                // A connection alone could reach another test's server that took this port first: the server must
+                // also have said it listens here (only one process can).
+                if server.log().contains(&format!(":{port}/")) && TcpStream::connect(("127.0.0.1", port)).is_ok() {
                     return server;
                 }
                 if let Some(status) = server.child.as_mut().unwrap().try_wait().expect("the server's status") {
