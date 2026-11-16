@@ -3,6 +3,7 @@
 pub mod clipboard;
 pub mod desktop;
 pub mod html;
+pub mod listener;
 pub mod main_loop;
 pub mod net;
 pub mod notification;
