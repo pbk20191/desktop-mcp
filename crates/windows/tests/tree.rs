@@ -74,3 +74,25 @@ fn the_live_desktop_walks_within_its_deadline() {
     println!("{} windows, {} interactive, {} scrollable, stopped early: {}, {:?}", walk.windows.len(), walk.tree.interactive.len(), walk.tree.scrollable.len(), walk.stopped_early, started.elapsed());
     assert!(started.elapsed() < Duration::from_secs(6));
 }
+
+/// One button entirely below the window.
+struct Below;
+
+impl TreeSource for Below {
+    type Node = usize;
+    fn root(&self) -> Option<usize> {
+        Some(0)
+    }
+    fn children(&self, node: &usize, _limit: usize) -> Vec<usize> {
+        if *node == 0 { vec![1] } else { vec![] }
+    }
+    fn props(&self, node: &usize) -> ElementProps {
+        if *node == 0 { props("Pane") } else { ElementProps { rect: (10.0, 1500.0, 50.0, 1520.0), offscreen: true, ..props("Edit") } }
+    }
+}
+
+#[test]
+fn an_element_outside_its_window_is_not_listed() {
+    let walk = walk_window(&Below, "Win", false, (0.0, 0.0, 800.0, 1000.0), &Limits::default());
+    assert!(walk.interactive.is_empty(), "{:?}", walk.interactive);
+}

@@ -105,12 +105,14 @@ pub struct WindowWalk {
     pub read: usize,
 }
 
-fn clipped(rect: (f64, f64, f64, f64), window: (f64, f64, f64, f64)) -> BoundingBox {
-    BoundingBox::from_edges(rect.0.max(window.0), rect.1.max(window.1), rect.2.min(window.2), rect.3.min(window.3))
+/// The part of `rect` inside `window`; `None` when nothing of it is (an element scrolled out of view).
+fn clipped(rect: (f64, f64, f64, f64), window: (f64, f64, f64, f64)) -> Option<BoundingBox> {
+    let (left, top, right, bottom) = (rect.0.max(window.0), rect.1.max(window.1), rect.2.min(window.2), rect.3.min(window.3));
+    (right > left && bottom > top).then(|| BoundingBox::from_edges(left, top, right, bottom))
 }
 
-fn node(element: &ElementProps, window_name: &str, window: (f64, f64, f64, f64), metadata: Vec<(String, Meta)>) -> TreeNode {
-    TreeNode { bounding_box: clipped(element.rect, window), name: element.name.trim().to_string(), control_type: element.control_type.clone(), window_name: window_name.to_string(), metadata }
+fn node(element: &ElementProps, window_name: &str, window: (f64, f64, f64, f64), metadata: Vec<(String, Meta)>) -> Option<TreeNode> {
+    Some(TreeNode { bounding_box: clipped(element.rect, window)?, name: element.name.trim().to_string(), control_type: element.control_type.clone(), window_name: window_name.to_string(), metadata })
 }
 
 /// Walks one window's tree depth first within `limits` (`window` is its frame as edges, for clipping).
@@ -128,7 +130,7 @@ pub fn walk_window<S: TreeSource>(source: &S, window_name: &str, browser: bool, 
         let element = source.props(&current);
         let class = classify(&element, browser);
         if class.interactive && !element.name.trim().is_empty() {
-            walk.interactive.push(node(&element, window_name, window, Vec::new()));
+            walk.interactive.extend(node(&element, window_name, window, Vec::new()));
         }
         if class.scrollable {
             let metadata = vec![
@@ -137,7 +139,7 @@ pub fn walk_window<S: TreeSource>(source: &S, window_name: &str, browser: bool, 
                 ("vertical_scrollable".to_string(), Meta::Bool(true)),
                 ("vertical_scroll_percent".to_string(), Meta::Float((element.vertical_percent * 100.0).round() / 100.0)),
             ];
-            walk.scrollable.push(node(&element, window_name, window, metadata));
+            walk.scrollable.extend(node(&element, window_name, window, metadata));
         }
         let mut children = source.children(&current, limits.children_per_parent);
         children.reverse(); // depth first, in document order
@@ -179,12 +181,17 @@ pub struct Walk {
     pub stopped_early: bool,
 }
 
-/// Walks the windows that are not minimized and answer, front to back, sharing one budget. Blocking: on the pool.
+/// Lists `windows` (the applications') and walks every shown top-level window (owned dialogs, menus and popups
+/// too) that is not minimized and answers, front to back, sharing one budget. The focused window is the
+/// foreground window's root, application window or not. Blocking: on the pool.
 pub fn walk(windows: &[TopWindow], limits: &Limits) -> Walk {
     let started = Instant::now();
-    let mut result = Walk { windows: windows.iter().map(view).collect(), active: windows.iter().find(|window| window.focused).map(view), ..Walk::default() };
+    let shown = crate::windows_list::shown_windows();
+    let foreground = crate::windows_list::foreground_root();
+    let active = shown.iter().chain(windows).find(|window| Some(window.hwnd) == foreground).map(|window| WindowView { status: AppStatus::Active, ..view(window) });
+    let mut result = Walk { windows: windows.iter().map(view).collect(), active, ..Walk::default() };
     let mut remaining = *limits;
-    for window in windows.iter().filter(|window| !window.minimized) {
+    for window in shown.iter().filter(|window| !window.minimized) {
         if remaining.elements == 0 || started.elapsed() > limits.deadline {
             result.stopped_early = true;
             break;

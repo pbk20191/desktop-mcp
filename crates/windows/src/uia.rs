@@ -2,12 +2,12 @@
 //! the same round trip (a cache request). Runs on pool threads in the multithreaded apartment.
 use crate::tree::{ElementProps, TreeSource};
 use std::sync::Once;
-use windows::core::BSTR;
+use windows::core::{Interface, BSTR};
 use windows::Win32::System::Variant::VARIANT;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::{CoCreateInstance, CoIncrementMTAUsage, CLSCTX_INPROC_SERVER};
 use windows::Win32::UI::Accessibility::{
-    CUIAutomation8, IUIAutomation, IUIAutomationCacheRequest, IUIAutomationCondition, IUIAutomationElement, TreeScope_Children, UIA_BoundingRectanglePropertyId,
+    CUIAutomation8, IUIAutomation, IUIAutomation2, IUIAutomationCacheRequest, IUIAutomationElement, IUIAutomationTreeWalker, UIA_BoundingRectanglePropertyId,
     UIA_ControlTypePropertyId, UIA_ExpandCollapseExpandCollapseStatePropertyId, UIA_IsControlElementPropertyId, UIA_IsEnabledPropertyId, UIA_IsKeyboardFocusablePropertyId,
     UIA_IsOffscreenPropertyId, UIA_LegacyIAccessibleDefaultActionPropertyId, UIA_LegacyIAccessibleRolePropertyId, UIA_NamePropertyId, UIA_PROPERTY_ID,
     UIA_ScrollHorizontalScrollPercentPropertyId, UIA_ScrollHorizontallyScrollablePropertyId, UIA_ScrollVerticalScrollPercentPropertyId, UIA_ScrollVerticallyScrollablePropertyId,
@@ -30,7 +30,7 @@ const CONTROL_TYPES: [&str; 41] = [
 
 /// A UIA control type id's name without "Control" (`Button`); `Unknown` outside the known range.
 pub fn control_type_name(id: i32) -> &'static str {
-    usize::try_from(id - 50000).ok().and_then(|index| CONTROL_TYPES.get(index)).copied().unwrap_or("Unknown")
+    id.checked_sub(50000).and_then(|index| usize::try_from(index).ok()).and_then(|index| CONTROL_TYPES.get(index)).copied().unwrap_or("Unknown")
 }
 
 const PROPERTIES: [UIA_PROPERTY_ID; 14] = [
@@ -52,9 +52,13 @@ const PROPERTIES: [UIA_PROPERTY_ID; 14] = [
 
 pub struct WindowTree {
     cache: IUIAutomationCacheRequest,
-    condition: IUIAutomationCondition,
+    walker: IUIAutomationTreeWalker,
     root: IUIAutomationElement,
 }
+
+/// How long one UI Automation call may wait for a provider: an app that hangs mid-walk costs at most this.
+const CONNECTION_TIMEOUT_MS: u32 = 1000;
+const TRANSACTION_TIMEOUT_MS: u32 = 2000;
 
 impl WindowTree {
     /// The tree of the window `hwnd`; `None` when UI Automation cannot reach it (an elevated window, one that
@@ -62,13 +66,19 @@ impl WindowTree {
     pub fn new(hwnd: isize) -> Option<WindowTree> {
         ensure_mta();
         let automation: IUIAutomation = unsafe { CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER) }.ok()?;
+        if let Ok(bounded) = automation.cast::<IUIAutomation2>() {
+            unsafe {
+                let _ = bounded.SetConnectionTimeout(CONNECTION_TIMEOUT_MS);
+                let _ = bounded.SetTransactionTimeout(TRANSACTION_TIMEOUT_MS);
+            }
+        }
         let cache = unsafe { automation.CreateCacheRequest() }.ok()?;
         for property in PROPERTIES {
             unsafe { cache.AddProperty(property) }.ok()?;
         }
-        let condition = unsafe { automation.ControlViewCondition() }.ok()?;
+        let walker = unsafe { automation.ControlViewWalker() }.ok()?;
         let root = unsafe { automation.ElementFromHandleBuildCache(HWND(hwnd as *mut _), &cache) }.ok()?;
-        Some(WindowTree { cache, condition, root })
+        Some(WindowTree { cache, walker, root })
     }
 }
 
@@ -99,10 +109,18 @@ impl TreeSource for WindowTree {
         Some(self.root.clone())
     }
 
+    /// One sibling at a time, so the cap also bounds what the provider is asked for.
     fn children(&self, node: &IUIAutomationElement, limit: usize) -> Vec<IUIAutomationElement> {
-        let Ok(found) = (unsafe { node.FindAllBuildCache(TreeScope_Children, &self.condition, &self.cache) }) else { return Vec::new() };
-        let count = unsafe { found.Length() }.unwrap_or(0).max(0) as usize;
-        (0..count.min(limit)).filter_map(|index| unsafe { found.GetElement(index as i32) }.ok()).collect()
+        let mut children = Vec::new();
+        let mut next = unsafe { self.walker.GetFirstChildElementBuildCache(node, &self.cache) }.ok();
+        while let Some(child) = next {
+            if children.len() >= limit {
+                break;
+            }
+            next = unsafe { self.walker.GetNextSiblingElementBuildCache(&child, &self.cache) }.ok();
+            children.push(child);
+        }
+        children
     }
 
     fn props(&self, node: &IUIAutomationElement) -> ElementProps {

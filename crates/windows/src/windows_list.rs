@@ -64,14 +64,23 @@ fn title(hwnd: HWND) -> String {
     String::from_utf16_lossy(&buffer[..copied])
 }
 
-/// A window an application shows to the user: visible, not cloaked (another virtual desktop, a suspended UWP
-/// app), not a tool window, unowned unless it asks for a taskbar button, with a title; not the desktop or taskbar.
-fn is_app_window(hwnd: HWND) -> bool {
+/// A window on screen: visible, not cloaked (another virtual desktop, a suspended UWP app), not the desktop or
+/// the taskbar.
+fn is_shown(hwnd: HWND) -> bool {
     if !unsafe { IsWindowVisible(hwnd) }.as_bool() {
         return false;
     }
     let mut cloaked = 0u32;
     if unsafe { DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &mut cloaked as *mut _ as *mut c_void, 4) }.is_ok() && cloaked != 0 {
+        return false;
+    }
+    !matches!(class_name(hwnd).as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd")
+}
+
+/// A window an application shows to the user as its own: shown, not a tool window, unowned unless it asks for a
+/// taskbar button, with a title.
+fn is_app_window(hwnd: HWND) -> bool {
+    if !is_shown(hwnd) {
         return false;
     }
     let style = unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) } as u32;
@@ -82,7 +91,7 @@ fn is_app_window(hwnd: HWND) -> bool {
     if !app_window && unsafe { GetWindow(hwnd, GW_OWNER) }.is_ok_and(|owner| !owner.is_invalid()) {
         return false;
     }
-    !matches!(class_name(hwnd).as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd") && unsafe { GetWindowTextLengthW(hwnd) } > 0
+    (unsafe { GetWindowTextLengthW(hwnd) }) > 0
 }
 
 fn window_frame(hwnd: HWND) -> RECT {
@@ -153,6 +162,25 @@ fn names(pid: u32) -> (String, String) {
 
 /// The applications' top-level windows in z-order (front first). Blocking: run it on the pool.
 pub fn top_windows() -> Vec<TopWindow> {
+    windows_where(is_app_window)
+}
+
+/// Every shown top-level window with an area (dialogs, menus and popups too), in z-order. Blocking.
+pub fn shown_windows() -> Vec<TopWindow> {
+    windows_where(is_shown).into_iter().filter(|window| window.minimized || (window.frame.width > 0.0 && window.frame.height > 0.0)).collect()
+}
+
+/// The root window of the foreground window (a dialog itself, not its owner).
+pub fn foreground_root() -> Option<isize> {
+    let foreground = unsafe { GetForegroundWindow() };
+    if foreground.is_invalid() {
+        return None;
+    }
+    let root = unsafe { windows::Win32::UI::WindowsAndMessaging::GetAncestor(foreground, windows::Win32::UI::WindowsAndMessaging::GA_ROOT) };
+    Some(if root.is_invalid() { foreground } else { root }.0 as isize)
+}
+
+fn windows_where(keep: fn(HWND) -> bool) -> Vec<TopWindow> {
     let mut handles: Vec<HWND> = Vec::new();
     unsafe {
         let _ = EnumWindows(Some(collect), LPARAM(&mut handles as *mut _ as isize));
@@ -160,7 +188,7 @@ pub fn top_windows() -> Vec<TopWindow> {
     let foreground = unsafe { GetForegroundWindow() };
     handles
         .into_iter()
-        .filter(|hwnd| is_app_window(*hwnd))
+        .filter(|hwnd| keep(*hwnd))
         .filter_map(|hwnd| {
             let mut pid = 0u32;
             unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };

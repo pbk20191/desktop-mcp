@@ -18,6 +18,31 @@ use windows::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTOPRIMARY};
 use windows::Win32::System::WinRT::Direct3D11::{CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess};
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
 
+/// Asks once per process for capture without the yellow border; the answer is kept.
+async fn borderless_allowed() -> bool {
+    use std::future::IntoFuture;
+    use std::sync::atomic::{AtomicU8, Ordering};
+    use windows::Graphics::Capture::{GraphicsCaptureAccess, GraphicsCaptureAccessKind};
+    use windows::Security::Authorization::AppCapabilityAccess::AppCapabilityAccessStatus;
+    // 0: not asked, 1: allowed, 2: refused.
+    static ANSWER: AtomicU8 = AtomicU8::new(0);
+    match ANSWER.load(Ordering::Relaxed) {
+        1 => return true,
+        2 => return false,
+        _ => {}
+    }
+    let Ok(request) = GraphicsCaptureAccess::RequestAccessAsync(GraphicsCaptureAccessKind::Borderless) else {
+        ANSWER.store(2, Ordering::Relaxed);
+        return false;
+    };
+    let allowed = tokio::select! {
+        status = request.into_future() => status.is_ok_and(|status| status == AppCapabilityAccessStatus::Allowed),
+        _ = crate::pool::sleep(Duration::from_secs(2)) => false,
+    };
+    ANSWER.store(if allowed { 1 } else { 2 }, Ordering::Relaxed);
+    allowed
+}
+
 /// How long to wait for the first frame.
 const FRAME_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -43,7 +68,9 @@ pub async fn capture_display(display: &DisplayFrame) -> Result<Pixels, String> {
     let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(&winrt_device, DirectXPixelFormat::B8G8R8A8UIntNormalized, 1, size).map_err(message)?;
     let session = pool.CreateCaptureSession(&item).map_err(message)?;
     let _ = session.SetIsCursorCaptureEnabled(false);
-    let _ = session.SetIsBorderRequired(false);
+    if borderless_allowed().await {
+        let _ = session.SetIsBorderRequired(false);
+    }
     let (sender, receiver) = tokio::sync::oneshot::channel();
     let sender = std::sync::Mutex::new(Some(sender));
     pool.FrameArrived(&TypedEventHandler::new(move |pool: windows::core::Ref<Direct3D11CaptureFramePool>, _| {
