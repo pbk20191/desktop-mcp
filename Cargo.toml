@@ -52,3 +52,10 @@ objc2-vision = { version = "0.3", default-features = false, features = ["std", "
 objc2-core-image = { version = "0.3", default-features = false, features = ["std", "CIImage", "objc2-core-foundation"] }
 objc2-security = { version = "0.3", default-features = false, features = ["std", "SecBase", "SecCertificate", "SecIdentity", "SecImportExport", "SecKey", "SecProtocolObject", "SecProtocolOptions", "SecProtocolTypes"] }
 libc = "0.2"
+
+# Release builds are shipped as one file: full speed, then as small as that allows; panics still unwind (owner).
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "symbols"

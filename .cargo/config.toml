@@ -1,2 +1,6 @@
 [env]
 MACOSX_DEPLOYMENT_TARGET = "13.0"
+
+# The Windows binary carries its own C runtime, so it runs without the Visual C++ redistributable.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]
