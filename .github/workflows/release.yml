@@ -43,6 +43,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Rust targets
         run: rustup target add x86_64-pc-windows-msvc aarch64-pc-windows-msvc
+      # Saved from master only: a cache saved by a tag run is visible to that tag alone, one saved on the default
+      # branch to every tag. A manual run on master (workflow_dispatch) warms it.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-windows
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Build x64
         run: cargo build --release --locked -p desktop-mcp-cli --target x86_64-pc-windows-msvc
       - name: Build arm64
@@ -107,6 +113,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Rust targets
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-macos
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - name: Build arm64
         run: cargo build --release --locked -p desktop-mcp-cli --target aarch64-apple-darwin
       - name: Build x86_64

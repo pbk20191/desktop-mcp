@@ -188,7 +188,9 @@ Still open for both ports: checking which program started the server
 the native ARM64 build) and `desktop-mcp-macos.mcpb` (one universal arm64 + x86_64 binary). To cut a release, set
 `version` under `[workspace.package]` in `Cargo.toml` to X.Y.Z, commit, then `git tag vX.Y.Z` and `git push origin
 vX.Y.Z`. The workflow fails if the tag does not name the workspace version, and publishes a GitHub release with both
-bundles and generated notes. Run by hand (workflow_dispatch), it only builds them as an artifact.
+bundles and generated notes. Run by hand (workflow_dispatch), it only builds them as an artifact. The Rust build cache
+is saved only by runs on master (a tag's cache would serve that tag alone) and restored by every run, so a manual run on
+master after dependencies change keeps the next release build short.
 
 Signing uses a self-signed code-signing certificate, CN "desktop-mcp (pbk20191)", made once with
 `scripts/new-codesign-cert.ps1` (RSA 3072, valid 10 years, extended key usage code signing; it writes a
