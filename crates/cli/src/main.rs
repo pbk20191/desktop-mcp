@@ -41,7 +41,8 @@ struct ConnectArgs {
 
 #[derive(Args, Clone, Default)]
 struct ServeArgs {
-    /// The transport layer used by the MCP server: stdio|streamable-http. (default: stdio)
+    /// The transport layer used by the MCP server: stdio|socket|streamable-http. (default: stdio)
+    /// streamable-http also needs --allow-http.
     #[arg(long)]
     transport: Option<String>,
     /// Host to bind the Streamable HTTP server. (default: localhost)
@@ -59,6 +60,10 @@ struct ServeArgs {
     /// Allow binding to non-loopback addresses without authentication (not recommended).
     #[arg(long)]
     allow_insecure_remote: bool,
+    /// Serve the HTTP transport, off by default: it cannot tell which program is calling. Or
+    /// $DESKTOP_MCP_ALLOW_HTTP=1, or allow_http = true under [server] in config.toml.
+    #[arg(long)]
+    allow_http: bool,
     /// Comma-separated client IPs or CIDR ranges (IPv4/IPv6). Or $DESKTOP_MCP_IP_ALLOWLIST.
     #[arg(long)]
     ip_allowlist: Option<String>,
@@ -83,7 +88,8 @@ struct ServeArgs {
     /// Seconds a session may stay idle before it is dropped; 0 keeps sessions until the client ends them. (default: 1800)
     #[arg(long)]
     session_timeout: Option<u64>,
-    /// Also serve the stdio binding on this Unix domain socket (what `install` sets up).
+    /// Serve the stdio binding on this Unix domain socket, for this user only: alone with --transport socket,
+    /// or beside HTTP.
     #[arg(long)]
     socket: Option<String>,
 }
@@ -96,6 +102,7 @@ impl ServeArgs {
             port: self.port,
             auth_key: self.auth_key.clone(),
             allow_insecure_remote: self.allow_insecure_remote,
+            allow_http: self.allow_http,
             ip_allowlist: self.ip_allowlist.clone(),
             ssl_certfile: self.ssl_certfile.clone(),
             ssl_keyfile: self.ssl_keyfile.clone(),
@@ -302,6 +309,31 @@ fn serve(plan: ServePlan) -> ExitCode {
             let _session = activity.connection();
             tokio::select! {
                 _ = serve_stream(FdIo::stdio(), make_server()) => {}
+                _ = signals::termination() => {}
+            }
+            return ExitCode::SUCCESS;
+        }
+        if plan.transport == "socket" {
+            let path = plan.socket_path.clone().expect("the plan requires a socket path");
+            let mut socket = match UnixListener::listen(path.as_ref(), Some(LAUNCHD_SOCKET)) {
+                Ok(socket) => socket,
+                Err(reason) => {
+                    eprintln!("Error: cannot serve on {path}: {reason}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            log(&format!("Serving stdio over {path}{} (rust)", if socket.activated_by_launchd() { " (socket from launchd)" } else { "" }));
+            let accepting = async {
+                while let Some(io) = socket.accept().await {
+                    let (server, connection) = (make_server(), activity.connection());
+                    tokio::task::spawn_local(async move {
+                        serve_stream(io, server).await;
+                        drop(connection);
+                    });
+                }
+            };
+            tokio::select! {
+                _ = accepting => {}
                 _ = signals::termination() => {}
             }
             return ExitCode::SUCCESS;

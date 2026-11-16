@@ -34,9 +34,14 @@ non-loopback host without authentication is refused unless `--allow-insecure-rem
 The PEM certificate and key (RSA or EC; PKCS#8, PKCS#1 or SEC1) are read into memory with
 Security.framework, never into a keychain, and Network.framework does the TLS.
 
+The HTTP transport is off unless asked for (`--allow-http`, `DESKTOP_MCP_ALLOW_HTTP=1`, or `allow_http = true`
+under `[server]`): whatever reaches its port could drive the desktop, and it cannot tell which program is calling.
+How to admit only known clients (for example by the caller's audit token and code signature) is still to be
+worked out.
+
 `--transport stdio` (the default) serves one session on stdin/stdout, newline-delimited JSON; at end of
-input it still answers the requests it has read (not those the client cancelled), then exits. `--socket <path>`
-serves the same binding on a Unix socket beside HTTP, one session per connection, for the same user only
+input it still answers the requests it has read (not those the client cancelled), then exits. `--transport socket --socket <path>`
+serves the same binding on a Unix socket alone (or beside HTTP), one session per connection, for the same user only
 (mode 0600, and the peer's uid is checked); under launchd it takes the plist's `Listener` socket. A socket
 that is in use leaves HTTP serving alone.
 

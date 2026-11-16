@@ -55,7 +55,7 @@ fn legacy_sse_transport_is_mapped_with_a_warning() {
 
 #[test]
 fn plan_maps_legacy_sse_from_the_command_line() {
-    let plan = resolve(&CommandLine { transport: Some("sse".into()), ..CommandLine::default() }).unwrap();
+    let plan = resolve(&CommandLine { transport: Some("sse".into()), allow_http: true, ..CommandLine::default() }).unwrap();
     assert_eq!(plan.transport, "streamable-http");
     assert!(plan.warnings.iter().any(|w| w == LEGACY_TRANSPORT_WARNING));
 }
@@ -95,7 +95,7 @@ fn plan_precedence_command_line_then_environment_then_config() {
     config.security.ip_allowlist = vec!["10.0.0.0/8".into()];
     config.tools.exclude = vec!["Shell".into()];
     let env: HashMap<String, String> = [(ENV_AUTH_KEY.to_string(), "from-env".to_string()), (ENV_EXCLUDE_TOOLS.to_string(), "Scrape,Shell".to_string())].into();
-    let mut cli = CommandLine { port: Some(7000), ..CommandLine::default() };
+    let mut cli = CommandLine { port: Some(7000), allow_http: true, ..CommandLine::default() };
     let plan = ServePlan::resolve(&cli, &env, &config).unwrap();
     assert_eq!(plan.transport, "streamable-http");
     assert_eq!(plan.port, 7000);
@@ -130,7 +130,7 @@ fn session_timeout_defaults_to_half_an_hour_and_zero_disables_it() {
 
 #[test]
 fn plan_refuses_unauthenticated_remote_bind() {
-    let mut cli = CommandLine { transport: Some("streamable-http".into()), host: Some("0.0.0.0".into()), ..CommandLine::default() };
+    let mut cli = CommandLine { transport: Some("streamable-http".into()), host: Some("0.0.0.0".into()), allow_http: true, ..CommandLine::default() };
     assert!(resolve(&cli).unwrap_err().contains("Refusing to bind"));
     cli.allow_insecure_remote = true;
     assert!(resolve(&cli).is_ok());
@@ -187,12 +187,21 @@ fn loopback_and_tokens() {
 }
 
 #[test]
-fn socket_requires_streamable_http_and_a_short_path() {
-    let mut cli = CommandLine { transport: Some("streamable-http".into()), socket_path: Some("/tmp/a.sock".into()), ..CommandLine::default() };
+fn http_needs_an_explicit_opt_in() {
+    let refused = resolve(&CommandLine { transport: Some("streamable-http".into()), ..CommandLine::default() }).unwrap_err();
+    assert!(refused.starts_with("The HTTP transport is off by default"), "{refused}");
+    assert!(resolve(&CommandLine { transport: Some("streamable-http".into()), allow_http: true, ..CommandLine::default() }).is_ok());
+}
+
+#[test]
+fn the_socket_serves_alone_or_beside_http_with_a_short_path() {
+    let mut cli = CommandLine { transport: Some("socket".into()), socket_path: Some("/tmp/a.sock".into()), ..CommandLine::default() };
     assert_eq!(resolve(&cli).unwrap().socket_path.as_deref(), Some("/tmp/a.sock"));
     cli.transport = Some("stdio".into());
-    assert_eq!(resolve(&cli).unwrap_err(), "--socket requires --transport streamable-http.");
-    cli.transport = Some("streamable-http".into());
+    assert_eq!(resolve(&cli).unwrap_err(), "--socket requires --transport socket or streamable-http.");
+    cli.transport = Some("socket".into());
+    cli.socket_path = None;
+    assert_eq!(resolve(&cli).unwrap_err(), "--transport socket requires --socket <path>.");
     cli.socket_path = Some(format!("/{}", "a".repeat(110)));
     assert!(resolve(&cli).unwrap_err().contains("Socket path too long (max 103 bytes)"));
     assert_eq!(resolve(&CommandLine::default()).unwrap().socket_path, None);

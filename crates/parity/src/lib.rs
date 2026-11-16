@@ -74,7 +74,7 @@ pub fn run_stdio_with(arguments: &[&str], input: &[Value], files: &[(&str, &str)
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, contents).unwrap();
     }
-    let mut child = Command::new(&binary).args(arguments).env("HOME", &home).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().expect("start");
+    let mut child = Command::new(&binary).args(arguments).env("HOME", &home).env("DESKTOP_MCP_ALLOW_HTTP", "1").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().expect("start");
     let mut stdin = child.stdin.take().unwrap();
     for message in input {
         stdin.write_all(format!("{message}\n").as_bytes()).unwrap();
@@ -116,7 +116,7 @@ pub fn socket_path(name: &str) -> PathBuf {
 pub fn run_to_exit(arguments: &[&str]) -> (ExitStatus, String) {
     let binary = std::env::var_os("DESKTOP_MCP_BIN").expect("set DESKTOP_MCP_BIN to the desktop-mcp binary under test");
     let home = scratch_home(None);
-    let mut child = Command::new(&binary).args(arguments).env("HOME", &home).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().expect("start");
+    let mut child = Command::new(&binary).args(arguments).env("HOME", &home).env("DESKTOP_MCP_ALLOW_HTTP", "1").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().expect("start");
     let deadline = Instant::now() + Duration::from_secs(10);
     let status = loop {
         if let Some(status) = child.try_wait().expect("wait") {
@@ -159,6 +159,8 @@ impl ServerUnderTest {
                 .args(["serve", "--transport", "streamable-http", "--host", "127.0.0.1", "--port", &port.to_string()])
                 .args(launch.options)
                 .env("HOME", &home)
+                // The Rust port serves HTTP only on request; the Swift port ignores this.
+                .env("DESKTOP_MCP_ALLOW_HTTP", "1")
                 .envs(launch.env.iter().copied())
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())

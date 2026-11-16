@@ -2,7 +2,7 @@
 use std::path::{Component, Path, PathBuf};
 
 pub const LEGACY_TRANSPORT_WARNING: &str = "transport \"sse\" is no longer supported; serving streamable-http (POST /mcp) instead. Re-run `desktop-mcp install` or `desktop-mcp auth` to update the stored setting.";
-pub const TRANSPORTS: [&str; 2] = ["stdio", "streamable-http"];
+pub const TRANSPORTS: [&str; 3] = ["stdio", "socket", "streamable-http"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServerSection {
@@ -10,6 +10,8 @@ pub struct ServerSection {
     pub host: String,
     pub port: u16,
     pub allow_insecure_remote: bool,
+    /// HTTP is served only when this (or `--allow-http`) says so.
+    pub allow_http: bool,
     pub auth_key: Option<String>,
     /// Resolved against the config file's directory.
     pub ssl_certfile: Option<String>,
@@ -18,7 +20,7 @@ pub struct ServerSection {
 
 impl Default for ServerSection {
     fn default() -> Self {
-        ServerSection { transport: "stdio".into(), host: "localhost".into(), port: 8000, allow_insecure_remote: false, auth_key: None, ssl_certfile: None, ssl_keyfile: None }
+        ServerSection { transport: "stdio".into(), host: "localhost".into(), port: 8000, allow_insecure_remote: false, allow_http: false, auth_key: None, ssl_certfile: None, ssl_keyfile: None }
     }
 }
 
@@ -93,6 +95,9 @@ impl Config {
         }
         if let Some(value) = server.get("allow_insecure_remote") {
             config.server.allow_insecure_remote = value.as_bool().ok_or("server.allow_insecure_remote must be a TOML boolean")?;
+        }
+        if let Some(value) = server.get("allow_http") {
+            config.server.allow_http = value.as_bool().ok_or("server.allow_http must be a TOML boolean")?;
         }
         config.server.auth_key = server.get("auth_key").map(text_of).filter(|s| !s.is_empty());
         // TLS paths are relative to the config file.

@@ -14,6 +14,10 @@ pub const ENV_OAUTH_CLIENT_ID: &str = "DESKTOP_MCP_OAUTH_CLIENT_ID";
 pub const ENV_OAUTH_CLIENT_SECRET: &str = "DESKTOP_MCP_OAUTH_CLIENT_SECRET";
 pub const ENV_EXCLUDE_TOOLS: &str = "DESKTOP_MCP_EXCLUDE_TOOLS";
 pub const ENV_INCLUDE_TOOLS: &str = "DESKTOP_MCP_INCLUDE_TOOLS";
+pub const ENV_ALLOW_HTTP: &str = "DESKTOP_MCP_ALLOW_HTTP";
+
+/// Why HTTP is refused without an explicit opt-in.
+pub const HTTP_DISABLED: &str = "The HTTP transport is off by default: any process on this Mac (or, bound beyond loopback, on the network) that reaches the port could drive the desktop, and it cannot be told which program is calling.\n  Serve stdio (the default), or a Unix socket only this user can open: --transport socket --socket <path>.\n  To serve HTTP anyway pass --allow-http, set DESKTOP_MCP_ALLOW_HTTP=1, or set allow_http = true under [server] in config.toml.";
 
 /// What was given on the command line; `None` means "not given".
 #[derive(Clone, Debug, Default)]
@@ -23,6 +27,8 @@ pub struct CommandLine {
     pub port: Option<u16>,
     pub auth_key: Option<String>,
     pub allow_insecure_remote: bool,
+    /// Serve the HTTP transport, which is refused without it.
+    pub allow_http: bool,
     pub ip_allowlist: Option<String>,
     pub ssl_certfile: Option<String>,
     pub ssl_keyfile: Option<String>,
@@ -32,7 +38,7 @@ pub struct CommandLine {
     pub include_tools: Option<String>,
     /// Seconds; 0 keeps sessions until the client ends them.
     pub session_timeout: Option<u64>,
-    /// A Unix socket to serve the stdio binding on as well (streamable-http only); command line only.
+    /// A Unix socket to serve the stdio binding on: alone (transport `socket`) or beside HTTP; command line only.
     pub socket_path: Option<String>,
 }
 
@@ -92,10 +98,17 @@ impl ServePlan {
         if !TRANSPORTS.contains(&transport.as_str()) {
             return Err(format!("Invalid transport: {transport}"));
         }
+        let allow_http = cli.allow_http || from_env(ENV_ALLOW_HTTP).is_some_and(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes")) || config.server.allow_http;
+        if transport == "streamable-http" && !allow_http {
+            return Err(HTTP_DISABLED.into());
+        }
         let socket_path = non_empty(cli.socket_path.as_deref());
+        if transport == "socket" && socket_path.is_none() {
+            return Err("--transport socket requires --socket <path>.".into());
+        }
         if let Some(path) = &socket_path {
-            if transport != "streamable-http" {
-                return Err("--socket requires --transport streamable-http.".into());
+            if transport == "stdio" {
+                return Err("--socket requires --transport socket or streamable-http.".into());
             }
             // What fits in `sockaddr_un.sun_path`.
             if path.len() > 103 {
@@ -136,13 +149,13 @@ impl ServePlan {
         };
         let ip_allowlist = IpNetwork::parse_list(&allowlist_entries).map_err(|error| format!("Invalid ip_allowlist: {error}"))?;
 
-        if transport != "stdio" && !is_loopback_host(&host) && auth_key.is_none() && oauth.is_none() && !allow_insecure_remote {
+        if transport == "streamable-http" && !is_loopback_host(&host) && auth_key.is_none() && oauth.is_none() && !allow_insecure_remote {
             return Err(format!(
                 "Refusing to bind HTTP transport to '{host}' without authentication.\n  Use --auth-key <token> or --oauth-client-id/--oauth-client-secret.\n  Or pass --allow-insecure-remote to explicitly allow unauthenticated access (not recommended)."
             ));
         }
-        if transport == "stdio" && (auth_key.is_some() || !ip_allowlist.is_empty()) {
-            warnings.push("auth_key / ip_allowlist have no effect on stdio transport".into());
+        if transport != "streamable-http" && (auth_key.is_some() || !ip_allowlist.is_empty()) {
+            warnings.push(format!("auth_key / ip_allowlist have no effect on {transport} transport"));
         }
         let session_timeout = match cli.session_timeout {
             Some(0) => None,
