@@ -8,7 +8,7 @@
         "readOnlyHint": false,
         "title": "App"
       },
-      "description": "Manages Windows applications with six modes: 'launch' (opens an app by its Start menu name, or an executable by its full path), 'resize' (adjusts the focused window's size), 'move' (repositions the focused window), 'switch' (brings the named app's window to the front), 'quit' (asks every window of that app to close; the app may ask to save), 'force_quit' (ends its processes without asking). 'name' is the app's name, executable or Start menu name. Quit never targets desktop-mcp itself or the Windows shell.",
+      "description": "Manages Windows applications with six modes: 'launch' (opens an app by its Start menu name, its executable's name such as notepad or calc, or an executable's full path, and brings its window to the front), 'resize' (adjusts the focused window's size), 'move' (repositions the focused window), 'switch' (brings the named app's window to the front), 'quit' (asks every window of that app to close; the app may ask to save), 'force_quit' (ends its processes without asking). 'name' is the app's name, executable or Start menu name. Quit never targets desktop-mcp itself or the Windows shell.",
       "inputSchema": {
         "$defs": {
           "Mode": {
@@ -127,7 +127,7 @@
         "readOnlyHint": false,
         "title": "Click"
       },
-      "description": "Performs mouse clicks at specified coordinates [x, y]. Supports button types: 'left' for selection/activation, 'right' for context menus, 'middle'. Supports clicks: 0=hover only, 1=single click, 2=double click.",
+      "description": "Performs mouse clicks at specified coordinates [x, y]. Supports button types: 'left' for selection/activation, 'right' for context menus, 'middle'. Supports clicks: 0=hover only, 1=single click, 2=double click. Take [x, y] from a Snapshot of what is in front, not from a window's frame: a point covered by another window acts on that window.",
       "inputSchema": {
         "$defs": {
           "Button": {
@@ -623,7 +623,7 @@
         "readOnlyHint": false,
         "title": "Type"
       },
-      "description": "Types text at specified coordinates [x, y]. Set clear=True to clear existing text first. Set press_enter=True to submit after typing. Set caret_position to 'start', 'end', or 'idle' (default).",
+      "description": "Types text at specified coordinates [x, y]. Set clear=True to clear existing text first. Set press_enter=True to submit after typing. Set caret_position to 'start', 'end', or 'idle' (default). Take [x, y] from a Snapshot of what is in front, not from a window's frame: a point covered by another window acts on that window.",
       "inputSchema": {
         "$defs": {
           "Caret": {

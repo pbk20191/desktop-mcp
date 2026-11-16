@@ -25,6 +25,9 @@ type Pending<T> = Pin<Box<dyn Future<Output = T>>>;
 
 const NOT_YET: &str = "not available on Windows yet";
 
+/// How long App launch waits for the launched app's window.
+const LAUNCH_WINDOW_WAIT: Duration = Duration::from_secs(5);
+
 fn ready<T: 'static>(value: T) -> Pending<T> {
     Box::pin(async move { value })
 }
@@ -180,10 +183,46 @@ impl Desktop for WindowsDesktop {
         None
     }
 
-    /// An executable path, or the app the Apps folder (Start menu) names; on the pool.
+    /// An executable path, the app the Apps folder (Start menu) names, or a command; on the pool.
     fn launch_app(&self, name: &str) -> Pending<bool> {
         let name = name.to_string();
-        Box::pin(pool::offload(move || crate::apps::launch(&name)))
+        Box::pin(pool::offload(move || crate::apps::launch(&name).is_some()))
+    }
+
+    /// Launches, then waits up to [`LAUNCH_WINDOW_WAIT`] for the app's window and brings it to the front: a window
+    /// left behind the caller's would take the clicks and typing meant for it.
+    fn launch_app_reported(&self, name: &str) -> Pending<Option<String>> {
+        let name = name.to_string();
+        Box::pin(async move {
+            let asked = name.clone();
+            let (launched, before, front_before) = pool::offload(move || {
+                let windows = crate::windows_list::top_windows();
+                let front = windows.iter().find(|window| window.focused).map(|window| window.hwnd);
+                let before: Vec<isize> = windows.iter().map(|window| window.hwnd).collect();
+                (crate::apps::launch(&asked), before, front)
+            })
+            .await;
+            let launched = std::sync::Arc::new(launched?);
+            let before = std::sync::Arc::new(before);
+            let deadline = std::time::Instant::now() + LAUNCH_WINDOW_WAIT;
+            loop {
+                let last = std::time::Instant::now() >= deadline;
+                let (launched, before) = (launched.clone(), before.clone());
+                // On the last look, an older window of the app in front counts even if it was in front before.
+                let front_before = if last { None } else { front_before };
+                let brought = pool::offload(move || {
+                    let windows = crate::windows_list::top_windows();
+                    crate::apps::launched_window(&launched, &before, front_before, &windows).map(crate::foreground::bring)
+                })
+                .await;
+                match brought {
+                    Some(true) => return Some(format!("Launched {name}; its window is in front.")),
+                    Some(false) => return Some(format!("Launched {name}, but its window is not in front (Windows kept the focus elsewhere); use App mode='switch' before typing.")),
+                    None if last => return Some(format!("Launched {name}; no window appeared within {} s.", LAUNCH_WINDOW_WAIT.as_secs())),
+                    None => pool::sleep(Duration::from_millis(100)).await,
+                }
+            }
+        })
     }
 
     /// The app's front window, brought to the foreground; the app by its Start menu name when no running app goes

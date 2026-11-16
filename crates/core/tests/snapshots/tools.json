@@ -126,7 +126,7 @@
       "readOnlyHint": false,
       "title": "Click"
     },
-    "description": "Performs mouse clicks at specified coordinates [x, y]. Supports button types: 'left' for selection/activation, 'right' for context menus, 'middle'. Supports clicks: 0=hover only, 1=single click, 2=double click.",
+    "description": "Performs mouse clicks at specified coordinates [x, y]. Supports button types: 'left' for selection/activation, 'right' for context menus, 'middle'. Supports clicks: 0=hover only, 1=single click, 2=double click. Take [x, y] from a Snapshot of what is in front, not from a window's frame: a point covered by another window acts on that window.",
     "inputSchema": {
       "$defs": {
         "Button": {
@@ -685,7 +685,7 @@
       "readOnlyHint": false,
       "title": "Type"
     },
-    "description": "Types text at specified coordinates [x, y]. Set clear=True to clear existing text first. Set press_enter=True to submit after typing. Set caret_position to 'start', 'end', or 'idle' (default).",
+    "description": "Types text at specified coordinates [x, y]. Set clear=True to clear existing text first. Set press_enter=True to submit after typing. Set caret_position to 'start', 'end', or 'idle' (default). Take [x, y] from a Snapshot of what is in front, not from a window's frame: a point covered by another window acts on that window.",
     "inputSchema": {
       "$defs": {
         "Caret": {

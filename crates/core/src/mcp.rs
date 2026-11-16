@@ -79,6 +79,13 @@ pub trait Desktop: 'static {
     fn select_typing_layout(&self) -> Option<Box<dyn FnOnce()>>;
     /// Opens an application by name, path or bundle id; whether it worked.
     fn launch_app(&self, name: &str) -> Pin<Box<dyn Future<Output = bool>>>;
+    /// Opens an application and words what happened for the App tool ("Launched Safari."); `None` when it could
+    /// not be opened. By default [`Desktop::launch_app`] alone; Windows also brings the new window to the front.
+    fn launch_app_reported(&self, name: &str) -> Pin<Box<dyn Future<Output = Option<String>>>> {
+        let launched = self.launch_app(name);
+        let name = name.to_string();
+        Box::pin(async move { launched.await.then(|| format!("Launched {name}.")) })
+    }
     /// Brings the application with this name or bundle id forward; `false` when none is running.
     fn activate_app(&self, name: &str) -> Pin<Box<dyn Future<Output = bool>>>;
     /// Applies `change` to the frontmost app's main window (or with `None` only looks); whether there is one.
@@ -629,7 +636,7 @@ impl Server {
 
     #[tool(
         name = "Click",
-        description = "Performs mouse clicks at specified coordinates [x, y]. Supports button types: 'left' for selection/activation, 'right' for context menus, 'middle'. Supports clicks: 0=hover only, 1=single click, 2=double click.",
+        description = "Performs mouse clicks at specified coordinates [x, y]. Supports button types: 'left' for selection/activation, 'right' for context menus, 'middle'. Supports clicks: 0=hover only, 1=single click, 2=double click. Take [x, y] from a Snapshot of what is in front, not from a window's frame: a point covered by another window acts on that window.",
         annotations(title = "Click", read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = false)
     )]
     async fn click(&self, Parameters(args): Parameters<ClickArgs>, cancellation: CancellationToken) -> CallToolResult {
@@ -657,7 +664,7 @@ impl Server {
 
     #[tool(
         name = "Type",
-        description = "Types text at specified coordinates [x, y]. Set clear=True to clear existing text first. Set press_enter=True to submit after typing. Set caret_position to 'start', 'end', or 'idle' (default).",
+        description = "Types text at specified coordinates [x, y]. Set clear=True to clear existing text first. Set press_enter=True to submit after typing. Set caret_position to 'start', 'end', or 'idle' (default). Take [x, y] from a Snapshot of what is in front, not from a window's frame: a point covered by another window acts on that window.",
         annotations(title = "Type", read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = false)
     )]
     async fn type_text(&self, Parameters(args): Parameters<TypeArgs>, cancellation: CancellationToken) -> CallToolResult {

@@ -44,7 +44,7 @@ pub async fn run(desktop: &dyn Desktop, mode: Mode, name: Option<&str>, window_l
     match mode {
         Mode::Launch => {
             let Some(name) = given(name) else { return Ok("App name or bundle ID required for launch.".to_string()) };
-            Ok(if desktop.launch_app(name).await { format!("Launched {name}.") } else { format!("Failed to launch {name}.") })
+            Ok(desktop.launch_app_reported(name).await.unwrap_or_else(|| format!("Failed to launch {name}.")))
         }
         Mode::Switch => {
             let Some(name) = given(name) else { return Ok("App name or bundle ID required for switch.".to_string()) };
