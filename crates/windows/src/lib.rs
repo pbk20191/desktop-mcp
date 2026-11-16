@@ -4,6 +4,8 @@ pub mod clipboard;
 pub mod desktop;
 pub mod displays;
 pub mod html;
+pub mod imaging;
+pub mod capture;
 pub mod listener;
 pub mod main_loop;
 pub mod net;

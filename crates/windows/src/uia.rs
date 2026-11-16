@@ -14,7 +14,7 @@ use windows::Win32::UI::Accessibility::{
 };
 
 /// Pool threads join the process's multithreaded apartment, which this keeps alive.
-fn ensure_mta() {
+pub fn ensure_mta() {
     static MTA: Once = Once::new();
     MTA.call_once(|| {
         // The cookie is never released: the apartment lives as long as the process.
