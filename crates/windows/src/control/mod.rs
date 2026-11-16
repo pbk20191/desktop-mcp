@@ -2,5 +2,6 @@
 //! `status`) is pure; the hooks, the heartbeat and the overlay drive it.
 pub mod filter;
 pub mod machine;
+pub mod monitor;
 pub mod policy;
 pub mod status;
