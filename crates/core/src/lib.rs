@@ -18,6 +18,7 @@ pub mod window;
 pub mod menu;
 pub mod element;
 pub mod snapshot;
+pub mod ocr;
 pub mod http;
 pub mod session;
 pub mod config;

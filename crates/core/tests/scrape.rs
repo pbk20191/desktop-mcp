@@ -69,6 +69,9 @@ impl Desktop for FakeWeb {
     fn snapshot(&self, _use_vision: bool) -> Pin<Box<dyn Future<Output = desktop_mcp_core::snapshot::State>>> {
         unreachable!()
     }
+    fn read_text(&self, _request: desktop_mcp_core::ocr::Request) -> Pin<Box<dyn Future<Output = Result<Vec<desktop_mcp_core::ocr::TextLine>, String>>>> {
+        unreachable!()
+    }
     fn find_element(&self, _app: Option<&str>, _title: Option<&str>, _role: Option<&str>, _deadline: std::time::Instant) -> Pin<Box<dyn Future<Output = Option<desktop_mcp_core::element::FoundElement>>>> {
         unreachable!()
     }

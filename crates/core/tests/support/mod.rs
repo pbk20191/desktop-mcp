@@ -96,6 +96,9 @@ impl Desktop for FakeDesktop {
         let state = self.snapshot_state.borrow().clone();
         Box::pin(async move { state })
     }
+    fn read_text(&self, _request: desktop_mcp_core::ocr::Request) -> Pin<Box<dyn Future<Output = Result<Vec<desktop_mcp_core::ocr::TextLine>, String>>>> {
+        Box::pin(async { Ok(vec![]) })
+    }
     fn find_element(&self, _app: Option<&str>, _title: Option<&str>, _role: Option<&str>, deadline: std::time::Instant) -> Pin<Box<dyn Future<Output = Option<desktop_mcp_core::element::FoundElement>>>> {
         self.element_deadlines.borrow_mut().push(deadline);
         let mut looks = self.element_looks.borrow_mut();

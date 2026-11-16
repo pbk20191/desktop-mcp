@@ -92,6 +92,9 @@ pub trait Desktop: 'static {
     fn snapshot(&self, use_vision: bool) -> Pin<Box<dyn Future<Output = crate::snapshot::State>>>;
     /// Creates a desktop Space (Mission Control), waiting `open_delay` seconds for it to open; says how it went.
     fn create_space(&self, open_delay: f64, close_after: bool) -> Pin<Box<dyn Future<Output = String> + '_>>;
+    /// The text lines in `request`'s region (default the focused window, else the main display), in screen
+    /// points, in no particular order. `Err` carries the reason shown to the model.
+    fn read_text(&self, request: crate::ocr::Request) -> Pin<Box<dyn Future<Output = Result<Vec<crate::ocr::TextLine>, String>>>>;
     fn find_element(&self, app: Option<&str>, title: Option<&str>, role: Option<&str>, deadline: std::time::Instant) -> Pin<Box<dyn Future<Output = Option<crate::element::FoundElement>>>>;
 }
 
@@ -388,6 +391,35 @@ struct MenuArgs {
     depth: i64,
 }
 
+fn ocr_languages() -> Option<Vec<String>> {
+    Some(crate::ocr::DEFAULT_LANGUAGES.map(str::to_string).to_vec())
+}
+
+fn min_confidence() -> f64 {
+    crate::ocr::DEFAULT_MIN_CONFIDENCE
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct OcrArgs {
+    #[serde(default)]
+    region: Option<Vec<i64>>,
+    #[serde(default = "ocr_languages")]
+    languages: Option<Vec<String>>,
+    #[serde(default)]
+    level: OcrLevel,
+    #[serde(default = "min_confidence")]
+    #[schemars(range(min = 0, max = 1))]
+    min_confidence: f64,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum OcrLevel {
+    #[default]
+    Accurate,
+    Fast,
+}
+
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct SnapshotArgs {
     #[serde(default)]
@@ -443,6 +475,19 @@ impl Server {
     )]
     async fn snapshot(&self, Parameters(args): Parameters<SnapshotArgs>, cancellation: CancellationToken) -> CallToolResult {
         run_tool("Snapshot", cancellation, async move { Ok(crate::snapshot::run(self.desktop.as_ref(), args.use_vision).await) }).await
+    }
+
+    #[tool(
+        name = "OCR",
+        description = "Reads the text shown on screen with on-device text recognition and returns one line per text line, top to bottom: '[cx,cy] \"<text>\" (w×h, confidence 0.93)', where [cx,cy] is the line's centre in the screen coordinates Click takes. 'region' [x, y, width, height] in screen points (default the focused window, else the main display); 'languages' (default [\"ko-KR\", \"en-US\"]); 'level' 'accurate' (default) or 'fast'; lines below 'min_confidence' (0-1, default 0.3) are dropped. Needs Screen Recording.",
+        annotations(title = "OCR", read_only_hint = true, destructive_hint = false, idempotent_hint = false, open_world_hint = false)
+    )]
+    async fn ocr(&self, Parameters(args): Parameters<OcrArgs>, cancellation: CancellationToken) -> CallToolResult {
+        run_tool("OCR", cancellation, async move {
+            let request = crate::ocr::request(args.region, args.languages, args.level == OcrLevel::Fast, args.min_confidence).map_err(ToolError)?;
+            crate::ocr::run(self.desktop.as_ref(), request).await.map_err(ToolError)
+        })
+        .await
     }
 
     #[tool(

@@ -23,6 +23,7 @@ pub mod menu;
 pub mod element;
 pub mod snapshot;
 pub mod screenshot;
+pub mod ocr;
 pub mod spaces;
 pub mod signals;
 pub mod tls;

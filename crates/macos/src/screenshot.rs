@@ -19,7 +19,7 @@ pub fn ensure_permission() -> bool {
 }
 
 /// The displays' ids in the window server's order, which `screencapture -D` numbers from 1.
-fn active_ids() -> Vec<u32> {
+pub(crate) fn active_ids() -> Vec<u32> {
     let mut count = 0u32;
     unsafe { CGGetActiveDisplayList(0, std::ptr::null_mut(), &mut count) };
     let mut ids = vec![0u32; count as usize];
@@ -29,7 +29,7 @@ fn active_ids() -> Vec<u32> {
 }
 
 /// One display as PNG bytes, or `None` when it could not be captured (no permission, display gone).
-async fn capture(display: &DisplayInfo, ids: &[u32]) -> Option<Vec<u8>> {
+pub(crate) async fn capture(display: &DisplayInfo, ids: &[u32]) -> Option<Vec<u8>> {
     let number = ids.iter().position(|id| *id == display.id)? + 1;
     let path = std::env::temp_dir().join(format!("desktop-mcp-{}.png", uuid::Uuid::new_v4()));
     let argv = ["/usr/sbin/screencapture", "-x", "-D", &number.to_string(), "-t", "png", &path.to_string_lossy()].map(str::to_string).to_vec();

@@ -200,6 +200,10 @@ impl Desktop for MacDesktop {
         Box::pin(crate::spaces::create(self, open_delay, close_after))
     }
 
+    fn read_text(&self, request: desktop_mcp_core::ocr::Request) -> Pin<Box<dyn Future<Output = Result<Vec<desktop_mcp_core::ocr::TextLine>, String>>>> {
+        Box::pin(crate::ocr::read(request))
+    }
+
     fn find_element(&self, app: Option<&str>, title: Option<&str>, role: Option<&str>, deadline: std::time::Instant) -> Pin<Box<dyn Future<Output = Option<desktop_mcp_core::element::FoundElement>>>> {
         // The running apps and the menu bar owner are read here, on the main thread; the walk runs on a worker.
         let pids = crate::element::pids(app, if app.is_none() { crate::menu::menu_bar_owner() } else { None });

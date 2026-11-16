@@ -275,8 +275,27 @@ fn plan(args: &ServeArgs) -> Result<ServePlan, String> {
     ServePlan::resolve(&args.command_line(), &std::env::vars().collect(), &config)
 }
 
-/// The tools this build has.
+/// The tools this build lists unless excluded; the opt-in ones ([`desktop_mcp_core::ocr::OPT_IN`]) come only when
+/// included.
 const TOOLS: &[&str] = &["App", "Click", "Clipboard", "Desktop", "Menu", "Move", "Notification", "Open", "Permissions", "RunShortcut", "Scrape", "Scroll", "Shell", "Shortcut", "Snapshot", "Spotlight", "Type", "Wait", "Window"];
+
+/// The tools to offer: the default ones and the included opt-in ones, less the excluded. An include naming a
+/// default or unknown tool is logged and ignored.
+fn selected_tools(plan: &ServePlan) -> Vec<&'static str> {
+    use desktop_mcp_core::ocr::OPT_IN;
+    let mut tools: Vec<&'static str> = TOOLS.to_vec();
+    for name in &plan.included_tools {
+        if let Some(tool) = OPT_IN.iter().find(|tool| *tool == name) {
+            tools.push(tool);
+        } else if TOOLS.contains(&name.as_str()) {
+            log(&format!("Tool '{name}' is on by default; include ignored"));
+        } else {
+            log(&format!("Could not include tool '{name}' — not found"));
+        }
+    }
+    tools.retain(|tool| !plan.excluded_tools.iter().any(|excluded| excluded == tool));
+    tools
+}
 
 /// The name of the Launch Agent plist's `Sockets` entry that `install` writes.
 const LAUNCHD_SOCKET: &str = "Listener";
@@ -306,7 +325,7 @@ fn serve(plan: ServePlan) -> ExitCode {
         },
         None => None,
     };
-    let tools: Vec<&'static str> = TOOLS.iter().copied().filter(|tool| !plan.excluded_tools.iter().any(|excluded| excluded == tool)).collect();
+    let tools = selected_tools(&plan);
     let desktop: Rc<dyn Desktop> = Rc::new(MacDesktop::new());
     let make_server: Rc<dyn Fn() -> Server> = Rc::new(move || Server::new(desktop.clone(), &tools));
 
