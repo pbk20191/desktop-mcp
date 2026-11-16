@@ -152,9 +152,27 @@ pub fn inputs(event: &Event, screen: (i32, i32, i32, i32)) -> Vec<INPUT> {
             built.extend(modifiers.iter().rev().filter_map(|modifier| modifier_key(*modifier)).map(|modifier| key(modifier, true)));
             built
         }
-        Event::ReleaseModifiers => [VK_LCONTROL, VK_RCONTROL, VK_LSHIFT, VK_RSHIFT, VK_LMENU, VK_RMENU, VK_LWIN, VK_RWIN].into_iter().map(|modifier| key(modifier, true)).collect(),
+        Event::ReleaseModifiers => release_modifiers(|modifier| unsafe { GetAsyncKeyState(modifier.0 as i32) } as u16 & 0x8000 != 0),
         Event::Text(text) => text.encode_utf16().flat_map(|unit| [unicode(unit, false), unicode(unit, true)]).collect(),
     }
+}
+
+/// An unassigned virtual key, pressed before an Alt key-up so the release is not taken as an Alt tap (AutoHotkey's
+/// MenuMaskKey).
+const MASK_KEY: VIRTUAL_KEY = VIRTUAL_KEY(0xE8);
+
+/// Key-ups for the modifiers `held` reports down, and nothing for the others: a key-up for an Alt that is not down
+/// is a lone Alt tap, which puts the focused window in menu or access-key mode and turns the typed letters into
+/// commands. An Alt that is down is released behind the mask key for the same reason.
+pub fn release_modifiers(held: impl Fn(VIRTUAL_KEY) -> bool) -> Vec<INPUT> {
+    let mut built = Vec::new();
+    for modifier in [VK_LCONTROL, VK_RCONTROL, VK_LSHIFT, VK_RSHIFT, VK_LMENU, VK_RMENU, VK_LWIN, VK_RWIN].into_iter().filter(|modifier| held(*modifier)) {
+        if modifier == VK_LMENU || modifier == VK_RMENU {
+            built.extend([key(MASK_KEY, false), key(MASK_KEY, true)]);
+        }
+        built.push(key(modifier, true));
+    }
+    built
 }
 
 /// The virtual screen: every display's bounding box, in physical pixels.

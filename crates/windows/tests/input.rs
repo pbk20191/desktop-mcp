@@ -1,10 +1,10 @@
 //! Input events as SendInput structures (built, never sent), and integrity levels.
 #![cfg(windows)]
 use desktop_mcp_core::input::{Button, Event, Modifier};
-use desktop_mcp_windows::input::{inputs, virtual_key};
+use desktop_mcp_windows::input::{inputs, release_modifiers, virtual_key};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_KEYBOARD, INPUT_MOUSE, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, VK_CONTROL, VK_F12,
-    VK_LWIN, VK_MENU, VK_NEXT, VK_RETURN, VK_SNAPSHOT,
+    VK_LMENU, VK_LWIN, VK_MENU, VK_NEXT, VK_RETURN, VK_SNAPSHOT,
 };
 
 const SCREEN: (i32, i32, i32, i32) = (0, 0, 2560, 1600);
@@ -67,6 +67,15 @@ fn modifiers_wrap_the_key() {
     let up = inputs(&Event::KeyUp { key: "c".into(), modifiers: vec![Modifier::Control] }, SCREEN);
     let keys: Vec<u16> = up.iter().map(|input| unsafe { input.Anonymous.ki.wVk.0 }).collect();
     assert_eq!(keys, [b'C' as u16, VK_CONTROL.0]);
+}
+
+#[test]
+fn only_held_modifiers_are_released_and_alt_never_alone() {
+    // A lone Alt key-up is an Alt tap: it puts the window in menu / access-key mode and eats the typed letters.
+    assert!(release_modifiers(|_| false).is_empty());
+    let built = release_modifiers(|held| held == VK_LMENU);
+    let keys: Vec<(u16, bool)> = built.iter().map(|input| unsafe { (input.Anonymous.ki.wVk.0, input.Anonymous.ki.dwFlags.contains(KEYEVENTF_KEYUP)) }).collect();
+    assert_eq!(keys, [(0xE8, false), (0xE8, true), (VK_LMENU.0, true)]);
 }
 
 #[test]
