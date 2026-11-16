@@ -125,3 +125,11 @@ impl TreeSource for WindowTree {
         }
     }
 }
+
+/// Whether the element at (x, y) in screen pixels is a password field; false when nothing can be read there.
+pub fn is_password_at(x: i32, y: i32) -> bool {
+    ensure_mta();
+    let Ok(automation) = (unsafe { CoCreateInstance::<_, IUIAutomation>(&CUIAutomation8, None, CLSCTX_INPROC_SERVER) }) else { return false };
+    let point = windows::Win32::Foundation::POINT { x, y };
+    unsafe { automation.ElementFromPoint(point) }.and_then(|element| unsafe { element.CurrentIsPassword() }).map(|password| password.as_bool()).unwrap_or(false)
+}

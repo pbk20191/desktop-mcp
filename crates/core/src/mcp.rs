@@ -98,6 +98,11 @@ pub trait Desktop: 'static {
     /// points, in no particular order. `Err` carries the reason shown to the model.
     fn read_text(&self, request: crate::ocr::Request) -> Pin<Box<dyn Future<Output = Result<Vec<crate::ocr::TextLine>, String>>>>;
     fn find_element(&self, app: Option<&str>, title: Option<&str>, role: Option<&str>, deadline: std::time::Instant) -> Pin<Box<dyn Future<Output = Option<crate::element::FoundElement>>>>;
+    /// Why input aimed at `at` (or at the focused window) would not arrive, when the platform can tell before any
+    /// event is posted (Windows: the target runs as administrator). `None` on macOS.
+    fn input_refusal(&self, _at: Option<(i64, i64)>) -> Option<String> {
+        None
+    }
     /// The chords Type uses to clear a field and place the caret; macOS's unless the platform says otherwise.
     fn editing_keys(&self) -> &'static crate::input::EditingKeys {
         &crate::input::MAC_EDITING
@@ -326,6 +331,11 @@ struct SpotlightArgs {
 }
 
 const LOCATION: &str = "Location must be a list of exactly 2 integers [x, y]";
+
+/// The platform's refusal of input aimed at `at` (or at the focused window), before any event is posted.
+fn refuse(desktop: &dyn Desktop, at: Option<(i64, i64)>) -> Result<(), ToolError> {
+    desktop.input_refusal(at).map_or(Ok(()), |reason| Err(ToolError(reason)))
+}
 
 /// `loc` as a point, or `message` when it is not two numbers.
 fn point(loc: &[i64], message: &str) -> Result<(i64, i64), ToolError> {
@@ -575,6 +585,7 @@ impl Server {
         run_tool("Click", cancellation, async move {
             let (x, y) = point(&args.loc, LOCATION)?;
             crate::input::require_accessibility(desktop).map_err(ToolError)?;
+            refuse(desktop, Some((x, y)))?;
             if args.clicks == 0 {
                 crate::input::move_to(desktop, x, y);
             } else {
@@ -601,6 +612,7 @@ impl Server {
         run_tool("Type", cancellation, async move {
             let (x, y) = point(&args.loc, LOCATION)?;
             crate::input::require_accessibility(desktop).map_err(ToolError)?;
+            refuse(desktop, Some((x, y)))?;
             // Checked after the click and before typing: the text of a password field never comes back.
             if crate::input::type_at(desktop, x, y, &args.text, args.caret_position, args.clear, args.press_enter).await {
                 return Ok(format!("Typed {} characters into a secure field at ({x},{y}).", args.text.chars().count()));
@@ -620,6 +632,7 @@ impl Server {
         run_tool("Scroll", cancellation, async move {
             let at = args.loc.as_deref().map(|loc| point(loc, LOCATION)).transpose()?;
             crate::input::require_accessibility(desktop).map_err(ToolError)?;
+            refuse(desktop, at)?;
             let kind = if args.kind == ScrollType::Horizontal { "horizontal" } else { "vertical" };
             let direction = serde_json::to_value(args.direction).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
             if let Some(message) = crate::input::scroll(desktop, at, args.kind == ScrollType::Horizontal, &direction, args.wheel_times).await {
@@ -641,6 +654,7 @@ impl Server {
         run_tool("Move", cancellation, async move {
             let (x, y) = point(&args.loc, "loc must be a list of exactly 2 integers [x, y]")?;
             crate::input::require_accessibility(desktop).map_err(ToolError)?;
+            refuse(desktop, Some((x, y)))?;
             if args.drag {
                 crate::input::drag(desktop, x, y).await;
                 return Ok(format!("Dragged to ({x},{y})."));
@@ -660,6 +674,7 @@ impl Server {
         let desktop = self.desktop.as_ref();
         run_tool("Shortcut", cancellation, async move {
             crate::input::require_accessibility(desktop).map_err(ToolError)?;
+            refuse(desktop, None)?;
             crate::input::shortcut(desktop, &args.shortcut).await.map_err(ToolError)?;
             Ok(format!("Pressed {}.", args.shortcut))
         })

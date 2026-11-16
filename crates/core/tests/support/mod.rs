@@ -54,6 +54,8 @@ pub struct FakeDesktop {
     pub posted: RefCell<Vec<desktop_mcp_core::input::Event>>,
     /// Answers as Windows does for editing chords and extra key names.
     pub windows_keys: bool,
+    /// What `input_refusal` answers.
+    pub refuse_input: Option<String>,
     /// Accessibility is refused when set.
     pub untrusted: bool,
     pub cursor: (f64, f64),
@@ -141,6 +143,9 @@ impl Desktop for FakeDesktop {
     fn editing_keys(&self) -> &'static desktop_mcp_core::input::EditingKeys {
         const WINDOWS: desktop_mcp_core::input::EditingKeys = desktop_mcp_core::input::EditingKeys { select_all: &["ctrl", "a"], line_start: &["ctrl", "home"], line_end: &["ctrl", "end"] };
         if self.windows_keys { &WINDOWS } else { &desktop_mcp_core::input::MAC_EDITING }
+    }
+    fn input_refusal(&self, _at: Option<(i64, i64)>) -> Option<String> {
+        self.refuse_input.clone()
     }
     fn extra_keys(&self) -> &'static [&'static str] {
         if self.windows_keys { &["win", "insert"] } else { &[] }

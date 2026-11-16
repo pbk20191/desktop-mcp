@@ -133,14 +133,32 @@ impl Desktop for WindowsDesktop {
         true
     }
 
-    fn post(&self, _event: InputEvent) {}
-
-    fn cursor_position(&self) -> (f64, f64) {
-        (0.0, 0.0)
+    /// Sent at once with `SendInput` (it only queues the events).
+    fn post(&self, event: InputEvent) {
+        crate::input::send(&event);
     }
 
-    fn secure_input_at(&self, _x: i64, _y: i64) -> Pending<bool> {
-        ready(false)
+    fn cursor_position(&self) -> (f64, f64) {
+        let mut point = windows::Win32::Foundation::POINT::default();
+        let _ = unsafe { windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut point) };
+        (point.x as f64, point.y as f64)
+    }
+
+    /// Whether the element at the point is a password field (UI Automation, on the pool).
+    fn secure_input_at(&self, x: i64, y: i64) -> Pending<bool> {
+        Box::pin(pool::offload(move || crate::uia::is_password_at(x as i32, y as i32)))
+    }
+
+    fn input_refusal(&self, at: Option<(i64, i64)>) -> Option<String> {
+        crate::integrity::input_blocked_at(at.map(|(x, y)| (x as i32, y as i32))).then(|| crate::integrity::refusal(at))
+    }
+
+    fn editing_keys(&self) -> &'static desktop_mcp_core::input::EditingKeys {
+        &crate::input::EDITING
+    }
+
+    fn extra_keys(&self) -> &'static [&'static str] {
+        crate::input::EXTRA_KEYS
     }
 
     fn select_typing_layout(&self) -> Option<Box<dyn FnOnce()>> {

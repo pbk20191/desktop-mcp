@@ -114,3 +114,12 @@ fn extra_keys_are_accepted_only_where_offered() {
     assert!(windows.posted.borrow().contains(&Event::KeyDown { key: "r".into(), modifiers: vec![Modifier::Meta] }));
     assert_eq!(call(&windows, "Shortcut", json!({"shortcut": "shift+insert"})), ["Pressed shift+insert."]);
 }
+
+#[test]
+fn a_refused_target_gets_no_input() {
+    let desktop = Rc::new(FakeDesktop { refuse_input: Some("The window at (1,2) runs as administrator.".into()), ..FakeDesktop::default() });
+    for (tool, arguments) in [("Click", json!({"loc": [1, 2]})), ("Type", json!({"loc": [1, 2], "text": "x"})), ("Scroll", json!({"loc": [1, 2]})), ("Move", json!({"loc": [1, 2]})), ("Shortcut", json!({"shortcut": "ctrl+c"}))] {
+        assert_eq!(call(&desktop, tool, arguments), [format!("Error executing tool {tool}: The window at (1,2) runs as administrator.")]);
+    }
+    assert!(desktop.posted.borrow().is_empty());
+}
