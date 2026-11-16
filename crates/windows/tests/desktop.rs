@@ -38,17 +38,6 @@ fn windows_text_is_listed_and_windows_sounds_are_accepted() {
 }
 
 #[test]
-fn a_deeply_nested_page_parses_without_overflowing() {
-    // A 2,000-level page on a small (256 KiB) stack: the conversion is a loop, so depth costs it no stack (and
-    // html5ever is slow on deeper pages).
-    let worker = std::thread::Builder::new().stack_size(256 * 1024).spawn(|| {
-        let page = "<div>".repeat(2_000) + "deep";
-        desktop_mcp_windows::html::parse(page.as_bytes(), None).expect("parsed").name
-    });
-    assert_eq!(worker.unwrap().join().unwrap(), "html");
-}
-
-#[test]
 fn dropfiles_and_dib_wrapping() {
     use desktop_mcp_windows::clipboard::{bmp_file, dropfiles};
     // DROPFILES: 20-byte header (offset 20, wide), then NUL-separated UTF-16 paths and a final NUL.

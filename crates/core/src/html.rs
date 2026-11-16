@@ -31,14 +31,29 @@ impl Element {
         })
     }
 
+    /// Every text under the element, in document order (a loop: depth costs no stack).
     fn text_content(&self) -> String {
-        self.children
-            .iter()
-            .map(|node| match node {
-                Node::Text(text) => text.clone(),
-                Node::Element(element) => element.text_content(),
-            })
-            .collect()
+        let mut text = String::new();
+        let mut pending: Vec<&Node> = self.children.iter().rev().collect();
+        while let Some(node) = pending.pop() {
+            match node {
+                Node::Text(part) => text.push_str(part),
+                Node::Element(element) => pending.extend(element.children.iter().rev()),
+            }
+        }
+        text
+    }
+}
+
+/// Dropped with a loop: a deeply nested page would otherwise drop by recursion, one stack frame per level.
+impl Drop for Element {
+    fn drop(&mut self) {
+        let mut pending: Vec<Node> = std::mem::take(&mut self.children);
+        while let Some(node) = pending.pop() {
+            if let Node::Element(mut element) = node {
+                pending.append(&mut element.children);
+            }
+        }
     }
 }
 
@@ -51,7 +66,7 @@ const BLOCKS: &[&str] = &[
 /// The document under `root` (the `html` element) as Markdown, led by its title when it has no heading first.
 pub fn to_markdown(root: &Element) -> String {
     let mut renderer = Renderer { frames: vec![Frame::new("#root", "")], lists: Vec::new(), pre_depth: 0 };
-    renderer.visit(root);
+    renderer.render(root);
     let title = root.child("head").and_then(|head| head.child("title")).map(Element::text_content).unwrap_or_default();
     renderer.finish(&title)
 }
@@ -67,6 +82,25 @@ impl Frame {
     fn new(tag: &str, href: &str) -> Frame {
         Frame { tag: tag.to_string(), text: String::new(), href: href.to_string() }
     }
+}
+
+/// What follows an element's children (the second half of its rendering).
+enum After {
+    Nothing,
+    BlankLine,
+    List,
+    Item,
+    Frame(String),
+    Pre,
+    Row,
+    Cell,
+}
+
+/// One step of the walk: an element or text to visit, or what follows an element's children.
+enum Step<'a> {
+    Element(&'a Element),
+    Text(&'a str),
+    After(After),
 }
 
 struct List {
@@ -145,19 +179,6 @@ impl Renderer {
         }
     }
 
-    fn visit_node(&mut self, node: &Node) {
-        match node {
-            Node::Text(text) => self.text(text),
-            Node::Element(element) => self.visit(element),
-        }
-    }
-
-    fn visit_children(&mut self, element: &Element) {
-        for child in &element.children {
-            self.visit_node(child);
-        }
-    }
-
     fn text(&mut self, raw: &str) {
         if self.pre_depth > 0 {
             self.emit(raw);
@@ -184,37 +205,63 @@ impl Renderer {
         }
     }
 
-    fn visit(&mut self, element: &Element) {
+    /// The document under `root`, walked with an explicit stack (no recursion, whatever the depth).
+    fn render(&mut self, root: &Element) {
+        let mut steps = vec![Step::Element(root)];
+        while let Some(step) = steps.pop() {
+            match step {
+                Step::Text(text) => self.text(text),
+                Step::After(after) => self.after(after),
+                Step::Element(element) => {
+                    if let Some(after) = self.open(element) {
+                        steps.push(Step::After(after));
+                        for child in element.children.iter().rev() {
+                            steps.push(match child {
+                                Node::Text(text) => Step::Text(text),
+                                Node::Element(element) => Step::Element(element),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// What comes before an element's children, and what must follow them; `None` when its children are not
+    /// rendered.
+    fn open(&mut self, element: &Element) -> Option<After> {
         let tag = element.name.as_str();
         if SKIPPED.contains(&tag) {
-            return;
+            return None;
         }
-        match tag {
-            "br" => self.emit("  \n"),
+        Some(match tag {
+            "br" => {
+                self.emit("  \n");
+                return None;
+            }
             "hr" => {
                 self.ensure_blank_line();
                 self.emit("---");
                 self.ensure_blank_line();
+                return None;
             }
             "img" => {
                 let src = element.attribute("src");
                 if !src.is_empty() {
                     self.emit(&format!("![{}]({src})", element.attribute("alt")));
                 }
+                return None;
             }
             "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
                 self.ensure_blank_line();
                 let level: usize = tag[1..].parse().expect("a digit");
                 self.emit(&format!("{} ", "#".repeat(level)));
-                self.visit_children(element);
-                self.ensure_blank_line();
+                After::BlankLine
             }
             "ul" | "ol" => {
                 if self.lists.is_empty() { self.ensure_blank_line() } else { self.ensure_newline() }
                 self.lists.push(List { ordered: tag == "ol", counter: 0 });
-                self.visit_children(element);
-                self.lists.pop();
-                if self.lists.is_empty() { self.ensure_blank_line() } else { self.ensure_newline() }
+                After::List
             }
             "li" => {
                 self.ensure_newline();
@@ -227,58 +274,62 @@ impl Renderer {
                     }
                     _ => self.emit(&format!("{indent}- ")),
                 }
-                self.visit_children(element);
-                self.ensure_newline();
+                After::Item
             }
             "blockquote" => {
                 self.ensure_blank_line();
                 self.emit("> ");
-                self.visit_children(element);
-                self.ensure_blank_line();
+                After::BlankLine
             }
             "a" => {
                 self.frames.push(Frame::new("a", element.attribute("href")));
-                self.visit_children(element);
-                self.close_frame("a");
+                After::Frame("a".to_string())
             }
             "strong" | "b" | "em" | "i" => {
                 self.frames.push(Frame::new(tag, ""));
-                self.visit_children(element);
-                self.close_frame(tag);
+                After::Frame(tag.to_string())
             }
-            "code" if self.pre_depth > 0 => self.visit_children(element),
+            "code" if self.pre_depth > 0 => After::Nothing,
             "code" => {
                 self.frames.push(Frame::new("code", ""));
-                self.visit_children(element);
-                self.close_frame("code");
+                After::Frame("code".to_string())
             }
             "pre" => {
                 self.pre_depth += 1;
                 self.frames.push(Frame::new("pre", ""));
-                self.visit_children(element);
-                self.pre_depth -= 1;
-                self.close_frame("pre");
+                After::Pre
             }
             "tr" => {
                 self.ensure_newline();
                 self.emit("| ");
-                self.visit_children(element);
-                self.ensure_newline();
+                After::Row
             }
-            "td" | "th" => {
-                self.visit_children(element);
+            "td" | "th" => After::Cell,
+            _ if BLOCKS.contains(&tag) => {
+                self.ensure_blank_line();
+                After::BlankLine
+            }
+            _ => After::Nothing,
+        })
+    }
+
+    fn after(&mut self, after: After) {
+        match after {
+            After::Nothing => {}
+            After::BlankLine => self.ensure_blank_line(),
+            After::List => {
+                self.lists.pop();
+                if self.lists.is_empty() { self.ensure_blank_line() } else { self.ensure_newline() }
+            }
+            After::Item | After::Row => self.ensure_newline(),
+            After::Frame(tag) => self.close_frame(&tag),
+            After::Pre => {
+                self.pre_depth -= 1;
+                self.close_frame("pre");
+            }
+            After::Cell => {
                 self.trim_trailing_spaces();
                 self.emit(" | ");
-            }
-            _ => {
-                let block = BLOCKS.contains(&tag);
-                if block {
-                    self.ensure_blank_line();
-                }
-                self.visit_children(element);
-                if block {
-                    self.ensure_blank_line();
-                }
             }
         }
     }

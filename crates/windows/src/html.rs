@@ -4,10 +4,6 @@ use desktop_mcp_core::html::{Element, Node};
 use html5ever::tendril::TendrilSink;
 use markup5ever_rcdom::{Handle, NodeData, RcDom};
 
-/// Elements nested deeper than this are left out: a hostile page could nest deep enough to overflow the stack,
-/// and nothing a reader needs sits that deep.
-const MAX_DEPTH: usize = 256;
-
 /// The `html` element of `body`, decoded from `charset` (UTF-8 when absent or unknown).
 pub fn parse(body: &[u8], charset: Option<&str>) -> Option<Element> {
     let encoding = charset.and_then(|label| encoding_rs::Encoding::for_label(label.trim().as_bytes())).unwrap_or(encoding_rs::UTF_8);
@@ -43,20 +39,18 @@ fn frame(handle: &Handle) -> Option<Frame> {
     })
 }
 
-/// The tree under `handle`, built with a loop rather than recursion, so a deep page needs no stack; elements
-/// deeper than [`MAX_DEPTH`] are still left out, because the core walks the result recursively.
+/// The tree under `handle`, built with a loop rather than recursion, so a deep page needs no stack.
 fn convert(handle: &Handle) -> Option<Node> {
     if let NodeData::Text { contents } = &handle.data {
         return Some(Node::Text(contents.borrow().to_string()));
     }
     let mut stack = vec![frame(handle)?];
     loop {
-        let depth = stack.len();
         let top = stack.last_mut().expect("the root stays until it is returned");
         match top.pending.next() {
             Some(child) => match &child.data {
                 NodeData::Text { contents } => top.children.push(Node::Text(contents.borrow().to_string())),
-                NodeData::Element { .. } if depth < MAX_DEPTH => stack.extend(frame(&child)),
+                NodeData::Element { .. } => stack.extend(frame(&child)),
                 _ => {}
             },
             None => {
