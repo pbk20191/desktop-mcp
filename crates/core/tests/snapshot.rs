@@ -22,6 +22,7 @@ fn the_snapshot_text() {
         coordinate_space: "macOS logical points".into(),
         trusted: false,
         screenshot: None,
+        ..State::default()
     };
     let desktop = Rc::new(FakeDesktop::default());
     *desktop.snapshot_state.borrow_mut() = state;
@@ -32,4 +33,16 @@ fn the_snapshot_text() {
         desktop_mcp_core::permissions::ACCESSIBILITY_MESSAGE
     );
     assert_eq!(texts(&answer), [expected]);
+}
+
+#[test]
+fn notes_and_hint_are_printed() {
+    let state = State { coordinate_space: "physical pixels".into(), trusted: true, notes: vec!["Virtual desktop: Work (2 of 3)".into()], screenshot_hint: Some("Capture failed; call Snapshot again.".into()), ..State::default() };
+    let text = desktop_mcp_core::snapshot::text(&state, true);
+    assert!(text.contains("Input Coordinate Space:
+physical pixels
+Virtual desktop: Work (2 of 3)
+"), "{text}");
+    assert!(text.trim_end().ends_with("Capture failed; call Snapshot again."), "{text}");
+    assert!(!text.contains("Screen Recording"), "{text}");
 }

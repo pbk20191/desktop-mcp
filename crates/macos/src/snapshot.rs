@@ -979,5 +979,5 @@ pub fn state(owner: Option<i32>) -> State {
     let dialogs = all_dialogs(&screen);
     let windows = list(&running, &dialogs);
     let tree = tree(active.as_ref(), &running, &screen, &dialogs);
-    State { coordinate_space: coordinate_space(active.as_ref()), active, windows, tree, trusted, screenshot: None }
+    State { coordinate_space: coordinate_space(active.as_ref()), active, windows, tree, trusted, screenshot: None, notes: Vec::new(), screenshot_hint: None }
 }

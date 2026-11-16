@@ -162,6 +162,10 @@ pub struct State {
     pub trusted: bool,
     /// The annotated screenshot as PNG, when asked for and captured.
     pub screenshot: Option<Vec<u8>>,
+    /// Platform lines printed after the coordinate space (Windows: the current virtual desktop). Empty on macOS.
+    pub notes: Vec<String>,
+    /// Replaces the macOS hint printed when a screenshot was asked for and none came back.
+    pub screenshot_hint: Option<String>,
 }
 
 /// The snapshot's text.
@@ -170,12 +174,16 @@ pub fn text(state: &State, use_vision: bool) -> String {
     let active = state.active.as_ref().map(WindowView::description).unwrap_or_else(|| "No focused window.".to_string());
     let windows = if state.windows.is_empty() { "No open applications.".to_string() } else { state.windows.iter().map(WindowView::description).collect::<Vec<_>>().join("\n") };
     let mut text = format!(
-        "{note}Focused Window:\n{active}\n\nInput Coordinate Space:\n{}\n\nOpen Applications:\n{windows}\n\nList of Interactive Elements:\n{}\n\nList of Scrollable Elements:\n{}\n",
+        "{note}Focused Window:\n{active}\n\nInput Coordinate Space:\n{}{}\n\nOpen Applications:\n{windows}\n\nList of Interactive Elements:\n{}\n\nList of Scrollable Elements:\n{}\n",
         state.coordinate_space,
+        state.notes.iter().map(|line| format!("\n{line}")).collect::<String>(),
         state.tree.interactive_text(),
         state.tree.scrollable_text()
     );
     if use_vision && state.screenshot.is_none() {
+        if let Some(hint) = &state.screenshot_hint {
+            return text + "\n" + hint + "\n";
+        }
         // Capture fails transiently (display asleep or locked, hot-plug) or without permission.
         text += "\nNote: Screenshot capture failed, so no annotated image is attached. The elements\nlisted above are still valid; call Snapshot again if you need the screenshot.\nIf this persists, grant Screen Recording in System Settings > Privacy & Security\n(or call Permissions with request=true).\n";
     }
