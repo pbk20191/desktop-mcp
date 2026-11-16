@@ -2,7 +2,10 @@
 //! certificate store); the key has to be stored for SChannel to use it (see `TemporaryKey`), only while the server runs.
 use schannel::cert_context::CertContext;
 use schannel::schannel_cred::{Direction, SchannelCred};
+use std::cell::RefCell;
 use std::ffi::c_void;
+use std::io;
+use std::rc::Rc;
 use std::path::Path;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Security::Cryptography::{
@@ -134,6 +137,7 @@ fn pem_block<'a>(text: &str, labels: &[&'a str]) -> Option<(&'a str, Vec<u8>)> {
 impl TlsIdentity {
     /// The certificate (PEM) and its private key (PEM: PKCS#8, PKCS#1 RSA, or SEC1 EC).
     pub fn load(certificate: &Path, private_key: &Path) -> Result<TlsIdentity, String> {
+        let certificate_path = certificate;
         let read = |path: &Path| std::fs::read_to_string(path).map_err(|error| format!("cannot read {}: {error}", path.display()));
         let (certificate_pem, key_pem) = (read(certificate)?, read(private_key)?);
         let (_, certificate_der) = pem_block(&certificate_pem, &["CERTIFICATE"]).ok_or_else(|| format!("no certificate in {}", certificate.display()))?;
@@ -150,6 +154,11 @@ impl TlsIdentity {
         let key = TemporaryKey::import(&pkcs8).map_err(|error| format!("cannot use the private key in {}: {error}", private_key.display()))?;
         certificate.set_key_prov_info().container(&key.name).provider(PROVIDER).set().map_err(|error| format!("cannot attach the private key: {error}"))?;
         let credentials = SchannelCred::builder().cert(certificate).acquire(Direction::Inbound).map_err(|error| format!("SChannel refused the certificate: {error}"))?;
+        // SChannel takes a key that does not belong to the certificate without complaint, and then fails every
+        // handshake; one handshake with ourselves finds that out at start, as macOS does.
+        if !handshakes(&credentials) {
+            return Err(format!("the private key in {} does not match the certificate in {}", private_key.display(), certificate_path.display()));
+        }
         Ok(TlsIdentity { credentials, _key: key })
     }
 
@@ -157,4 +166,74 @@ impl TlsIdentity {
     pub fn credentials(&self) -> SchannelCred {
         self.credentials.clone()
     }
+}
+
+/// One end of an in-memory connection: reads what the other end wrote ("would block" while there is nothing).
+struct Memory {
+    incoming: Rc<RefCell<std::collections::VecDeque<u8>>>,
+    outgoing: Rc<RefCell<std::collections::VecDeque<u8>>>,
+}
+
+impl io::Read for Memory {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let mut incoming = self.incoming.borrow_mut();
+        if incoming.is_empty() {
+            return Err(io::ErrorKind::WouldBlock.into());
+        }
+        let count = incoming.len().min(buf.len());
+        for (slot, byte) in buf.iter_mut().zip(incoming.drain(..count)) {
+            *slot = byte;
+        }
+        Ok(count)
+    }
+}
+
+impl io::Write for Memory {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.outgoing.borrow_mut().extend(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Whether a client (that accepts any certificate) completes a handshake with `server`.
+fn handshakes(server: &SchannelCred) -> bool {
+    use schannel::tls_stream::{Builder, HandshakeError, MidHandshakeTlsStream, TlsStream};
+    enum Side {
+        Mid(MidHandshakeTlsStream<Memory>),
+        // Held until the other side is done too.
+        Done(#[allow(dead_code)] TlsStream<Memory>),
+    }
+    fn side(result: Result<TlsStream<Memory>, HandshakeError<Memory>>) -> Option<Side> {
+        match result {
+            Ok(stream) => Some(Side::Done(stream)),
+            Err(HandshakeError::Interrupted(stream)) => Some(Side::Mid(stream)),
+            Err(HandshakeError::Failure(_)) => None,
+        }
+    }
+    fn step(current: Option<Side>) -> Option<Side> {
+        match current {
+            Some(Side::Mid(stream)) => side(stream.handshake()),
+            other => other,
+        }
+    }
+    let Ok(client) = SchannelCred::builder().acquire(Direction::Outbound) else { return false };
+    let (to_server, to_client) = (Rc::new(RefCell::new(Default::default())), Rc::new(RefCell::new(Default::default())));
+    let server_end = Memory { incoming: to_server.clone(), outgoing: to_client.clone() };
+    let client_end = Memory { incoming: to_client, outgoing: to_server };
+    let mut client_side = side(Builder::new().domain("localhost").verify_callback(|_| Ok(())).connect(client, client_end));
+    let mut server_side = side(Builder::new().accept(server.clone(), server_end));
+    // A handshake is a few round trips; give up long before anything could loop.
+    for _ in 0..16 {
+        match (&client_side, &server_side) {
+            (Some(Side::Done(_)), Some(Side::Done(_))) => return true,
+            (None, _) | (_, None) => return false,
+            _ => {}
+        }
+        server_side = step(server_side);
+        client_side = step(client_side);
+    }
+    false
 }

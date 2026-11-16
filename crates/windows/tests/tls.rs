@@ -77,6 +77,16 @@ fn main() {
         });
         let _ = std::fs::remove_dir_all(&directory);
     }
+    // A key that does not belong to the certificate is refused at load, as on macOS.
+    let directory = std::env::temp_dir().join(format!("desktop-mcp-tls-{}-mismatch", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let (key, other) = (rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap(), rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap());
+    let certificate = rcgen::CertificateParams::new(vec!["localhost".to_string()]).unwrap().self_signed(&key).unwrap();
+    std::fs::write(directory.join("cert.pem"), certificate.pem()).unwrap();
+    std::fs::write(directory.join("key.pem"), other.serialize_pem()).unwrap();
+    let refused = TlsIdentity::load(&directory.join("cert.pem"), &directory.join("key.pem")).err().expect("a mismatched key is refused");
+    assert!(refused.contains("does not match"), "{refused}");
+    let _ = std::fs::remove_dir_all(&directory);
     println!("tls: ok");
 }
 
