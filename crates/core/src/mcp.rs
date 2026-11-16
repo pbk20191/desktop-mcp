@@ -98,6 +98,11 @@ pub trait Desktop: 'static {
     /// points, in no particular order. `Err` carries the reason shown to the model.
     fn read_text(&self, request: crate::ocr::Request) -> Pin<Box<dyn Future<Output = Result<Vec<crate::ocr::TextLine>, String>>>>;
     fn find_element(&self, app: Option<&str>, title: Option<&str>, role: Option<&str>, deadline: std::time::Instant) -> Pin<Box<dyn Future<Output = Option<crate::element::FoundElement>>>>;
+    /// Why input posted since the last call did not arrive (the system dropped it: a secure screen, an elevated
+    /// window that took the foreground), once; `None` when it all arrived or the platform cannot tell (macOS).
+    fn take_input_failure(&self) -> Option<String> {
+        None
+    }
     /// Why input aimed at `at` (or at the focused window) would not arrive, when the platform can tell before any
     /// event is posted (Windows: the target runs as administrator). `None` on macOS.
     fn input_refusal(&self, _at: Option<(i64, i64)>) -> Option<String> {
@@ -331,6 +336,11 @@ struct SpotlightArgs {
 }
 
 const LOCATION: &str = "Location must be a list of exactly 2 integers [x, y]";
+
+/// Fails the call when the platform saw its input dropped.
+fn delivered(desktop: &dyn Desktop) -> Result<(), ToolError> {
+    desktop.take_input_failure().map_or(Ok(()), |reason| Err(ToolError(reason)))
+}
 
 /// The platform's refusal of input aimed at `at` (or at the focused window), before any event is posted.
 fn refuse(desktop: &dyn Desktop, at: Option<(i64, i64)>) -> Result<(), ToolError> {
@@ -591,6 +601,7 @@ impl Server {
             } else {
                 crate::input::click(desktop, x, y, args.button, args.clicks).await;
             }
+            delivered(desktop)?;
             let label = match args.clicks {
                 0 => "Hover",
                 1 => "Single",
@@ -614,7 +625,9 @@ impl Server {
             crate::input::require_accessibility(desktop).map_err(ToolError)?;
             refuse(desktop, Some((x, y)))?;
             // Checked after the click and before typing: the text of a password field never comes back.
-            if crate::input::type_at(desktop, x, y, &args.text, args.caret_position, args.clear, args.press_enter).await {
+            let secure = crate::input::type_at(desktop, x, y, &args.text, args.caret_position, args.clear, args.press_enter).await;
+            delivered(desktop)?;
+            if secure {
                 return Ok(format!("Typed {} characters into a secure field at ({x},{y}).", args.text.chars().count()));
             }
             Ok(format!("Typed {} at ({x},{y}).", args.text))
@@ -635,7 +648,9 @@ impl Server {
             refuse(desktop, at)?;
             let kind = if args.kind == ScrollType::Horizontal { "horizontal" } else { "vertical" };
             let direction = serde_json::to_value(args.direction).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
-            if let Some(message) = crate::input::scroll(desktop, at, args.kind == ScrollType::Horizontal, &direction, args.wheel_times).await {
+            let refused = crate::input::scroll(desktop, at, args.kind == ScrollType::Horizontal, &direction, args.wheel_times).await;
+            delivered(desktop)?;
+            if let Some(message) = refused {
                 return Ok(message);
             }
             let at = at.map(|(x, y)| format!(" at ({x},{y}).")).unwrap_or_else(|| ".".to_string());
@@ -657,9 +672,11 @@ impl Server {
             refuse(desktop, Some((x, y)))?;
             if args.drag {
                 crate::input::drag(desktop, x, y).await;
+                delivered(desktop)?;
                 return Ok(format!("Dragged to ({x},{y})."));
             }
             crate::input::move_to(desktop, x, y);
+            delivered(desktop)?;
             Ok(format!("Moved the mouse pointer to ({x},{y})."))
         })
         .await
@@ -676,6 +693,7 @@ impl Server {
             crate::input::require_accessibility(desktop).map_err(ToolError)?;
             refuse(desktop, None)?;
             crate::input::shortcut(desktop, &args.shortcut).await.map_err(ToolError)?;
+            delivered(desktop)?;
             Ok(format!("Pressed {}.", args.shortcut))
         })
         .await

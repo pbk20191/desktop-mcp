@@ -159,10 +159,8 @@ pub fn virtual_screen() -> (i32, i32, i32, i32) {
     unsafe { (GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN), GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN)) }
 }
 
-/// Sends one event.
-pub fn send(event: &Event) {
+/// Sends one event; false when the system took fewer events than were sent (UIPI, a secure desktop).
+pub fn send(event: &Event) -> bool {
     let built = inputs(event, virtual_screen());
-    if !built.is_empty() {
-        unsafe { SendInput(&built, size_of::<INPUT>() as i32) };
-    }
+    built.is_empty() || unsafe { SendInput(&built, size_of::<INPUT>() as i32) } as usize == built.len()
 }

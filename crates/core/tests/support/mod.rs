@@ -56,6 +56,8 @@ pub struct FakeDesktop {
     pub windows_keys: bool,
     /// What `input_refusal` answers.
     pub refuse_input: Option<String>,
+    /// What `take_input_failure` answers once.
+    pub input_failure: RefCell<Option<String>>,
     /// Accessibility is refused when set.
     pub untrusted: bool,
     pub cursor: (f64, f64),
@@ -143,6 +145,9 @@ impl Desktop for FakeDesktop {
     fn editing_keys(&self) -> &'static desktop_mcp_core::input::EditingKeys {
         const WINDOWS: desktop_mcp_core::input::EditingKeys = desktop_mcp_core::input::EditingKeys { select_all: &["ctrl", "a"], line_start: &["ctrl", "home"], line_end: &["ctrl", "end"] };
         if self.windows_keys { &WINDOWS } else { &desktop_mcp_core::input::MAC_EDITING }
+    }
+    fn take_input_failure(&self) -> Option<String> {
+        self.input_failure.borrow_mut().take()
     }
     fn input_refusal(&self, _at: Option<(i64, i64)>) -> Option<String> {
         self.refuse_input.clone()

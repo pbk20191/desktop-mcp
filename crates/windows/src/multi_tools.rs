@@ -51,6 +51,9 @@ async fn select(desktop: Rc<dyn Desktop>, arguments: Map<String, Value>) -> Call
         click(desktop.as_ref(), *x, *y, Button::Left, 1).await;
     }
     drop(held);
+    if let Some(reason) = desktop.take_input_failure() {
+        return failure(TOOL, reason);
+    }
     let count = points.len();
     let text = if press_ctrl { format!("Selected {count} items with ctrl held.") } else { format!("Clicked {count} locations.") };
     CallToolResult::success(vec![ContentBlock::text(text)])
@@ -82,7 +85,18 @@ async fn edit(desktop: Rc<dyn Desktop>, arguments: Map<String, Value>) -> CallTo
         let secure = type_at(desktop.as_ref(), *x, *y, text, Caret::Idle, true, false).await;
         lines.push(if secure { format!("Typed {} characters into a secure field at ({x},{y}).", text.chars().count()) } else { format!("Typed {text} at ({x},{y}).") });
     }
+    if let Some(reason) = desktop.take_input_failure() {
+        return failure(TOOL, reason);
+    }
     CallToolResult::success(vec![ContentBlock::text(lines.join("\n"))])
+}
+
+/// `work` until the request is cancelled; dropping it then releases what it holds (ctrl, a held key).
+async fn cancellable(_tool: &str, cancellation: tokio_util::sync::CancellationToken, work: impl std::future::Future<Output = CallToolResult>) -> CallToolResult {
+    tokio::select! {
+        result = work => result,
+        _ = cancellation.cancelled() => CallToolResult::error(vec![ContentBlock::text("Cancelled.")]),
+    }
 }
 
 fn tool(name: &'static str, description: &'static str, schema: Value) -> Tool {
@@ -104,7 +118,7 @@ pub fn tools(desktop: Rc<dyn Desktop>) -> Vec<PlatformTool> {
         json!({"type": "object", "properties": {"locs": {"type": "array", "items": {"type": "array"}}}, "required": ["locs"]}),
     );
     vec![
-        PlatformTool { tool: select_tool, call: Box::new(move |arguments, _| Box::pin(select(for_select.clone(), arguments))) },
-        PlatformTool { tool: edit_tool, call: Box::new(move |arguments, _| Box::pin(edit(desktop.clone(), arguments))) },
+        PlatformTool { tool: select_tool, call: Box::new(move |arguments, cancellation| Box::pin(cancellable("MultiSelect", cancellation, select(for_select.clone(), arguments)))) },
+        PlatformTool { tool: edit_tool, call: Box::new(move |arguments, cancellation| Box::pin(cancellable("MultiEdit", cancellation, edit(desktop.clone(), arguments)))) },
     ]
 }

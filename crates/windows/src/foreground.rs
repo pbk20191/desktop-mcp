@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::{
-    AllowSetForegroundWindow, BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId, IsIconic, SetForegroundWindow, ShowWindowAsync, ASFW_ANY, SW_RESTORE,
+    AllowSetForegroundWindow, GetForegroundWindow, SetWindowPos, HWND_TOP, SWP_ASYNCWINDOWPOS, SWP_NOMOVE, SWP_NOSIZE, GetWindowThreadProcessId, IsIconic, SetForegroundWindow, ShowWindowAsync, ASFW_ANY, SW_RESTORE,
 };
 
 fn poll(window: HWND, limit: Duration) -> bool {
@@ -49,7 +49,8 @@ pub fn bring(hwnd: isize) -> bool {
     }
     unsafe {
         let _ = AllowSetForegroundWindow(ASFW_ANY);
-        let _ = BringWindowToTop(window);
+        // Asynchronous: a target that hangs now must not block while the input queues are attached.
+        let _ = SetWindowPos(window, Some(HWND_TOP), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_ASYNCWINDOWPOS);
         let _ = SetForegroundWindow(window);
     }
     for thread in attached {

@@ -228,26 +228,31 @@ fn act(window: &WindowInfo, action: impl FnOnce(HWND) -> bool + Send + 'static) 
 
 /// Puts the window's visible frame at `frame`: its invisible resize borders (the window rectangle beyond the DWM
 /// frame) are added back. A window without a sizing border keeps its size.
+/// A minimized or maximized window back to its normal state, so its frame and borders can be measured.
+fn restore(hwnd: HWND) {
+    if unsafe { IsZoomed(hwnd) }.as_bool() || unsafe { IsIconic(hwnd) }.as_bool() {
+        let _ = unsafe { ShowWindow(hwnd, SW_RESTORE) };
+    }
+}
+
 fn place(hwnd: HWND, frame: Frame) -> FrameResult {
+    restore(hwnd);
     let visible = window_frame(hwnd);
-    let mut outer = RECT::default();
-    let _ = unsafe { GetWindowRect(hwnd, &mut outer) };
     let same_size = (visible.right - visible.left) as f64 == frame.width && (visible.bottom - visible.top) as f64 == frame.height;
     let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32;
     if !same_size && style & WS_THICKFRAME.0 == 0 {
         return FrameResult::NotResizable;
     }
-    if unsafe { IsZoomed(hwnd) }.as_bool() || unsafe { IsIconic(hwnd) }.as_bool() {
-        let _ = unsafe { ShowWindow(hwnd, SW_RESTORE) };
-    }
-    let (left, top) = (visible.left - outer.left, visible.top - outer.top);
-    let (right, bottom) = (outer.right - visible.right, outer.bottom - visible.bottom);
-    let x = frame.x as i32 - left;
-    let y = frame.y as i32 - top;
-    let width = frame.width as i32 + left + right;
-    let height = frame.height as i32 + top + bottom;
-    // Twice: a window moved to a display of another scale resizes itself on the way (WM_DPICHANGED).
+    // Twice, measuring the borders each time: a window moved to a display of another scale resizes itself and its
+    // borders on the way (WM_DPICHANGED).
     for _ in 0..2 {
+        let visible = window_frame(hwnd);
+        let mut outer = RECT::default();
+        let _ = unsafe { GetWindowRect(hwnd, &mut outer) };
+        let (left, top) = (visible.left - outer.left, visible.top - outer.top);
+        let (right, bottom) = (outer.right - visible.right, outer.bottom - visible.bottom);
+        let (x, y) = (frame.x as i32 - left, frame.y as i32 - top);
+        let (width, height) = (frame.width as i32 + left + right, frame.height as i32 + top + bottom);
         if unsafe { SetWindowPos(hwnd, None, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE) }.is_err() {
             return FrameResult::Failed;
         }
@@ -300,6 +305,7 @@ impl WindowSource for Win32Windows {
     }
     fn move_to(&self, window: &WindowInfo, x: f64, y: f64) -> Pending<bool> {
         act(window, move |hwnd| {
+            restore(hwnd);
             let current = window_frame(hwnd);
             let frame = Frame::new(x, y, (current.right - current.left) as f64, (current.bottom - current.top) as f64);
             place(hwnd, frame) == FrameResult::Done
@@ -307,6 +313,7 @@ impl WindowSource for Win32Windows {
     }
     fn resize(&self, window: &WindowInfo, width: f64, height: f64) -> Pending<bool> {
         act(window, move |hwnd| {
+            restore(hwnd);
             let current = window_frame(hwnd);
             place(hwnd, Frame::new(current.left as f64, current.top as f64, width, height)) == FrameResult::Done
         })

@@ -2,6 +2,7 @@
 mod support;
 use desktop_mcp_core::input::{Button, Event, Modifier};
 use serde_json::{json, Value};
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 use support::{call_tool, texts, FakeDesktop};
@@ -122,4 +123,12 @@ fn a_refused_target_gets_no_input() {
         assert_eq!(call(&desktop, tool, arguments), [format!("Error executing tool {tool}: The window at (1,2) runs as administrator.")]);
     }
     assert!(desktop.posted.borrow().is_empty());
+}
+
+#[test]
+fn input_the_system_dropped_is_reported() {
+    for (tool, arguments) in [("Click", json!({"loc": [1, 2]})), ("Type", json!({"loc": [1, 2], "text": "x"})), ("Scroll", json!({"loc": [1, 2]})), ("Move", json!({"loc": [1, 2]})), ("Shortcut", json!({"shortcut": "ctrl+c"}))] {
+        let desktop = Rc::new(FakeDesktop { input_failure: RefCell::new(Some("Input was not delivered.".into())), ..FakeDesktop::default() });
+        assert_eq!(call(&desktop, tool, arguments), [format!("Error executing tool {tool}: Input was not delivered.")]);
+    }
 }

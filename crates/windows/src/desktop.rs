@@ -30,11 +30,14 @@ fn ready<T: 'static>(value: T) -> Pending<T> {
 }
 
 #[derive(Default)]
-pub struct WindowsDesktop;
+pub struct WindowsDesktop {
+    /// Set when the system dropped posted input; read once by `take_input_failure`.
+    dropped: std::cell::Cell<bool>,
+}
 
 impl WindowsDesktop {
     pub fn new() -> WindowsDesktop {
-        WindowsDesktop
+        WindowsDesktop::default()
     }
 }
 
@@ -135,7 +138,19 @@ impl Desktop for WindowsDesktop {
 
     /// Sent at once with `SendInput` (it only queues the events).
     fn post(&self, event: InputEvent) {
-        crate::input::send(&event);
+        if !crate::input::send(&event) {
+            self.dropped.set(true);
+        }
+    }
+
+    fn take_input_failure(&self) -> Option<String> {
+        self.dropped.replace(false).then(|| {
+            if crate::integrity::input_blocked_at(None) {
+                crate::integrity::refusal(None)
+            } else {
+                "Windows did not deliver the input (the screen may be locked or a secure prompt is showing).".to_string()
+            }
+        })
     }
 
     fn cursor_position(&self) -> (f64, f64) {
