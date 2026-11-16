@@ -178,6 +178,7 @@ jobs:
     env:
       SIGN: ${{ secrets.CODESIGN_P12_BASE64 != '' && secrets.CODESIGN_P12_PASSWORD != '' }}
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           pattern: mcpb-*
@@ -192,16 +193,14 @@ jobs:
           secrets_dir=$(mktemp -d)
           trap 'rm -rf "$secrets_dir"' EXIT
           echo "$CODESIGN_P12_BASE64" | base64 --decode > "$secrets_dir/codesign.p12"
-          openssl pkcs12 -in "$secrets_dir/codesign.p12" -passin env:CODESIGN_P12_PASSWORD -nokeys -clcerts | openssl x509 -out "$secrets_dir/cert.pem"
+          # The public certificate ships with the release, for checking the signatures or trusting them.
+          openssl pkcs12 -in "$secrets_dir/codesign.p12" -passin env:CODESIGN_P12_PASSWORD -nokeys -clcerts | openssl x509 -out dist/desktop-mcp-codesign.pem
           openssl pkcs12 -in "$secrets_dir/codesign.p12" -passin env:CODESIGN_P12_PASSWORD -nocerts -nodes | openssl pkey -out "$secrets_dir/key.pem"
-          # mcpb verify checks the chain against the system store (openssl verify -CApath /etc/ssl/certs): trust the
-          # self-signed certificate on this runner. The flags are those of `mcpb sign --help` 2.1.2; this step has
-          # not been run with the real certificate yet.
-          sudo cp "$secrets_dir/cert.pem" /usr/local/share/ca-certificates/desktop-mcp-codesign.crt
-          sudo update-ca-certificates
+          # `mcpb verify` 2.1.2 reports every bundle unsigned (node-forge has no PKCS#7 verification), so the signature
+          # is checked with OpenSSL against the certificate instead.
           for bundle in dist/*.mcpb; do
-            npx -y @anthropic-ai/mcpb@2.1.2 sign "$bundle" --cert "$secrets_dir/cert.pem" --key "$secrets_dir/key.pem"
-            npx -y @anthropic-ai/mcpb@2.1.2 verify "$bundle"
+            npx -y @anthropic-ai/mcpb@2.1.2 sign "$bundle" --cert dist/desktop-mcp-codesign.pem --key "$secrets_dir/key.pem"
+            python3 scripts/verify-mcpb-signature.py "$bundle" dist/desktop-mcp-codesign.pem
           done
           echo "Bundles: signed with the CODESIGN certificate (self-signed)" >> "$GITHUB_STEP_SUMMARY"
       - name: Unsigned
@@ -211,18 +210,29 @@ jobs:
       - name: Signing report
         run: |
           # The signed bundles' report, beside the platform ones (signing-windows.txt, signing-macos.txt) in the
-          # artifact. mcpb verify fails on an unsigned bundle, which is reported, not an error here.
+          # artifact. An unsigned bundle is reported, not an error here.
           for bundle in dist/*.mcpb; do
             echo "$bundle"
             echo "  sha256: $(sha256sum "$bundle" | cut -d' ' -f1)"
-            npx -y @anthropic-ai/mcpb@2.1.2 verify "$bundle" 2>&1 | sed 's/^/  /' || true
+            if [[ -f dist/desktop-mcp-codesign.pem ]]; then
+              python3 scripts/verify-mcpb-signature.py "$bundle" dist/desktop-mcp-codesign.pem 2>&1 | sed 's/^/  /' || true
+            else
+              echo "  unsigned"
+            fi
           done | tee dist/signing-bundles.txt
+          if [[ -f dist/desktop-mcp-codesign.pem ]]; then
+            {
+              echo "dist/desktop-mcp-codesign.pem"
+              openssl x509 -in dist/desktop-mcp-codesign.pem -noout -subject -enddate -fingerprint -sha256 | sed 's/^/  /'
+            } | tee -a dist/signing-bundles.txt
+          fi
           { echo '```text'; cat dist/signing-bundles.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-mcp-mcpb
           path: |
             dist/*.mcpb
+            dist/*.pem
             dist/signing-*.txt
           if-no-files-found: error
 
@@ -241,4 +251,7 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "$GITHUB_REF_NAME" dist/desktop-mcp-windows.mcpb dist/desktop-mcp-macos.mcpb dist/signing-*.txt --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+        run: |
+          shopt -s nullglob
+          gh release create "$GITHUB_REF_NAME" dist/desktop-mcp-windows.mcpb dist/desktop-mcp-macos.mcpb dist/*.pem dist/signing-*.txt \
+            --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes

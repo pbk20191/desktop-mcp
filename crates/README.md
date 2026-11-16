@@ -205,7 +205,7 @@ codesign (hardened runtime with the Apple Events entitlement, `scripts/desktop-m
 each bundle with `mcpb sign`. Without them everything is still built, unsigned (the macOS binary ad-hoc signed), and
 the job summary says so. Each job records what was signed in its log, its summary and a report beside the bundles
 (`signing-windows.txt`: SHA-256, Authenticode status, signer and thumbprint; `signing-macos.txt`: SHA-256, architectures,
-`codesign --display` and `--verify`; `signing-bundles.txt`: SHA-256 and `mcpb verify`), kept in the
+`codesign --display` and `--verify`; `signing-bundles.txt`: SHA-256 and an OpenSSL check of each bundle signature, since `mcpb verify` 2.1.2 cannot verify any signature), kept in the
 `desktop-mcp-mcpb` artifact and attached to the release.
 
 What the self-signed certificate gives: a stable identity, so macOS keeps the Accessibility and Screen Recording
