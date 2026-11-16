@@ -1,7 +1,6 @@
 //! desktop-mcp on Windows: the main loop, the thread pool, the transports and the tools' Windows side.
 #![cfg(windows)]
 pub mod clipboard;
-pub mod control;
 pub mod desktop;
 pub mod displays;
 pub mod foreground;

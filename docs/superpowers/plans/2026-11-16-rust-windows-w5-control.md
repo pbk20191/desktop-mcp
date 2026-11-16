@@ -1,4 +1,7 @@
-# Rust Windows W5: desktop control — Implementation Plan
+# Rust Windows W5: desktop control — Implementation Plan (dropped)
+
+> **Dropped by the owner on 2026-11-16** after Tasks 1–5: desktop control is not ported (see the spec's Control section).
+> Those commits were reverted; this plan is kept as the record of what was tried.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

@@ -22,22 +22,6 @@ pub struct PlatformTool {
     pub call: PlatformToolCall,
 }
 
-/// What a gate decided for one tool call.
-pub enum Admission {
-    /// Run it; the lease is handed back to [`CallGate::finish`] (or dropped, when the call is cancelled or fails).
-    Run(Box<dyn std::any::Any>),
-    /// Answer this instead of running it.
-    Refuse(CallToolResult),
-}
-
-/// Stands in front of every tool call (Windows: desktop control).
-pub trait CallGate: 'static {
-    /// Before the call. `peer` lets the gate notify the client later.
-    fn admit(&self, tool: &str, arguments: &serde_json::Map<String, serde_json::Value>, peer: rmcp::Peer<rmcp::RoleServer>) -> Pin<Box<dyn Future<Output = Admission>>>;
-    /// After the call: the result as the client sees it. A lease dropped without `finish` must end the call too.
-    fn finish(&self, lease: Box<dyn std::any::Any>, result: CallToolResult) -> CallToolResult;
-}
-
 pub trait Platform: 'static {
     /// Text replacing the core's for the shared tool `tool`; `None` keeps the core's.
     fn text(&self, _tool: &str) -> Option<ToolText> {
@@ -46,14 +30,6 @@ pub trait Platform: 'static {
     /// Tools only this platform has.
     fn tools(&self) -> Vec<PlatformTool> {
         Vec::new()
-    }
-    /// The gate in front of every tool call; none on macOS.
-    fn gate(&self) -> Option<std::rc::Rc<dyn CallGate>> {
-        None
-    }
-    /// Whether the server sends `notifications/message` (and so declares the logging capability).
-    fn logging(&self) -> bool {
-        false
     }
 }
 

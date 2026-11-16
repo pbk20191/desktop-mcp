@@ -109,7 +109,6 @@ and wording of the tools that both systems have.
   - **Windows only (`crates/windows`), from the C# port's set:** Registry, Process, MultiSelect,
     MultiEdit, Screenshot, DisplayInventory. Their arguments follow the core's naming
     style; their behaviour follows `spec/windows/tools.json` and the C# implementation.
-  - `ControlStatus` (with control, below).
   - Not carried over: `FileSystem` (**owner**: a file-system MCP server already covers it, macOS has none, and
     `Shell` can do it), `PowerShell` (it is `Shell`), `WaitFor` (core `Wait` already waits for windows and
     elements).
@@ -195,23 +194,20 @@ and wording of the tools that both systems have.
 | Notification | **(owner)** `Windows.UI.Notifications.ToastNotificationManager` with an AUMID, as the C# port's `ToastSender` does (borrowed Windows PowerShell AUMID by default, or the caller's `app_id`); nothing is registered under HKCU |
 | Permissions (core's `PermissionState`) | Windows has no TCC: report UIPI limits (elevated targets) instead, or nothing; the builder decides what the shared tools say |
 
-### Control (the C# port's P4)
+### Control (the C# port's P4) — dropped
 
-The C# port protects the user from the agent with an input monitor, an overlay, a capture flash and a gate
-(`ControlStatus`). The macOS Rust port has none of this. **(owner)** It is ported in this project, for Windows:
-the input monitor (low-level hooks on the main thread's message loop), the control state machine, the overlay and
-capture flash (Direct2D/DirectComposition windows), the gate that wraps tool calls and the notifier, and
-`ControlStatus` as a Windows-only tool. Behaviour follows the C# port's P4 plan and spec. **(my call)** The state
-machine and the gate are written without Windows types where that costs nothing, so macOS can adopt them later, but
-they live in `crates/windows` until macOS needs them.
+**(owner, 2026-11-16)** Not ported. The macOS Rust port has no desktop control, and Windows input goes through
+`SendInput` as macOS's goes through posted events, so the two would differ for no gain. Started in W5 (a call gate in
+core, the state machine, low-level hooks then Raw Input, a heartbeat) and reverted: the owner judged suppressing or
+preempting on the user's input not worth it ("굳이"). Input from the user and from the tools is all delivered; the
+user stops the agent from the client. If tool calls need serialising or a capture flash is wanted later, each is a
+small addition of its own.
 
-### Gate placement **(my call)**
+### Virtual desktops
 
-The gate must wrap shared tools too. `core` offers a hook around tool dispatch (a platform-supplied interceptor
-called with the tool name before and after the call, able to refuse it or hold a lease); macOS supplies none, so its
-behaviour does not change. Virtual desktops are not a tool: as in the C# port, Snapshot keeps the windows on the
-current desktop and lists desktop names (undocumented `IVirtualDesktopManagerInternal`, IIDs per build, failing
-soft to "all windows" when the build is unknown).
+Virtual desktops are not a tool. Windows on another virtual desktop are DWM-cloaked, so the window list (which
+leaves cloaked windows out) and Snapshot already keep to the current desktop; Snapshot names it ("Virtual desktop:
+<name> (<n> of <count>)") from Explorer's registry entries. No undocumented interface is used (W3).
 
 ### Other transports **(my call)**
 
