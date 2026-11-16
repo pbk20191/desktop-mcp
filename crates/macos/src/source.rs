@@ -1,42 +1,26 @@
-//! Dispatch source handlers as plain functions (the `_f` variants) rather than blocks: the Rust closures are the
-//! source's context, called through one function each, and dropped by the source's finalizer. libdispatch runs a
-//! finalizer on the object's target queue; every source made here targets the main queue, so the closures are
-//! made, called and dropped on the main thread.
-use dispatch2::{dispatch_source_type_t, DispatchObject, DispatchQueue, DispatchRetained, DispatchSource};
-use std::ffi::c_void;
+//! Dispatch sources whose handlers need nothing of the main thread (signals, timers, process exits, socket
+//! accepts) run on one serial queue of their own, so they neither wait for nor occupy the main run loop. Their
+//! handlers only do their work and hand the outcome on through a channel; what touches main-thread state stays on
+//! the main queue elsewhere. Handlers are blocks: released when the source is cancelled.
+use block2::RcBlock;
+use dispatch2::{DispatchQueue, DispatchRetained, DispatchSource};
+use std::sync::OnceLock;
 
-struct Handlers {
-    event: Box<dyn Fn()>,
-    cancel: Option<Box<dyn Fn()>>,
+/// The serial queue the sources made here deliver on.
+pub fn queue() -> &'static DispatchQueue {
+    static QUEUE: OnceLock<DispatchRetained<DispatchQueue>> = OnceLock::new();
+    QUEUE.get_or_init(|| DispatchQueue::new("desktop-mcp.sources", None))
 }
 
-extern "C" fn on_event(context: *mut c_void) {
-    let handlers = unsafe { &*(context as *const Handlers) };
-    (handlers.event)();
-}
-
-extern "C" fn on_cancel(context: *mut c_void) {
-    let handlers = unsafe { &*(context as *const Handlers) };
-    if let Some(cancel) = &handlers.cancel {
-        cancel();
+/// A suspended source on [`queue`] whose events call `event` (and whose cancellation calls `cancel`). Resume it
+/// to start.
+pub fn background(kind: *const dispatch2::dispatch_source_type_s, handle: usize, mask: usize, event: impl Fn() + Send + 'static, cancel: Option<Box<dyn Fn() + Send>>) -> DispatchRetained<DispatchSource> {
+    let source = unsafe { DispatchSource::new(kind as dispatch2::dispatch_source_type_t, handle, mask, Some(queue())) };
+    let event = RcBlock::new(event);
+    unsafe { source.set_event_handler_with_block(RcBlock::as_ptr(&event)) };
+    if let Some(cancel) = cancel {
+        let cancel = RcBlock::new(move || cancel());
+        unsafe { source.set_cancel_handler_with_block(RcBlock::as_ptr(&cancel)) };
     }
-}
-
-extern "C" fn finalize(context: *mut c_void) {
-    drop(unsafe { Box::from_raw(context as *mut Handlers) });
-}
-
-/// A suspended source on the main queue whose events call `event` (and whose cancellation calls `cancel`).
-/// Resume it to start. The closures live as long as the source: a closure that holds the source itself must let
-/// go of it once done, or neither is ever freed.
-pub fn on_main(kind: *const dispatch2::dispatch_source_type_s, handle: usize, mask: usize, event: impl Fn() + 'static, cancel: Option<Box<dyn Fn()>>) -> DispatchRetained<DispatchSource> {
-    let source = unsafe { DispatchSource::new(kind as dispatch_source_type_t, handle, mask, Some(DispatchQueue::main())) };
-    let handlers = Box::into_raw(Box::new(Handlers { event: Box::new(event), cancel }));
-    unsafe {
-        source.set_context(handlers.cast());
-        source.set_finalizer_f(finalize);
-    }
-    source.set_event_handler_f(on_event);
-    source.set_cancel_handler_f(on_cancel);
     source
 }

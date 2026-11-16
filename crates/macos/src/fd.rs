@@ -216,7 +216,8 @@ impl Drop for Accepting {
 /// A Unix domain socket that accepts connections from processes of the same user only.
 pub struct UnixListener {
     _accepting: Vec<Accepting>,
-    connections: mpsc::UnboundedReceiver<FdIo>,
+    /// Accepted descriptors; each becomes an `FdIo` on the main thread, where its streams live.
+    connections: mpsc::UnboundedReceiver<c_int>,
     /// The socket file this listener made, removed when it goes; `None` for launchd's.
     owned_path: Option<PathBuf>,
     activated: bool,
@@ -253,7 +254,7 @@ impl Listener for UnixListener {
     type Io = FdIo;
 
     fn accept(&mut self) -> impl Future<Output = Option<FdIo>> {
-        self.connections.recv()
+        async { self.connections.recv().await.map(FdIo::socket) }
     }
 }
 
@@ -352,7 +353,7 @@ fn replace_stale(path: &Path, address: &libc::sockaddr_un) -> Result<(), String>
 }
 
 /// Accepts on `listener` whenever a connection waits, handing on those from this process's user.
-fn accept_on(listener: c_int, sender: mpsc::UnboundedSender<FdIo>, name: String) -> Accepting {
+fn accept_on(listener: c_int, sender: mpsc::UnboundedSender<c_int>, name: String) -> Accepting {
     unsafe {
         let flags = libc::fcntl(listener, libc::F_GETFL);
         libc::fcntl(listener, libc::F_SETFL, flags | libc::O_NONBLOCK);
@@ -368,7 +369,8 @@ fn accept_on(listener: c_int, sender: mpsc::UnboundedSender<FdIo>, name: String)
             }
             let size: c_int = 1 << 20;
             unsafe { libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_SNDBUF, (&size as *const c_int).cast(), std::mem::size_of::<c_int>() as u32) };
-            if sender.send(FdIo::socket(fd)).is_err() {
+            if sender.send(fd).is_err() {
+                unsafe { libc::close(fd) };
                 return;
             }
             continue;
@@ -378,10 +380,10 @@ fn accept_on(listener: c_int, sender: mpsc::UnboundedSender<FdIo>, name: String)
             _ => return, // EAGAIN: nothing more waits; anything else is retried on the next event
         }
     };
-    let closed: Box<dyn Fn()> = Box::new(move || unsafe {
+    let closed: Box<dyn Fn() + Send> = Box::new(move || unsafe {
         libc::close(listener);
     });
-    let source = crate::source::on_main(&raw const dispatch2::_dispatch_source_type_read, listener as usize, 0, accept, Some(closed));
+    let source = crate::source::background(&raw const dispatch2::_dispatch_source_type_read, listener as usize, 0, accept, Some(closed));
     source.resume();
     Accepting(source)
 }

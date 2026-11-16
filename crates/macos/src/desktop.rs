@@ -15,7 +15,6 @@ use desktop_mcp_core::io::Stream;
 use desktop_mcp_core::shell::{Run, ShellMode};
 use std::net::IpAddr;
 use dispatch2::{DispatchObject, DispatchRetained, DispatchSource, DispatchTime};
-use std::cell::Cell;
 use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
@@ -251,9 +250,9 @@ pub(crate) async fn sleep(duration: Duration) {
     // Delays libdispatch cannot express (centuries) never end; the request's cancellation does.
     let Ok(start) = DispatchTime::try_from(duration) else { return std::future::pending().await };
     let (fired, wait) = tokio::sync::oneshot::channel::<()>();
-    let fired = Cell::new(Some(fired));
-    let source = crate::source::on_main(&raw const dispatch2::_dispatch_source_type_timer, 0, 0, move || {
-        if let Some(fired) = fired.take() {
+    let fired = std::sync::Mutex::new(Some(fired));
+    let source = crate::source::background(&raw const dispatch2::_dispatch_source_type_timer, 0, 0, move || {
+        if let Some(fired) = fired.lock().unwrap().take() {
             let _ = fired.send(());
         }
     }, None);
