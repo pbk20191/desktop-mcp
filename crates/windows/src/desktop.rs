@@ -69,12 +69,14 @@ impl Desktop for WindowsDesktop {
         Box::pin(pool::offload(work))
     }
 
+    /// On the STA thread: the OLE-backed clipboard needs a pumping STA, and a clipboard owner that does not answer
+    /// then holds up only that thread.
     fn read_clipboard(&self, image_max_side: u32) -> Pending<Clipboard> {
-        Box::pin(crate::clipboard::read(image_max_side))
+        Box::pin(crate::sta::StaThread::shared().run(move || crate::clipboard::read(image_max_side)))
     }
 
     fn write_clipboard(&self, contents: ClipboardWrite) -> Pending<Result<(), String>> {
-        Box::pin(crate::clipboard::write(contents))
+        Box::pin(crate::sta::StaThread::shared().run(move || crate::clipboard::write(contents)))
     }
 
     fn open(&self, _target: &OpenTarget, _app: Option<&Path>) -> Pending<Result<(), String>> {

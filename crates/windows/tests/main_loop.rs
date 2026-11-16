@@ -38,6 +38,22 @@ fn main() {
         unsafe { CoGetApartmentType(&mut kind, &mut qualifier) }.unwrap();
         assert!(kind == APTTYPE_STA || kind == APTTYPE_MAINSTA, "{kind:?}");
     });
+    // The STA thread runs work off the main thread, in an STA, always the same thread, and serves its awaits.
+    run(|_| async {
+        use desktop_mcp_windows::sta::StaThread;
+        use windows::Win32::System::Com::{CoGetApartmentType, APTTYPE, APTTYPEQUALIFIER, APTTYPE_STA};
+        use windows::Win32::System::Threading::GetCurrentThreadId;
+        let main = unsafe { GetCurrentThreadId() };
+        let probe = || async {
+            desktop_mcp_windows::pool::sleep(Duration::from_millis(50)).await;
+            let (mut kind, mut qualifier) = (APTTYPE::default(), APTTYPEQUALIFIER::default());
+            unsafe { CoGetApartmentType(&mut kind, &mut qualifier) }.unwrap();
+            (unsafe { GetCurrentThreadId() }, kind == APTTYPE_STA)
+        };
+        let (first, sta) = StaThread::shared().run(probe).await;
+        let (second, _) = StaThread::shared().run(probe).await;
+        assert!(first != main && first == second && sta, "main {main}, first {first}, second {second}, sta {sta}");
+    });
     println!("main_loop: ok");
 }
 
