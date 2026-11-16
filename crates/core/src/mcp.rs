@@ -117,6 +117,11 @@ pub trait Desktop: 'static {
     fn input_refusal(&self, _at: Option<(i64, i64)>) -> Option<String> {
         None
     }
+    /// The title and application name of the top-level window at `at` (or of the focused window), which input aimed
+    /// there reaches. `None` when the platform does not tell (macOS).
+    fn window_at(&self, _at: Option<(i64, i64)>) -> Option<(String, String)> {
+        None
+    }
     /// The chords Type uses to clear a field and place the caret; macOS's unless the platform says otherwise.
     fn editing_keys(&self) -> &'static crate::input::EditingKeys {
         &crate::input::MAC_EDITING
@@ -657,7 +662,7 @@ impl Server {
                 2 => "Double",
                 _ => "None",
             };
-            Ok(format!("{label} {} clicked at ({x},{y}).", args.button.name()))
+            Ok(format!("{label} {} clicked at ({x},{y}){}.", args.button.name(), crate::input::received_by(desktop, Some((x, y)))))
         })
         .await
     }
@@ -676,10 +681,11 @@ impl Server {
             // Checked after the click and before typing: the text of a password field never comes back.
             let secure = crate::input::type_at(desktop, x, y, &args.text, args.caret_position, args.clear, args.press_enter).await;
             delivered(desktop)?;
+            let window = crate::input::received_by(desktop, Some((x, y)));
             if secure {
-                return Ok(format!("Typed {} characters into a secure field at ({x},{y}).", args.text.chars().count()));
+                return Ok(format!("Typed {} characters into a secure field at ({x},{y}){window}.", args.text.chars().count()));
             }
-            Ok(format!("Typed {} at ({x},{y}).", args.text))
+            Ok(format!("Typed {} at ({x},{y}){window}.", args.text))
         })
         .await
     }
@@ -703,7 +709,7 @@ impl Server {
             if let Some(message) = refused {
                 return Ok(message);
             }
-            let at = at.map(|(x, y)| format!(" at ({x},{y}).")).unwrap_or_else(|| ".".to_string());
+            let at = at.map(|(x, y)| format!(" at ({x},{y}){}.", crate::input::received_by(desktop, Some((x, y))))).unwrap_or_else(|| ".".to_string());
             Ok(format!("Scrolled {kind} {direction} by {} wheel times{at}", args.wheel_times))
         })
         .await
@@ -725,7 +731,7 @@ impl Server {
                 refuse(desktop, Some(pointer(desktop)))?;
                 crate::input::drag(desktop, x, y).await;
                 delivered(desktop)?;
-                return Ok(format!("Dragged to ({x},{y})."));
+                return Ok(format!("Dragged to ({x},{y}){}.", crate::input::received_by(desktop, Some((x, y)))));
             }
             crate::input::move_to(desktop, x, y);
             delivered(desktop)?;
@@ -746,7 +752,7 @@ impl Server {
             refuse(desktop, None)?;
             crate::input::shortcut(desktop, &args.shortcut).await.map_err(ToolError)?;
             delivered(desktop)?;
-            Ok(format!("Pressed {}.", args.shortcut))
+            Ok(format!("Pressed {}{}.", args.shortcut, crate::input::received_by(desktop, None)))
         })
         .await
     }

@@ -56,6 +56,8 @@ pub struct FakeDesktop {
     pub windows_keys: bool,
     /// What `input_refusal` answers.
     pub refuse_input: Option<String>,
+    /// What `window_at` answers: (title, app).
+    pub window: Option<(String, String)>,
     /// What `take_input_failure` answers once.
     pub input_failure: RefCell<Option<String>>,
     /// Accessibility is refused when set.
@@ -151,6 +153,9 @@ impl Desktop for FakeDesktop {
     }
     fn input_refusal(&self, _at: Option<(i64, i64)>) -> Option<String> {
         self.refuse_input.clone()
+    }
+    fn window_at(&self, _at: Option<(i64, i64)>) -> Option<(String, String)> {
+        self.window.clone()
     }
     fn extra_keys(&self) -> &'static [&'static str] {
         if self.windows_keys { &["win", "insert"] } else { &[] }

@@ -171,6 +171,10 @@ impl Desktop for WindowsDesktop {
         crate::integrity::input_blocked_at(at.map(|(x, y)| (x as i32, y as i32))).then(|| crate::integrity::refusal(at))
     }
 
+    fn window_at(&self, at: Option<(i64, i64)>) -> Option<(String, String)> {
+        crate::windows_list::window_at(at.map(|(x, y)| (x as i32, y as i32)))
+    }
+
     fn editing_keys(&self) -> &'static desktop_mcp_core::input::EditingKeys {
         &crate::input::EDITING
     }

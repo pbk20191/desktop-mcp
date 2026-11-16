@@ -218,6 +218,24 @@ pub fn foreground_root() -> Option<isize> {
     Some(if root.is_invalid() { foreground } else { root }.0 as isize)
 }
 
+/// The title and application name (as [`top_windows`] names it, a UWP frame's being the hosted app's) of the
+/// top-level window at `point`, in input pixels, or of the foreground window. Cheap: no message is sent to another
+/// process's window, so a hung one cannot stall it.
+pub fn window_at(point: Option<(i32, i32)>) -> Option<(String, String)> {
+    use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, WindowFromPoint, GA_ROOT};
+    let window = match point {
+        Some((x, y)) => unsafe { WindowFromPoint(windows::Win32::Foundation::POINT { x, y }) },
+        None => unsafe { GetForegroundWindow() },
+    };
+    if window.is_invalid() {
+        return None;
+    }
+    let root = unsafe { GetAncestor(window, GA_ROOT) };
+    let window = if root.is_invalid() { window } else { root };
+    let (exe, app) = names(owner(window, &mut None));
+    (!exe.is_empty()).then(|| (title(window), app))
+}
+
 fn top_level_handles() -> Vec<HWND> {
     let mut handles: Vec<HWND> = Vec::new();
     unsafe {

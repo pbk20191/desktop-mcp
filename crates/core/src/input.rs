@@ -93,6 +93,12 @@ pub fn require_accessibility(desktop: &dyn Desktop) -> Result<(), String> {
     if desktop.accessibility_trusted() { Ok(()) } else { Err(crate::permissions::ACCESSIBILITY_MESSAGE.to_string()) }
 }
 
+/// ` in "<title>" (<app>)`: the window input aimed at `at` (or at the focused window) reached, for the result to
+/// name, so input that landed in another window than meant shows at once; empty when the platform does not tell.
+pub fn received_by(desktop: &dyn Desktop, at: Option<(i64, i64)>) -> String {
+    desktop.window_at(at).map(|(title, app)| format!(" in \"{title}\" ({app})")).unwrap_or_default()
+}
+
 /// Posts `event` when dropped: the release that must follow a press even when the call is abandoned.
 struct Release<'a> {
     desktop: &'a dyn Desktop,

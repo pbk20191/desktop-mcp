@@ -117,6 +117,12 @@ fn extra_keys_are_accepted_only_where_offered() {
 }
 
 #[test]
+fn input_names_the_window_it_reached() {
+    let desktop = Rc::new(FakeDesktop { window: Some(("New chat".into(), "Claude".into())), ..FakeDesktop::default() });
+    assert_eq!(call(&desktop, "Type", json!({"loc": [1, 2], "text": "hi"})), ["Typed hi at (1,2) in \"New chat\" (Claude)."]);
+}
+
+#[test]
 fn a_refused_target_gets_no_input() {
     let desktop = Rc::new(FakeDesktop { refuse_input: Some("The window at (1,2) runs as administrator.".into()), ..FakeDesktop::default() });
     for (tool, arguments) in [("Click", json!({"loc": [1, 2]})), ("Type", json!({"loc": [1, 2], "text": "x"})), ("Scroll", json!({"loc": [1, 2]})), ("Move", json!({"loc": [1, 2]})), ("Shortcut", json!({"shortcut": "ctrl+c"}))] {

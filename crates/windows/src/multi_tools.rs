@@ -1,6 +1,6 @@
 //! `MultiSelect` and `MultiEdit` (Windows only): several clicks, ctrl held to select, and several fields typed in,
 //! on the core's input sequences. Every location is checked before any input is sent.
-use desktop_mcp_core::input::{click, type_at, Button, Caret, Event};
+use desktop_mcp_core::input::{click, received_by, type_at, Button, Caret, Event};
 use desktop_mcp_core::mcp::Desktop;
 use desktop_mcp_core::platform::PlatformTool;
 use rmcp::model::{CallToolResult, ContentBlock, Tool, ToolAnnotations};
@@ -55,7 +55,8 @@ async fn select(desktop: Rc<dyn Desktop>, arguments: Map<String, Value>) -> Call
         return failure(TOOL, reason);
     }
     let count = points.len();
-    let text = if press_ctrl { format!("Selected {count} items with ctrl held.") } else { format!("Clicked {count} locations.") };
+    let window = received_by(desktop.as_ref(), points.last().copied());
+    let text = if press_ctrl { format!("Selected {count} items with ctrl held{window}.") } else { format!("Clicked {count} locations{window}.") };
     CallToolResult::success(vec![ContentBlock::text(text)])
 }
 
@@ -83,7 +84,8 @@ async fn edit(desktop: Rc<dyn Desktop>, arguments: Map<String, Value>) -> CallTo
     let mut lines = Vec::new();
     for (x, y, text) in &fields {
         let secure = type_at(desktop.as_ref(), *x, *y, text, Caret::Idle, true, false).await;
-        lines.push(if secure { format!("Typed {} characters into a secure field at ({x},{y}).", text.chars().count()) } else { format!("Typed {text} at ({x},{y}).") });
+        let window = received_by(desktop.as_ref(), Some((*x, *y)));
+        lines.push(if secure { format!("Typed {} characters into a secure field at ({x},{y}){window}.", text.chars().count()) } else { format!("Typed {text} at ({x},{y}){window}.") });
     }
     if let Some(reason) = desktop.take_input_failure() {
         return failure(TOOL, reason);
