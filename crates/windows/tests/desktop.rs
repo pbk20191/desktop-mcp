@@ -39,9 +39,13 @@ fn windows_text_is_listed_and_windows_sounds_are_accepted() {
 
 #[test]
 fn a_deeply_nested_page_parses_without_overflowing() {
-    let page = "<div>".repeat(20_000) + "deep";
-    let html = desktop_mcp_windows::html::parse(page.as_bytes(), None).expect("parsed");
-    assert_eq!(html.name, "html");
+    // 2,000 levels on a 1 MiB stack overflow an uncapped walk as surely as 20,000 on the default stack, in a
+    // fraction of the time (html5ever is slow on deep nesting).
+    let worker = std::thread::Builder::new().stack_size(1024 * 1024).spawn(|| {
+        let page = "<div>".repeat(2_000) + "deep";
+        desktop_mcp_windows::html::parse(page.as_bytes(), None).expect("parsed").name
+    });
+    assert_eq!(worker.unwrap().join().unwrap(), "html");
 }
 
 #[test]
