@@ -29,7 +29,7 @@ script mirrors `macos/scripts/build-mcpb.sh` in PowerShell.
 - `powershell -ExecutionPolicy Bypass -File scripts\build-mcpb.ps1 [exe]` (default `target\release\desktop-mcp.exe`):
   stages `server\desktop-mcp.exe` and `manifest.json` (as macOS's: binary server, `serve --transport stdio`,
   `DESKTOP_MCP_INCLUDE_TOOLS=OCR`, `compatibility.platforms = ["win32"]`, tools from the pinned Windows tools list,
-  `crates\cli\tests\snapshots\windows-tools.json`), zips to `dist\desktop-mcp.mcpb`.
+  `crates\cli\tests\snapshots\windows-tools.json`), zips to `dist\desktop-mcp-windows.mcpb`.
 - [ ] Run it against the debug build; check the archive holds the two files and the manifest names the Windows
   tools; commit `Package the Windows build as a Claude Desktop extension`.
 

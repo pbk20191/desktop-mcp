@@ -1,5 +1,6 @@
 #!/bin/bash
-# Packs the macOS desktop-mcp binary into a Claude Desktop extension (.mcpb) at dist/desktop-mcp.mcpb.
+# Packs the macOS desktop-mcp binary (universal, for a release) into a Claude Desktop extension (.mcpb) at
+# dist/desktop-mcp-macos.mcpb.
 # Claude Desktop runs the bundled binary as a stdio server (`serve --transport stdio`) through its `disclaimer`
 # helper, which makes desktop-mcp the responsible process: the binary itself must be granted Accessibility and
 # Screen Recording (the Permissions tool with request=true asks for them). The tools listed in the manifest are
@@ -14,7 +15,7 @@ cd "$(dirname "$0")/.."
 BIN="${BIN:-$PWD/target/release/desktop-mcp}"
 DIST=dist
 STAGE="$DIST/mcpb"
-OUT="$DIST/desktop-mcp.mcpb"
+OUT="$DIST/desktop-mcp-macos.mcpb"
 
 [[ -x "$BIN" ]] || { echo "error: $BIN is not an executable; build it with: cargo build --release -p desktop-mcp-cli" >&2; exit 1; }
 VERSION="$("$BIN" --version | awk '{print $NF}')"

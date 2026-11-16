@@ -1,25 +1,30 @@
-# Packs the Windows desktop-mcp.exe into a Claude Desktop extension (.mcpb) at dist\desktop-mcp.mcpb.
+# Packs the Windows desktop-mcp.exe into a Claude Desktop extension (.mcpb) at dist\desktop-mcp-windows.mcpb.
+# With -Arm64, the native ARM64 build goes beside it as server\desktop-mcp-arm64.exe: the x64 entry point, emulated on an
+# ARM64 machine, runs that one instead.
 # Claude Desktop runs the bundled binary as a stdio server (`serve --transport stdio`). The tools listed in the
 # manifest come from the pinned Windows tools/list, crates\cli\tests\snapshots\windows-tools.json.
 #
-# Usage: powershell -ExecutionPolicy Bypass -File scripts\build-mcpb.ps1 [path\to\desktop-mcp.exe]
+# Usage: powershell -ExecutionPolicy Bypass -File scripts\build-mcpb.ps1 [path\to\desktop-mcp.exe] [-Arm64 path\to\arm64\desktop-mcp.exe]
 #        (default: target\release\desktop-mcp.exe; pwsh works too)
-param([string]$Binary)
+param([string]$Binary, [string]$Arm64)
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 # A given path is relative to the caller's directory, the default one to the repository.
 $Binary = if ($Binary) { $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Binary) } else { Join-Path $repo 'target\release\desktop-mcp.exe' }
+if ($Arm64) { $Arm64 = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Arm64) }
 Push-Location $repo
 try {
     if (-not (Test-Path $Binary -PathType Leaf)) { throw "$Binary does not exist; build it with: cargo build --release -p desktop-mcp-cli" }
+    if ($Arm64 -and -not (Test-Path $Arm64 -PathType Leaf)) { throw "$Arm64 does not exist; build it with: cargo build --release -p desktop-mcp-cli --target aarch64-pc-windows-msvc" }
     $version = ((& $Binary --version) -split '\s+')[-1]
     $dist = 'dist'
     $stage = Join-Path $dist 'mcpb'
-    $out = Join-Path $dist 'desktop-mcp.mcpb'
+    $out = Join-Path $dist 'desktop-mcp-windows.mcpb'
 
     Remove-Item -Recurse -Force $stage, $out -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force (Join-Path $stage 'server') | Out-Null
     Copy-Item $Binary (Join-Path $stage 'server\desktop-mcp.exe')
+    if ($Arm64) { Copy-Item $Arm64 (Join-Path $stage 'server\desktop-mcp-arm64.exe') }
 
     $listed = Get-Content -Raw -Encoding UTF8 'crates\cli\tests\snapshots\windows-tools.json' | ConvertFrom-Json
     $tools = foreach ($tool in $listed.tools) {
@@ -57,7 +62,7 @@ try {
     # Entry by entry, so the names use '/' (Windows PowerShell's .NET Framework writes '\' with CreateFromDirectory).
     Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
     $root = (Resolve-Path $stage).Path
-    $archive = [IO.Compression.ZipFile]::Open((Join-Path (Resolve-Path $dist) 'desktop-mcp.mcpb'), 'Create')
+    $archive = [IO.Compression.ZipFile]::Open((Join-Path (Resolve-Path $dist) (Split-Path -Leaf $out)), 'Create')
     try {
         foreach ($file in Get-ChildItem -Recurse -File $root) {
             $entry = $file.FullName.Substring($root.Length).TrimStart('\').Replace('\', '/')
@@ -66,7 +71,7 @@ try {
     } finally {
         $archive.Dispose()
     }
-    Write-Output "Wrote $out ($version)"
+    Write-Output "Wrote $out ($version$(if ($Arm64) { ', x64 + arm64' } else { '' }))"
 } finally {
     Pop-Location
 }
