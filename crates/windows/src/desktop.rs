@@ -174,7 +174,31 @@ impl Desktop for WindowsDesktop {
         ready(Err(NOT_YET.to_string()))
     }
 
-    fn find_element(&self, _app: Option<&str>, _title: Option<&str>, _role: Option<&str>, _deadline: std::time::Instant) -> Pending<Option<desktop_mcp_core::element::FoundElement>> {
-        ready(None)
+    /// An element of `app`'s windows (else the focused window's app) by UIA control type and name, on the pool.
+    fn find_element(&self, app: Option<&str>, title: Option<&str>, role: Option<&str>, deadline: std::time::Instant) -> Pending<Option<desktop_mcp_core::element::FoundElement>> {
+        let (app, title, role) = (app.map(str::to_string), title.map(str::to_string), role.map(str::to_string));
+        Box::pin(pool::offload(move || {
+            let windows = crate::windows_list::top_windows();
+            let owner = match &app {
+                Some(app) => windows.iter().find(|window| window.is_app(app)).map(|window| window.pid),
+                None => windows.iter().find(|window| window.focused).map(|window| window.pid),
+            }?;
+            let mut fallback = None;
+            for window in windows.iter().filter(|window| window.pid == owner && !window.minimized) {
+                if !crate::tree::answers(window.hwnd) {
+                    continue;
+                }
+                let Some(source) = crate::uia::WindowTree::new(window.hwnd) else { continue };
+                if let Some((element, exact)) = crate::tree::find_in(&source, title.as_deref(), role.as_deref(), deadline) {
+                    let (left, top, right, bottom) = element.rect;
+                    let found = desktop_mcp_core::element::FoundElement { role: element.control_type, title: element.name, center: ((left + right) / 2.0, (top + bottom) / 2.0) };
+                    if exact {
+                        return Some(found);
+                    }
+                    fallback.get_or_insert(found);
+                }
+            }
+            fallback
+        }))
     }
 }
