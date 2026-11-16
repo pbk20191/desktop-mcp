@@ -19,14 +19,14 @@ fn toast_xml_escapes_and_carries_subtitle_and_sound() {
 fn windows_text_is_listed_and_windows_sounds_are_accepted() {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
     let ask = |message: serde_json::Value| {
-        let server = Server::with_platform(Rc::new(WindowsDesktop::new()), Rc::new(WindowsPlatform), TOOLS);
+        let server = Server::with_platform(Rc::new(WindowsDesktop::new()), Rc::new(WindowsPlatform::new(Rc::new(WindowsDesktop::new()))), TOOLS);
         let answer = tokio::task::LocalSet::new().block_on(&runtime, answer_stateless(server, serde_json::from_value(message).unwrap()));
         serde_json::to_value(answer.unwrap()).unwrap()
     };
     let listed = ask(json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}));
     let tools = listed["result"]["tools"].as_array().unwrap();
     let names: Vec<&str> = tools.iter().map(|tool| tool["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["Clipboard", "Notification", "Scrape", "Screenshot", "Shell", "Snapshot", "Wait", "Window"]);
+    assert_eq!(names, ["App", "Click", "Clipboard", "Move", "MultiEdit", "MultiSelect", "Notification", "Scrape", "Screenshot", "Scroll", "Shell", "Shortcut", "Snapshot", "Type", "Wait", "Window"]);
     let shell = tools.iter().find(|tool| tool["name"] == "Shell").unwrap();
     assert!(shell["description"].as_str().unwrap().starts_with("Execute commands on Windows in PowerShell"));
     assert_eq!(shell["inputSchema"]["properties"]["mode"]["enum"], json!(["powershell"]));
@@ -67,14 +67,39 @@ fn dropfiles_and_dib_wrapping() {
 fn snapshot_reads_the_live_desktop_with_windows_wording() {
     let _ = unsafe { windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
     let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
-    let server = Server::with_platform(Rc::new(WindowsDesktop::new()), Rc::new(WindowsPlatform), TOOLS);
+    let server = Server::with_platform(Rc::new(WindowsDesktop::new()), Rc::new(WindowsPlatform::new(Rc::new(WindowsDesktop::new()))), TOOLS);
     let message = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"Snapshot","arguments":{"use_vision": false}}});
     let answer = tokio::task::LocalSet::new().block_on(&runtime, answer_stateless(server, serde_json::from_value(message).unwrap()));
     let answer = serde_json::to_value(answer.unwrap()).unwrap();
     let text = answer["result"]["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("Focused Window:") && text.contains("Open Applications:") && text.contains("physical pixels"), "{text}");
     assert!(!text.contains("System Settings") && !text.contains("Screen Recording"), "{text}");
-    let listed = serde_json::to_value(tokio::task::LocalSet::new().block_on(&runtime, answer_stateless(Server::with_platform(Rc::new(WindowsDesktop::new()), Rc::new(WindowsPlatform), TOOLS), serde_json::from_value(json!({"jsonrpc":"2.0","id":1,"method":"tools/list"})).unwrap())).unwrap()).unwrap();
+    let listed = serde_json::to_value(tokio::task::LocalSet::new().block_on(&runtime, answer_stateless(Server::with_platform(Rc::new(WindowsDesktop::new()), Rc::new(WindowsPlatform::new(Rc::new(WindowsDesktop::new()))), TOOLS), serde_json::from_value(json!({"jsonrpc":"2.0","id":1,"method":"tools/list"})).unwrap())).unwrap()).unwrap();
     let wait = listed["result"]["tools"].as_array().unwrap().iter().find(|tool| tool["name"] == "Wait").unwrap();
     assert!(wait["description"].as_str().unwrap().contains("UI Automation control type"), "{wait}");
+}
+
+#[test]
+fn shortcut_and_app_speak_windows() {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+    let server = Server::with_platform(Rc::new(WindowsDesktop::new()), Rc::new(WindowsPlatform::new(Rc::new(WindowsDesktop::new()))), TOOLS);
+    let listed = tokio::task::LocalSet::new().block_on(&runtime, answer_stateless(server, serde_json::from_value(json!({"jsonrpc":"2.0","id":1,"method":"tools/list"})).unwrap()));
+    let listed = serde_json::to_value(listed.unwrap()).unwrap();
+    let description = |name: &str| listed["result"]["tools"].as_array().unwrap().iter().find(|tool| tool["name"] == name).unwrap()["description"].as_str().unwrap().to_string();
+    assert!(description("Shortcut").contains("win+r") && !description("Shortcut").contains("command"), "{}", description("Shortcut"));
+    assert!(description("App").contains("Start menu"), "{}", description("App"));
+}
+
+#[test]
+fn multi_tools_refuse_bad_locations_before_any_input() {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+    let call = |name: &str, arguments: serde_json::Value| {
+        let server = Server::with_platform(Rc::new(WindowsDesktop::new()), Rc::new(WindowsPlatform::new(Rc::new(WindowsDesktop::new()))), TOOLS);
+        let message = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":arguments}});
+        let answer = tokio::task::LocalSet::new().block_on(&runtime, answer_stateless(server, serde_json::from_value(message).unwrap()));
+        serde_json::to_value(answer.unwrap()).unwrap()["result"]["content"][0]["text"].as_str().unwrap().to_string()
+    };
+    assert_eq!(call("MultiSelect", json!({"locs": [[1, 2], [1]]})), "Error executing tool MultiSelect: each location must be [x, y]");
+    assert_eq!(call("MultiEdit", json!({"locs": [[1, 2]]})), "Error executing tool MultiEdit: each entry must be [x, y, text]");
+    assert_eq!(call("MultiSelect", json!({"locs": []})), "Error executing tool MultiSelect: locs is empty");
 }

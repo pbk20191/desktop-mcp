@@ -110,8 +110,6 @@ fn wait_for_apps() {
 }
 
 /// Input tools only through refusals that come before any event: nothing is clicked or typed.
-// macOS tools (the Windows ones come with the desktop tools).
-#[cfg(target_os = "macos")]
 #[test]
 fn input_tools_refuse_bad_arguments_before_posting() {
     let server = ServerUnderTest::start();

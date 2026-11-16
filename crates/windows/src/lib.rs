@@ -12,6 +12,7 @@ pub mod apps;
 pub mod capture;
 pub mod listener;
 pub mod main_loop;
+pub mod multi_tools;
 pub mod net;
 pub mod notification;
 pub mod ocr;

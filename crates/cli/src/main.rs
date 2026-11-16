@@ -471,7 +471,7 @@ fn serve(plan: ServePlan) -> ExitCode {
     };
     let tools = selected_tools(&plan);
     let desktop: Rc<dyn Desktop> = Rc::new(WindowsDesktop::new());
-    let platform: Rc<dyn Platform> = Rc::new(WindowsPlatform);
+    let platform: Rc<dyn Platform> = Rc::new(WindowsPlatform::new(desktop.clone()));
     let make_server: Rc<dyn Fn() -> Server> = Rc::new(move || Server::with_platform(desktop.clone(), platform.clone(), &tools));
 
     main_loop::run(|main_loop| async move {
