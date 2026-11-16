@@ -1,0 +1,18 @@
+[package]
+name = "desktop-mcp-windows"
+description = "desktop-mcp on Windows: the DispatcherQueue main loop, the thread pool, the tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+desktop-mcp-core.workspace = true
+tokio.workspace = true
+hyper.workspace = true
+windows.workspace = true
+windows-future.workspace = true
+
+[[test]]
+name = "main_loop"
+harness = false

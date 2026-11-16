@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/macos", "crates/cli", "crates/parity"]
+members = ["crates/core", "crates/macos", "crates/windows", "crates/cli", "crates/parity"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,6 +11,9 @@ publish = false
 [workspace.dependencies]
 desktop-mcp-core = { path = "crates/core" }
 desktop-mcp-macos = { path = "crates/macos" }
+desktop-mcp-windows = { path = "crates/windows" }
+windows-future = "0.3"
+windows = { version = "0.62", features = ["System", "Foundation", "Win32_Foundation", "Win32_System_WinRT", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
 rmcp = { version = "=3.10.0", default-features = false, features = ["server", "macros", "local"] }
 tokio = { version = "1", features = ["rt", "time", "sync", "macros"] }
 tokio-util = "0.7"
