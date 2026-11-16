@@ -874,7 +874,7 @@ impl Server {
 
     #[tool(
         name = "Batch",
-        description = "Runs several tool calls in order as one call, e.g. a Click, then a Type, then a Shortcut. 'steps' (1-20) is a list of {\"tool\": \"<name>\", \"arguments\": {...}}; each step runs exactly as a call of that tool on its own would, with the same checks. 'delay' seconds (default 0.5, 0-10) pass between steps, so the UI can settle and two clicks at one point are not taken as a double-click. With 'stop_on_error' (default true) the first failing step ends the batch. Every step's tool is checked before any step runs: a tool that does not exist or is not enabled, or Batch itself, refuses the whole batch. Returns one line per step that ran, '[n] <Tool>: <its result>', and only the last image a step produced (e.g. Snapshot with use_vision), saying which step it came from.",
+        description = "Runs several tool calls in order as one call, e.g. a Click, then a Type, then a Shortcut. 'steps' (1-20) is a list of {\"tool\": \"<name>\", \"arguments\": {...}}; each step runs exactly as a call of that tool on its own would, with the same checks. 'delay' seconds (default 0.5, 0-10) pass between steps, so the UI can settle and two clicks at one point are not taken as a double-click. With 'stop_on_error' (default true) the first failing step ends the batch. Steps run without looking at the screen: after launching or switching to an app, wait for an element you will type into (Wait until='element'), not just for its window, which can appear before the app takes input. Every step's tool is checked before any step runs: a tool that does not exist or is not enabled, or Batch itself, refuses the whole batch. Returns one line per step that ran, '[n] <Tool>: <its result>', and only the last image a step produced (e.g. Snapshot with use_vision), saying which step it came from.",
         annotations(title = "Batch", read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = false)
     )]
     async fn batch(&self, Parameters(args): Parameters<BatchArgs>, context: RequestContext<RoleServer>) -> CallToolResult {
@@ -942,7 +942,8 @@ impl Server {
             lines.push(format!("[{number}] {}: {text}", step.tool));
             failed |= error;
             if error && args.stop_on_error && number < count {
-                lines.push(format!("Stopped at step {number} ({}), which failed; steps {} to {count} did not run.", step.tool, number + 1));
+                let rest = if number + 1 == count { format!("step {count} did not run") } else { format!("steps {} to {count} did not run", number + 1) };
+                lines.push(format!("Stopped at step {number} ({}), which failed; {rest}.", step.tool));
                 break;
             }
         }
