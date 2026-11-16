@@ -210,20 +210,23 @@ pub fn run<F: Future + 'static>(build: impl FnOnce(Rc<dyn MainLoop>) -> F) -> F:
     // message loop to finish.
     if let Ok(shutdown) = controller.ShutdownQueueAsync() {
         let thread = unsafe { GetCurrentThreadId() };
-        let _ = shutdown.SetCompleted(&windows_future::AsyncActionCompletedHandler::new(move |_, _| {
+        let handler = windows_future::AsyncActionCompletedHandler::new(move |_, _| {
             unsafe {
                 let _ = PostThreadMessageW(thread, WM_QUIT, WPARAM(0), LPARAM(0));
             }
             Ok(())
-        }));
-        loop {
-            let got = unsafe { GetMessageW(&mut message, None, 0, 0) };
-            if got.0 <= 0 {
-                break;
-            }
-            unsafe {
-                let _ = TranslateMessage(&message);
-                DispatchMessageW(&message);
+        });
+        // Without the handler nothing would post WM_QUIT: the loop would never end.
+        if shutdown.SetCompleted(&handler).is_ok() {
+            loop {
+                let got = unsafe { GetMessageW(&mut message, None, 0, 0) };
+                if got.0 <= 0 {
+                    break;
+                }
+                unsafe {
+                    let _ = TranslateMessage(&message);
+                    DispatchMessageW(&message);
+                }
             }
         }
     }

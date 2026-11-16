@@ -63,8 +63,8 @@ pub fn sleep(duration: Duration) -> Sleep {
     let (sender, receiver) = oneshot::channel();
     let signal = Box::into_raw(Box::new(Signal(std::sync::Mutex::new(Some(sender)))));
     let timer = unsafe { CreateThreadpoolTimer(Some(timer_fired), Some(signal as *mut c_void), None) }.expect("CreateThreadpoolTimer failed");
-    // Negative: relative, in 100 ns units.
-    let due = -((duration.as_nanos() / 100) as i64).max(1);
+    // Negative: relative, in 100 ns units (clamped: a cast past i64 would wrap and fire at once).
+    let due = -((duration.as_nanos() / 100).min(i64::MAX as u128) as i64).max(1);
     let due = FILETIME { dwLowDateTime: due as u32, dwHighDateTime: (due >> 32) as u32 };
     unsafe { SetThreadpoolTimer(timer, Some(&due), 0, None) };
     Sleep { timer, signal, receiver }

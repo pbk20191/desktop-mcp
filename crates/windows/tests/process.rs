@@ -13,12 +13,12 @@ fn main() {
 
     run(|_| async move {
         // stdout, stderr and the exit code come back.
-        let run = process::run(Spawn { program: &cmd, args: &args("echo out& echo err 1>&2& exit /b 3"), env: process::inherited_environment() }, Duration::from_secs(10)).await.unwrap();
+        let run = process::run(Spawn { program: &cmd, args: &args("echo out& echo err 1>&2& exit /b 3"), env: process::inherited_environment(), cwd: None }, Duration::from_secs(10)).await.unwrap();
         assert_eq!((run.stdout.trim(), run.stderr.trim(), run.status, run.timed_out), ("out", "err", 3, false));
 
         // A timeout ends the command and what it started, and returns promptly.
         let started = Instant::now();
-        let run = process::run(Spawn { program: &cmd, args: &args("echo early& ping -n 30 127.0.0.1 >nul"), env: process::inherited_environment() }, Duration::from_secs(1)).await.unwrap();
+        let run = process::run(Spawn { program: &cmd, args: &args("echo early& ping -n 30 127.0.0.1 >nul"), env: process::inherited_environment(), cwd: None }, Duration::from_secs(1)).await.unwrap();
         assert!(run.timed_out);
         assert_eq!(run.stdout.trim(), "early");
         assert!(started.elapsed() < Duration::from_secs(3), "took {:?}", started.elapsed());

@@ -397,7 +397,7 @@ fn serve(plan: ServePlan) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
-        log(&format!("Serving streamable-http on {}://{}:{}/mcp (rust)", plan.scheme(), plan.host, listener.port()));
+        log(&format!("Serving streamable-http on {}/mcp (rust)", plan.origin(listener.port())));
         // The socket is beside HTTP, not in its way: when it cannot be had, HTTP is served alone.
         if let Some(path) = &plan.socket_path {
             match UnixListener::listen(path.as_ref(), Some(LAUNCHD_SOCKET)) {
@@ -420,7 +420,7 @@ fn serve(plan: ServePlan) -> ExitCode {
         let security = Security {
             auth_key: plan.auth_key.clone(),
             ip_allowlist: plan.ip_allowlist.clone(),
-            oauth: plan.oauth.as_ref().map(|client| Rc::new(OAuth::new(&format!("{}://{}:{}", plan.scheme(), plan.host, plan.port), &client.client_id, &client.client_secret))),
+            oauth: plan.oauth.as_ref().map(|client| Rc::new(OAuth::new(&plan.origin(plan.port), &client.client_id, &client.client_secret))),
         };
         let app = Rc::new(App {
             make_server: Box::new(move || make_server()),
@@ -477,9 +477,16 @@ fn serve(plan: ServePlan) -> ExitCode {
     main_loop::run(|main_loop| async move {
         let activity = Activity::new(main_loop);
         if plan.transport == "stdio" {
+            let stdio = match StdIo::stdio() {
+                Ok(stdio) => stdio,
+                Err(reason) => {
+                    eprintln!("Error: no stdin or stdout to serve on: {reason}");
+                    return ExitCode::FAILURE;
+                }
+            };
             let _session = activity.connection();
             tokio::select! {
-                _ = serve_stream(StdIo::stdio(), make_server()) => {}
+                _ = serve_stream(stdio, make_server()) => {}
                 _ = signals::termination() => {}
             }
             return ExitCode::SUCCESS;
@@ -492,11 +499,11 @@ fn serve(plan: ServePlan) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
-        log(&format!("Serving streamable-http on {}://{}:{}/mcp (rust)", plan.scheme(), plan.host, listener.port()));
+        log(&format!("Serving streamable-http on {}/mcp (rust)", plan.origin(listener.port())));
         let security = Security {
             auth_key: plan.auth_key.clone(),
             ip_allowlist: plan.ip_allowlist.clone(),
-            oauth: plan.oauth.as_ref().map(|client| Rc::new(OAuth::new(&format!("{}://{}:{}", plan.scheme(), plan.host, plan.port), &client.client_id, &client.client_secret))),
+            oauth: plan.oauth.as_ref().map(|client| Rc::new(OAuth::new(&plan.origin(plan.port), &client.client_id, &client.client_secret))),
         };
         let app = Rc::new(App {
             make_server: Box::new(move || make_server()),

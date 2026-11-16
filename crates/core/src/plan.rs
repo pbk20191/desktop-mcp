@@ -180,4 +180,10 @@ impl ServePlan {
     pub fn scheme(&self) -> &'static str {
         if self.tls.is_some() { "https" } else { "http" }
     }
+
+    /// `scheme://host:port`, an IPv6 host in brackets.
+    pub fn origin(&self, port: u16) -> String {
+        let host = if self.host.contains(':') && !self.host.starts_with('[') { format!("[{}]", self.host) } else { self.host.clone() };
+        format!("{}://{host}:{port}", self.scheme())
+    }
 }

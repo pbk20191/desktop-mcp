@@ -61,15 +61,15 @@ pub struct StdIo {
 }
 
 impl StdIo {
-    /// This process's stdin and stdout.
-    pub fn stdio() -> StdIo {
-        let duplicate = |which| -> OwnedHandle {
-            let handle = unsafe { GetStdHandle(which) }.expect("GetStdHandle");
+    /// This process's stdin and stdout; an error when it was started without one.
+    pub fn stdio() -> io::Result<StdIo> {
+        let duplicate = |which| -> io::Result<OwnedHandle> {
+            let handle = unsafe { GetStdHandle(which) }.map_err(io::Error::other)?;
             let mut copy = HANDLE::default();
-            unsafe { DuplicateHandle(GetCurrentProcess(), handle, GetCurrentProcess(), &mut copy, 0, false, DUPLICATE_SAME_ACCESS) }.expect("DuplicateHandle");
-            unsafe { OwnedHandle::from_raw_handle(copy.0) }
+            unsafe { DuplicateHandle(GetCurrentProcess(), handle, GetCurrentProcess(), &mut copy, 0, false, DUPLICATE_SAME_ACCESS) }.map_err(io::Error::other)?;
+            Ok(unsafe { OwnedHandle::from_raw_handle(copy.0) })
         };
-        StdIo::from_handles(duplicate(STD_INPUT_HANDLE), duplicate(STD_OUTPUT_HANDLE))
+        Ok(StdIo::from_handles(duplicate(STD_INPUT_HANDLE)?, duplicate(STD_OUTPUT_HANDLE)?))
     }
 
     /// Any readable and writable handles.

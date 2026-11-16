@@ -41,6 +41,8 @@ pub struct Spawn<'a> {
     pub program: &'a Path,
     pub args: &'a [OsString],
     pub env: Vec<(OsString, OsString)>,
+    /// The working directory; this process's when `None`.
+    pub cwd: Option<&'a Path>,
 }
 
 /// This process's environment.
@@ -105,7 +107,9 @@ static PIPES: AtomicUsize = AtomicUsize::new(0);
 
 /// Our overlapped read end and the child's inheritable write end.
 fn pipe() -> Result<(OwnedHandle, OwnedHandle), String> {
-    let name = format!(r"\\.\pipe\desktop-mcp-{}-{}", std::process::id(), PIPES.fetch_add(1, Ordering::Relaxed));
+    // A random part: another process cannot take the name first and make every run fail.
+    let random = std::hash::BuildHasher::hash_one(&std::collections::hash_map::RandomState::new(), PIPES.load(Ordering::Relaxed));
+    let name = format!(r"\\.\pipe\desktop-mcp-{}-{}-{random:016x}", std::process::id(), PIPES.fetch_add(1, Ordering::Relaxed));
     let name = wide(name.as_ref());
     let server = unsafe {
         CreateNamedPipeW(
@@ -278,6 +282,7 @@ fn start(spawn: &Spawn<'_>, input: &OwnedHandle, output: &OwnedHandle, error: &O
         let program = wide(spawn.program.as_os_str());
         let mut line = command_line(spawn.program, spawn.args);
         let environment = environment_block(spawn.env.clone());
+        let cwd = spawn.cwd.map(|cwd| wide(cwd.as_os_str()));
         let mut information = PROCESS_INFORMATION::default();
         unsafe {
             CreateProcessW(
@@ -288,7 +293,7 @@ fn start(spawn: &Spawn<'_>, input: &OwnedHandle, output: &OwnedHandle, error: &O
                 true,
                 EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW,
                 Some(environment.as_ptr() as *const c_void),
-                PCWSTR::null(),
+                cwd.as_ref().map_or(PCWSTR::null(), |cwd| PCWSTR(cwd.as_ptr())),
                 &startup.StartupInfo,
                 &mut information,
             )
