@@ -439,23 +439,69 @@ fn serve(plan: ServePlan) -> ExitCode {
 #[cfg(windows)]
 fn serve(plan: ServePlan) -> ExitCode {
     use desktop_mcp_core::guest::Activity;
-    use desktop_mcp_core::mcp::Server;
+    use desktop_mcp_core::http::{self, App, Security};
+    use desktop_mcp_core::mcp::{Desktop, Server};
+    use desktop_mcp_core::oauth::OAuth;
+    use desktop_mcp_core::platform::Platform;
+    use desktop_mcp_core::session::{SessionSettings, Sessions};
     use desktop_mcp_core::stream::serve_stream;
+    use desktop_mcp_windows::listener::SocketListener;
+    use desktop_mcp_windows::tls::TlsIdentity;
+    use desktop_mcp_windows::tls_io::TlsListener;
     use desktop_mcp_windows::{desktop::WindowsDesktop, main_loop, platform::WindowsPlatform, signals, stdio::StdIo};
     use std::rc::Rc;
 
-    if plan.transport != "stdio" {
-        eprintln!("Error: only the stdio transport is available on Windows in this build");
+    if plan.transport != "stdio" && plan.transport != "streamable-http" {
+        eprintln!("Error: the {} transport is not available on Windows", plan.transport);
         return ExitCode::FAILURE;
     }
+    let tls = match &plan.tls {
+        Some(tls) => match TlsIdentity::load(tls.certificate.as_ref(), tls.private_key.as_ref()) {
+            Ok(identity) => Some(Rc::new(identity)),
+            Err(reason) => {
+                eprintln!("Error: {reason}");
+                return ExitCode::FAILURE;
+            }
+        },
+        None => None,
+    };
     let tools = selected_tools(&plan);
-    let (desktop, platform) = (Rc::new(WindowsDesktop::new()), Rc::new(WindowsPlatform));
-    let server = Server::with_platform(desktop, platform, &tools);
+    let desktop: Rc<dyn Desktop> = Rc::new(WindowsDesktop::new());
+    let platform: Rc<dyn Platform> = Rc::new(WindowsPlatform);
+    let make_server: Rc<dyn Fn() -> Server> = Rc::new(move || Server::with_platform(desktop.clone(), platform.clone(), &tools));
+
     main_loop::run(|main_loop| async move {
         let activity = Activity::new(main_loop);
-        let _session = activity.connection();
+        if plan.transport == "stdio" {
+            let _session = activity.connection();
+            tokio::select! {
+                _ = serve_stream(StdIo::stdio(), make_server()) => {}
+                _ = signals::termination() => {}
+            }
+            return ExitCode::SUCCESS;
+        }
+
+        let listener = match SocketListener::bind(&plan.host, plan.port).await {
+            Ok(listener) => TlsListener::new(listener, tls),
+            Err(reason) => {
+                eprintln!("Error: cannot serve on {}:{}: {reason}", plan.host, plan.port);
+                return ExitCode::FAILURE;
+            }
+        };
+        log(&format!("Serving streamable-http on {}://{}:{}/mcp (rust)", plan.scheme(), plan.host, listener.port()));
+        let security = Security {
+            auth_key: plan.auth_key.clone(),
+            ip_allowlist: plan.ip_allowlist.clone(),
+            oauth: plan.oauth.as_ref().map(|client| Rc::new(OAuth::new(&format!("{}://{}:{}", plan.scheme(), plan.host, plan.port), &client.client_id, &client.client_secret))),
+        };
+        let app = Rc::new(App {
+            make_server: Box::new(move || make_server()),
+            activity,
+            sessions: Sessions::new(SessionSettings { idle_timeout: plan.session_timeout, ..SessionSettings::default() }),
+            security,
+        });
         tokio::select! {
-            _ = serve_stream(StdIo::stdio(), server) => {}
+            _ = http::serve(listener, app) => {}
             _ = signals::termination() => {}
         }
         ExitCode::SUCCESS
