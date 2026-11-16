@@ -3,7 +3,7 @@
 //! [`TreeSource`], UI Automation in use (`crate::uia`) or a synthetic one in tests.
 use crate::windows_list::TopWindow;
 use desktop_mcp_core::snapshot::{AppStatus, BoundingBox, Meta, TreeNode, TreeState, WindowView};
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, SendMessageTimeoutW, WindowFromPoint, GA_ROOT, SMTO_ABORTIFHUNG, SMTO_BLOCK, WM_NULL};
@@ -104,6 +104,51 @@ impl Default for Limits {
     }
 }
 
+/// The order a walk reads a tree in. Depth first reads a whole tree in document order with a small frontier: right
+/// when all of it is read. Breadth first reads every branch's top before any branch's depths: right when the walk
+/// may stop early (a search for a control, which is usually shallow; a tree too big for the budget, where it keeps
+/// the toolbars and tabs a depth-first walk of a deep web page never reaches).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Order {
+    DepthFirst,
+    BreadthFirst,
+}
+
+/// A walk's frontier in either order, each node with its path from the root (child indexes), which sorts what the
+/// walk found back into document order.
+struct Frontier<N> {
+    order: Order,
+    nodes: VecDeque<(N, Vec<u32>)>,
+}
+
+impl<N> Frontier<N> {
+    fn new(order: Order, root: Option<N>) -> Frontier<N> {
+        Frontier { order, nodes: root.into_iter().map(|root| (root, Vec::new())).collect() }
+    }
+
+    fn next(&mut self) -> Option<(N, Vec<u32>)> {
+        match self.order {
+            Order::DepthFirst => self.nodes.pop_back(),
+            Order::BreadthFirst => self.nodes.pop_front(),
+        }
+    }
+
+    fn add_children(&mut self, path: &[u32], children: Vec<N>) {
+        let with_paths = children.into_iter().enumerate().map(|(index, child)| (child, [path, &[index as u32]].concat()));
+        match self.order {
+            // Last child first onto the stack, so the first is read next.
+            Order::DepthFirst => with_paths.rev().for_each(|child| self.nodes.push_back(child)),
+            Order::BreadthFirst => self.nodes.extend(with_paths),
+        }
+    }
+}
+
+/// `found` in document order, without the paths.
+fn in_document_order(mut found: Vec<(Vec<u32>, TreeNode)>) -> Vec<TreeNode> {
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    found.into_iter().map(|(_, node)| node).collect()
+}
+
 #[derive(Debug, Default)]
 pub struct WindowWalk {
     pub interactive: Vec<TreeNode>,
@@ -134,14 +179,15 @@ fn node(element: &ElementProps, window_name: &str, window: (f64, f64, f64, f64),
     Some(TreeNode { bounding_box: clipped(element.rect, window)?, name: element.name.trim().to_string(), control_type: element.control_type.clone(), window_name: window_name.to_string(), metadata })
 }
 
-/// Walks one window's tree depth first within `limits` (`window` is its frame as edges, for clipping).
-pub fn walk_window<S: TreeSource>(source: &S, window_name: &str, browser: bool, window: (f64, f64, f64, f64), limits: &Limits) -> WindowWalk {
+/// Walks one window's tree in `order` within `limits` (`window` is its frame as edges, for clipping); what it finds is
+/// in document order either way.
+pub fn walk_window<S: TreeSource>(source: &S, window_name: &str, browser: bool, window: (f64, f64, f64, f64), limits: &Limits, order: Order) -> WindowWalk {
     let started = Instant::now();
     let mut walk = WindowWalk::default();
-    let Some(root) = source.root() else { return walk };
-    let mut stack = vec![root];
+    let (mut interactive, mut scrollable) = (Vec::new(), Vec::new());
+    let mut frontier = Frontier::new(order, source.root());
     let mut seen = HashSet::new();
-    while let Some(current) = stack.pop() {
+    while let Some((current, path)) = frontier.next() {
         if walk.read >= limits.elements || started.elapsed() > limits.deadline {
             walk.stopped_early = true;
             break;
@@ -154,7 +200,7 @@ pub fn walk_window<S: TreeSource>(source: &S, window_name: &str, browser: bool, 
         let class = classify(&element, browser);
         // An unnamed one is listed only when text can be entered or focus can go there (an empty text box).
         if class.interactive && (!element.name.trim().is_empty() || ENTRY_TYPES.contains(&element.control_type.as_str()) || element.keyboard_focusable) {
-            walk.interactive.extend(node(&ElementProps { name: fallback_name(&element), ..element.clone() }, window_name, window, Vec::new()));
+            interactive.extend(node(&ElementProps { name: fallback_name(&element), ..element.clone() }, window_name, window, Vec::new()).map(|found| (path.clone(), found)));
         }
         if class.scrollable {
             let metadata = vec![
@@ -163,12 +209,12 @@ pub fn walk_window<S: TreeSource>(source: &S, window_name: &str, browser: bool, 
                 ("vertical_scrollable".to_string(), Meta::Bool(true)),
                 ("vertical_scroll_percent".to_string(), Meta::Float((element.vertical_percent * 100.0).round() / 100.0)),
             ];
-            walk.scrollable.extend(node(&ElementProps { name: fallback_name(&element), ..element.clone() }, window_name, window, metadata));
+            scrollable.extend(node(&ElementProps { name: fallback_name(&element), ..element.clone() }, window_name, window, metadata).map(|found| (path.clone(), found)));
         }
-        let mut children = source.children(&current, limits.children_per_parent);
-        children.reverse(); // depth first, in document order
-        stack.extend(children);
+        frontier.add_children(&path, source.children(&current, limits.children_per_parent));
     }
+    walk.interactive = in_document_order(interactive);
+    walk.scrollable = in_document_order(scrollable);
     walk
 }
 
@@ -230,10 +276,18 @@ pub fn walk(windows: &[TopWindow], limits: &Limits) -> Walk {
         if !answers(window.hwnd) {
             continue;
         }
-        let Some(source) = crate::uia::WindowTree::new(window.hwnd) else { continue };
+        // The whole tree in one call, read depth first; else (too big or too slow for one call) element by element,
+        // breadth first, as far as the budget goes.
+        let (source, order) = match crate::uia::WindowTree::prefetched(window.hwnd) {
+            Some(source) => (source, Order::DepthFirst),
+            None => match crate::uia::WindowTree::new(window.hwnd) {
+                Some(source) => (source, Order::BreadthFirst),
+                None => continue,
+            },
+        };
         let f = window.frame;
         remaining.deadline = limits.deadline.saturating_sub(started.elapsed());
-        let walked = walk_window(&source, &window.title, is_browser(&window.exe), (f.x, f.y, f.x + f.width, f.y + f.height), &remaining);
+        let walked = walk_window(&source, &window.title, is_browser(&window.exe), (f.x, f.y, f.x + f.width, f.y + f.height), &remaining, order);
         remaining.elements = remaining.elements.saturating_sub(walked.read);
         // An element whose centre (where Click lands) another window covers is not listed.
         let visible = |element: &TreeNode| shows(window.hwnd, element.bounding_box.center());
@@ -244,14 +298,15 @@ pub fn walk(windows: &[TopWindow], limits: &Limits) -> Walk {
     result
 }
 
-/// The first element of `source` whose control type is `role` and whose name contains `title` (ignoring case),
+/// The shallowest element of `source` whose control type is `role` and whose name contains `title` (ignoring case),
 /// an exact name preferred; `None` past `deadline`.
 pub fn find_in<S: TreeSource>(source: &S, title: Option<&str>, role: Option<&str>, deadline: Instant) -> Option<(ElementProps, bool)> {
     let title = title.map(str::to_lowercase);
     let mut best: Option<ElementProps> = None;
-    let mut stack: Vec<S::Node> = source.root().into_iter().collect();
+    // Breadth first: the shallowest match, found before the walk goes down a deep branch (a web page).
+    let mut frontier = Frontier::new(Order::BreadthFirst, source.root());
     let mut seen = HashSet::new();
-    while let Some(current) = stack.pop() {
+    while let Some((current, path)) = frontier.next() {
         if Instant::now() > deadline {
             break;
         }
@@ -269,9 +324,7 @@ pub fn find_in<S: TreeSource>(source: &S, title: Option<&str>, role: Option<&str
                 _ => {}
             }
         }
-        let mut children = source.children(&current, Limits::default().children_per_parent);
-        children.reverse();
-        stack.extend(children);
+        frontier.add_children(&path, source.children(&current, Limits::default().children_per_parent));
     }
     best.map(|element| (element, false))
 }

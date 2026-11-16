@@ -1,6 +1,6 @@
 //! The UI Automation walk: its rules and budget on a synthetic tree, and the probe that skips hung windows.
 #![cfg(windows)]
-use desktop_mcp_windows::tree::{classify, walk_window, ElementProps, Limits, TreeSource};
+use desktop_mcp_windows::tree::{classify, walk_window, ElementProps, Limits, Order, TreeSource};
 use std::time::Duration;
 
 fn props(control_type: &str) -> ElementProps {
@@ -45,12 +45,45 @@ impl TreeSource for Wide {
 #[test]
 fn budget_stops_the_walk() {
     let limits = Limits { children_per_parent: 300, elements: 100, deadline: Duration::from_secs(5) };
-    let walk = walk_window(&Wide { children: 10_000 }, "Win", false, (0.0, 0.0, 100.0, 100.0), &limits);
+    let walk = walk_window(&Wide { children: 10_000 }, "Win", false, (0.0, 0.0, 100.0, 100.0), &limits, Order::DepthFirst);
     assert!(walk.stopped_early);
     assert!(walk.interactive.len() <= 100, "{}", walk.interactive.len());
-    let walk = walk_window(&Wide { children: 50 }, "Win", false, (0.0, 0.0, 100.0, 100.0), &limits);
+    let walk = walk_window(&Wide { children: 50 }, "Win", false, (0.0, 0.0, 100.0, 100.0), &limits, Order::DepthFirst);
     assert!(!walk.stopped_early);
     assert_eq!(walk.interactive.len(), 50);
+}
+
+/// A root with a deep branch first (a web page: 1, 10, 11, … 59), then two shallow buttons (2, 3).
+struct DeepFirst;
+
+impl TreeSource for DeepFirst {
+    type Node = usize;
+    type Identity = usize;
+    fn root(&self) -> Option<usize> {
+        Some(0)
+    }
+    fn identity(&self, node: &usize) -> Option<usize> {
+        Some(*node)
+    }
+    fn children(&self, node: &usize, _: usize) -> Vec<usize> {
+        match *node {
+            0 => vec![1, 2, 3],
+            1 => vec![10],
+            deep @ 10..59 => vec![deep + 1],
+            _ => Vec::new(),
+        }
+    }
+    fn props(&self, node: &usize) -> ElementProps {
+        ElementProps { name: node.to_string(), ..props(if *node == 0 { "Pane" } else { "Button" }) }
+    }
+}
+
+#[test]
+fn breadth_first_reaches_the_shallow_buttons_and_lists_in_document_order() {
+    let limits = Limits { children_per_parent: 300, elements: 10, deadline: Duration::from_secs(5) };
+    let names = |order| walk_window(&DeepFirst, "Win", false, (0.0, 0.0, 100.0, 100.0), &limits, order).interactive.into_iter().map(|node| node.name).collect::<Vec<_>>();
+    assert_eq!(names(Order::BreadthFirst), ["1", "10", "11", "12", "13", "14", "15", "2", "3"]);
+    assert!(!names(Order::DepthFirst).contains(&"2".to_string()), "depth first spends the budget on the deep branch");
 }
 
 #[test]
@@ -102,7 +135,7 @@ impl TreeSource for Below {
 
 #[test]
 fn an_element_outside_its_window_is_not_listed() {
-    let walk = walk_window(&Below, "Win", false, (0.0, 0.0, 800.0, 1000.0), &Limits::default());
+    let walk = walk_window(&Below, "Win", false, (0.0, 0.0, 800.0, 1000.0), &Limits::default(), Order::DepthFirst);
     assert!(walk.interactive.is_empty(), "{:?}", walk.interactive);
 }
 
@@ -133,7 +166,7 @@ impl TreeSource for Unnamed {
 
 #[test]
 fn an_unnamed_text_box_is_listed_by_its_automation_id() {
-    let walk = walk_window(&Unnamed, "Win", false, (0.0, 0.0, 800.0, 600.0), &Limits::default());
+    let walk = walk_window(&Unnamed, "Win", false, (0.0, 0.0, 800.0, 600.0), &Limits::default(), Order::DepthFirst);
     let names: Vec<&str> = walk.interactive.iter().map(|element| element.name.as_str()).collect();
     assert_eq!(names, ["textBox1", "Edit"], "a numeric automation id (a window handle) names nothing");
 }
