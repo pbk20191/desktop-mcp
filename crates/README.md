@@ -155,7 +155,7 @@ Working (`docs/superpowers/specs/2026-11-16-rust-port-windows-design.md`). Windo
 
 Its `tools/list` is pinned in `crates/cli/tests/snapshots/windows-tools.json`, checked against the real binary by
 `crates/cli/tests/windows_stdio.rs` (`UPDATE_SNAPSHOTS=1` rewrites it after review). For Claude Desktop,
-`powershell -ExecutionPolicy Bypass -File scriptsuild-mcpb.ps1` packs `targetelease\desktop-mcp.exe` into
+`powershell -ExecutionPolicy Bypass -File scripts\build-mcpb.ps1` packs `target\release\desktop-mcp.exe` into
 `dist\desktop-mcp.mcpb` (install it by opening the file, or from Settings > Extensions).
 
 How it runs: one message loop, on the main thread, with a `Windows.System.DispatcherQueue` that drives the guest

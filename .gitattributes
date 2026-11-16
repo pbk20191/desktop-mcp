@@ -1,1 +1,2 @@
 crates/core/tests/snapshots/*.json -text
+crates/cli/tests/snapshots/*.json -text

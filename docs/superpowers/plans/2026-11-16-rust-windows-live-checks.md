@@ -70,7 +70,7 @@ the dev PC. Build: `cargo build -p desktop-mcp-cli` → `target\debug\desktop-mc
 
 ## W6
 
-- [ ] `cargo build --release -p desktop-mcp-cli`, then `powershell -ExecutionPolicy Bypass -File scriptsuild-mcpb.ps1`;
+- [ ] `cargo build --release -p desktop-mcp-cli`, then `powershell -ExecutionPolicy Bypass -File scripts\build-mcpb.ps1`;
       open `dist\desktop-mcp.mcpb` in Claude Desktop and install it. Settings > Extensions shows Desktop MCP with its
       17 tools; a chat can call Window `list`, Snapshot and Shell `Get-Date`.
 - [ ] Turn one tool off in the extension's settings; it is gone from the chat's tools after a restart of the extension.

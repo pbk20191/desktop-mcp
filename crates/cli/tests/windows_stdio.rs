@@ -26,17 +26,13 @@ fn stdio_lists_runs_shell_and_exits_at_end_of_input() {
     assert!(started.elapsed() < Duration::from_secs(30));
 
     let by_id = |id: i64| answers.iter().find(|answer| answer["id"] == id).unwrap_or_else(|| panic!("no answer {id} in {answers:?}"));
-    let listed = serde_json::to_string_pretty(&by_id(2)["result"]).unwrap() + "
-";
+    let listed = serde_json::to_string_pretty(&by_id(2)["result"]).unwrap() + "\n";
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/snapshots/windows-tools.json");
     if std::env::var_os("UPDATE_SNAPSHOTS").is_some() {
         std::fs::write(path, &listed).unwrap();
     }
-    let expected = std::fs::read_to_string(path).unwrap_or_default().replace("
-", "
-");
-    assert!(listed == expected, "tools/list changed; review it, then rerun with UPDATE_SNAPSHOTS=1.
-{listed}");
+    let expected = std::fs::read_to_string(path).unwrap_or_default().replace("\r\n", "\n");
+    assert!(listed == expected, "tools/list changed; review it, then rerun with UPDATE_SNAPSHOTS=1.\n{listed}");
     let text = by_id(3)["result"]["content"][0]["text"].as_str().unwrap();
     assert!(text.starts_with("Shell Response: ") && text.contains("hi") && text.ends_with("Status Code: 0"), "{text}");
 }

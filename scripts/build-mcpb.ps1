@@ -51,6 +51,16 @@ $json = $manifest | ConvertTo-Json -Depth 6
 [IO.File]::WriteAllText((Join-Path (Resolve-Path $stage) 'manifest.json'), $json, [Text.UTF8Encoding]::new($false))
 
 foreach ($file in 'LICENSE', 'NOTICE') { if (Test-Path $file) { Copy-Item $file $stage } }
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-[IO.Compression.ZipFile]::CreateFromDirectory((Resolve-Path $stage), (Join-Path (Resolve-Path $dist) 'desktop-mcp.mcpb'))
+# Entry by entry, so the names use '/' (Windows PowerShell's .NET Framework writes '\' with CreateFromDirectory).
+Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+$root = (Resolve-Path $stage).Path
+$archive = [IO.Compression.ZipFile]::Open((Join-Path (Resolve-Path $dist) 'desktop-mcp.mcpb'), 'Create')
+try {
+    foreach ($file in Get-ChildItem -Recurse -File $root) {
+        $entry = $file.FullName.Substring($root.Length).TrimStart('\').Replace('\', '/')
+        [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $file.FullName, $entry) | Out-Null
+    }
+} finally {
+    $archive.Dispose()
+}
 Write-Output "Wrote $out ($version)"

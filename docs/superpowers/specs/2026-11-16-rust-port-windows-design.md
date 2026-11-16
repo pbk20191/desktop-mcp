@@ -175,8 +175,8 @@ and wording of the tools that both systems have.
   child's ends are ordinary inheritable handles. No anonymous pipes and no blocking reads; a timeout or cancel uses
   `CancelIoEx` on our ends. A job object kills the child tree on timeout; exit by the wait above. The
   **(owner: steer to PowerShell 7)** The shell is `pwsh.exe` when found (the child's `PATH`, which includes the
-  Store alias under `WindowsApps`, then `%ProgramFiles%\PowerShell\pwsh.exe`), else Windows PowerShell 5.1
-  (`%SystemRoot%\System32\WindowsPowerShell1.0\powershell.exe`), as the C# port resolved it. When it falls back
+  Store alias under `WindowsApps`, then `%ProgramFiles%\PowerShell\7\pwsh.exe`), else Windows PowerShell 5.1
+  (`%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`), as the C# port resolved it. When it falls back
   to 5.1, the `Shell` result says so once per server run and how to install 7 (`winget install Microsoft.PowerShell`);
   the Windows `Shell` description says commands run in PowerShell 7 when installed. Neither the Windows App SDK nor
   Windows 11 ships PowerShell 7.
