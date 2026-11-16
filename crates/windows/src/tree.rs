@@ -5,8 +5,8 @@ use crate::windows_list::TopWindow;
 use desktop_mcp_core::snapshot::{AppStatus, BoundingBox, Meta, TreeNode, TreeState, WindowView};
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
-use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-use windows::Win32::UI::WindowsAndMessaging::{SendMessageTimeoutW, SMTO_ABORTIFHUNG, SMTO_BLOCK, WM_NULL};
+use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
+use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, SendMessageTimeoutW, WindowFromPoint, GA_ROOT, SMTO_ABORTIFHUNG, SMTO_BLOCK, WM_NULL};
 
 /// What the walk reads of one element (cached in one round trip by the UIA source).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -169,6 +169,12 @@ pub fn answers(hwnd: isize) -> bool {
     unsafe { SendMessageTimeoutW(HWND(hwnd as *mut _), WM_NULL, WPARAM(0), LPARAM(0), SMTO_ABORTIFHUNG | SMTO_BLOCK, 200, Some(&mut result)) }.0 != 0
 }
 
+/// Whether the point shows the top-level window `hwnd`, not another window in front of it.
+pub fn shows(hwnd: isize, (x, y): (i64, i64)) -> bool {
+    let at = unsafe { WindowFromPoint(POINT { x: x as i32, y: y as i32 }) };
+    !at.is_invalid() && unsafe { GetAncestor(at, GA_ROOT) }.0 as isize == hwnd
+}
+
 pub fn is_browser(exe: &str) -> bool {
     matches!(exe.to_ascii_lowercase().as_str(), "chrome.exe" | "msedge.exe" | "firefox.exe")
 }
@@ -197,8 +203,9 @@ pub struct Walk {
 }
 
 /// Lists `windows` (the applications') and walks every shown top-level window (owned dialogs, menus and popups
-/// too) that is not minimized and answers, front to back, sharing one budget. The focused window is the
-/// foreground window's root, application window or not. Blocking: on the pool.
+/// too) that is not minimized and answers, front to back, sharing one budget; an element another window covers is
+/// left out (its window stays listed). The focused window is the foreground window's root, application window or
+/// not. Blocking: on the pool.
 pub fn walk(windows: &[TopWindow], limits: &Limits) -> Walk {
     let started = Instant::now();
     let shown = crate::windows_list::shown_windows();
@@ -219,8 +226,10 @@ pub fn walk(windows: &[TopWindow], limits: &Limits) -> Walk {
         remaining.deadline = limits.deadline.saturating_sub(started.elapsed());
         let walked = walk_window(&source, &window.title, is_browser(&window.exe), (f.x, f.y, f.x + f.width, f.y + f.height), &remaining);
         remaining.elements = remaining.elements.saturating_sub(walked.read);
-        result.tree.interactive.extend(walked.interactive);
-        result.tree.scrollable.extend(walked.scrollable);
+        // An element whose centre (where Click lands) another window covers is not listed.
+        let visible = |element: &TreeNode| shows(window.hwnd, element.bounding_box.center());
+        result.tree.interactive.extend(walked.interactive.into_iter().filter(visible));
+        result.tree.scrollable.extend(walked.scrollable.into_iter().filter(visible));
         result.stopped_early |= walked.stopped_early;
     }
     result
