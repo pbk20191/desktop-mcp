@@ -124,7 +124,11 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let args = match cli.command {
         Some(Command::Serve(args)) => args,
-        Some(Command::Connect(args)) => return connect(args),
+        // Disabled with the socket transport: it would hand any process of this user the stored auth key.
+        Some(Command::Connect(_)) => {
+            eprintln!("Error: `connect` is disabled. {}", desktop_mcp_core::plan::SOCKET_DISABLED);
+            return ExitCode::FAILURE;
+        }
         None => cli.serve,
     };
     let plan = match plan(&args) {
@@ -145,11 +149,13 @@ fn home() -> PathBuf {
 }
 
 /// Where `connect` goes.
+#[allow(dead_code)] // `connect` is disabled until clients are verified; kept for then.
 enum Route {
     Socket { path: String, fallback: Option<desktop_mcp_core::launch_agent::HttpTarget> },
     Http(desktop_mcp_core::launch_agent::HttpTarget),
 }
 
+#[allow(dead_code)]
 fn connect(args: ConnectArgs) -> ExitCode {
     use desktop_mcp_core::launch_agent::{plist_path, ConnectPlan, HttpTarget};
     if args.url.is_some() && args.socket.is_some() {
@@ -196,11 +202,13 @@ fn connect(args: ConnectArgs) -> ExitCode {
 }
 
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
 fn installed_arguments(plist: &std::path::Path) -> Result<Vec<String>, String> {
     desktop_mcp_macos::plist::read(plist).map(|plist| desktop_mcp_macos::plist::program_arguments(&plist))
 }
 
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
 fn run_connect(route: Route) -> ExitCode {
     use desktop_mcp_core::bridge::{relay, Relayed};
     use desktop_mcp_macos::{fd::FdIo, main_loop};

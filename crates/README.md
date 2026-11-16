@@ -27,25 +27,30 @@ Before any of that, as in the Swift port: browser requests must come from a loop
 `--auth-key` requires `Authorization: Bearer <key>`, and `--oauth-client-id`/`--oauth-client-secret`
 turn on the built-in OAuth server (authorization code with PKCE, loopback redirects only).
 `/health` and the OAuth endpoints need no key. Settings come from the command line, then the
-`DESKTOP_MCP_*` environment variables, then `~/.desktop-mcp/config.toml` (or `--config`); binding a
-non-loopback host without authentication is refused unless `--allow-insecure-remote`.
+`DESKTOP_MCP_*` environment variables, then `~/.desktop-mcp/config.toml` (or `--config`). Unlike the Swift
+port, HTTP is refused without `--auth-key` or OAuth wherever it is bound, loopback included (any process of any
+user can reach a local port); `--allow-insecure-remote` only draws a warning.
 
 `--ssl-certfile`/`--ssl-keyfile` serve HTTPS (HTTP/1.1; the Swift port also offers HTTP/2 here).
 The PEM certificate and key (RSA or EC; PKCS#8, PKCS#1 or SEC1) are read into memory with
 Security.framework, never into a keychain, and Network.framework does the TLS.
 
 The HTTP transport is off unless asked for (`--allow-http`, `DESKTOP_MCP_ALLOW_HTTP=1`, or `allow_http = true`
-under `[server]`): whatever reaches its port could drive the desktop, and it cannot tell which program is calling.
-How to admit only known clients (for example by the caller's audit token and code signature) is still to be
-worked out.
+under `[server]`), and then only with authentication: whatever reaches its port could drive the desktop, and it
+cannot tell which program is calling. How to admit only known clients (for example by the caller's audit token and
+code signature) is still to be worked out: `docs/superpowers/specs/2026-11-16-rust-port-client-validation.md`.
 
 `--transport stdio` (the default) serves one session on stdin/stdout, newline-delimited JSON; at end of
-input it still answers the requests it has read (not those the client cancelled), then exits. `--transport socket --socket <path>`
-serves the same binding on a Unix socket alone (or beside HTTP), one session per connection, for the same user only
-(mode 0600, and the peer's uid is checked); under launchd it takes the plist's `Listener` socket. A socket
-that is in use leaves HTTP serving alone.
+input it still answers the requests it has read (not those the client cancelled), then exits. Served this way, the
+host app that starts desktop-mcp is the process macOS holds responsible for Accessibility and Screen Recording, so a
+program without those permissions gains nothing by starting it.
 
-`desktop-mcp connect [--socket <path> | --url <url>] [--auth-key <key>]` bridges stdio to a running server.
+**Disabled until clients are verified** (the code stays): `--transport socket` / `--socket`, and `connect`. Any
+process of this user could reach the socket and borrow the server's own Accessibility, and `connect` reads the
+stored auth key for whoever runs it. Both are refused with a message saying so. What they did:
+`--transport socket --socket <path>` served the stdio binding on a Unix socket (mode 0600, the peer's uid checked,
+launchd's `Listener` socket when there is one), alone or beside HTTP.
+`desktop-mcp connect [--socket <path> | --url <url>] [--auth-key <key>]` bridged stdio to a running server.
 Over a Unix socket stdin and stdout are piped through unchanged. Over HTTP each line is posted on its own
 (a slow call does not hold up the next), replies come back one line each, a `GET` listener hands on what
 the server starts by itself, and a lost session (404) is replaced by sending the first `initialize` again.
@@ -66,9 +71,14 @@ can: child processes (posix_spawn, reaped by a dispatch process source), `NSPast
   characters earlier.
 - `Clipboard` reports copied files' paths in composed (NFC) form.
 
-Not there yet: the desktop tools (`App`, `Window`, `Menu`, `Snapshot`, `Click`, `Type`, `Scroll`, `Move`,
-`Shortcut`, `Desktop`, `OCR`, and `Wait` for windows and elements), and the `install`/`uninstall`, `auth` and
-`permissions` commands.
+The desktop tools are there too (`App`, `Window`, `Menu`, `Snapshot`, `Click`, `Type`, `Scroll`, `Move`,
+`Shortcut`, `Desktop`, `Wait` for windows and elements). `Desktop` finds Mission Control's add button by its
+identifier `mc.spaces.add` (in WindowManager on macOS 27, the Dock before) and opens Mission Control by launching
+it, so it works whatever the language and the keyboard shortcut; the Swift port matches English labels in the Dock
+and posts control+up, which fails on macOS 27.
+
+Not there yet: `OCR`, and the `install`/`uninstall`, `auth` and `permissions` commands, which are to be redesigned
+with client verification in mind.
 
 ## How it is built
 

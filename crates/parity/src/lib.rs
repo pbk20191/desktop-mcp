@@ -14,7 +14,12 @@ pub struct ServerUnderTest {
     child: Option<Child>,
     pub port: u16,
     home: PathBuf,
+    /// The key the harness gave a server started without authentication of its own, sent with every request.
+    key: Option<&'static str>,
 }
+
+/// HTTP is served only with authentication (the Rust port refuses it otherwise), so a test that sets none gets this.
+pub const DEFAULT_KEY: &str = "parity-key";
 
 pub struct Reply {
     pub status: u16,
@@ -155,9 +160,14 @@ impl ServerUnderTest {
             let port = TcpListener::bind("127.0.0.1:0").expect("a free port").local_addr().unwrap().port();
             let home = scratch_home(launch.config);
             let stderr = std::fs::File::create(home.join("stderr.log")).expect("a log file");
+            let own_key = launch.options.iter().any(|option| matches!(*option, "--auth-key" | "--oauth-client-id"))
+                || launch.env.iter().any(|(name, _)| *name == "DESKTOP_MCP_AUTH_KEY")
+                || launch.config.is_some_and(|config| config.contains("auth_key") || config.contains("oauth_client_id"));
+            let key = (!own_key).then_some(DEFAULT_KEY);
             let child = Command::new(&binary)
                 .args(["serve", "--transport", "streamable-http", "--host", "127.0.0.1", "--port", &port.to_string()])
                 .args(launch.options)
+                .args(key.map(|key| ["--auth-key", key]).iter().flatten())
                 .env("HOME", &home)
                 // The Rust port serves HTTP only on request; the Swift port ignores this.
                 .env("DESKTOP_MCP_ALLOW_HTTP", "1")
@@ -167,7 +177,7 @@ impl ServerUnderTest {
                 .stderr(stderr)
                 .spawn()
                 .unwrap_or_else(|error| panic!("cannot start {binary:?}: {error}"));
-            let mut server = ServerUnderTest { child: Some(child), port, home };
+            let mut server = ServerUnderTest { child: Some(child), port, home, key };
             let deadline = Instant::now() + Duration::from_secs(15);
             loop {
                 // A connection alone could reach another test's server that took this port first: the server must
@@ -202,7 +212,7 @@ impl ServerUnderTest {
     pub fn connect(&self) -> Connection {
         let stream = TcpStream::connect(("127.0.0.1", self.port)).expect("connect");
         stream.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
-        Connection { stream }
+        Connection { stream, key: self.key }
     }
 
     /// One request on its own connection.
@@ -266,6 +276,7 @@ impl Drop for ServerUnderTest {
 /// One TCP connection, for several requests in a row.
 pub struct Connection {
     stream: TcpStream,
+    key: Option<&'static str>,
 }
 
 impl Connection {
@@ -279,6 +290,9 @@ impl Connection {
         let mut head = format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\n", body.len());
         for (name, value) in headers {
             head += &format!("{name}: {value}\r\n");
+        }
+        if let Some(key) = self.key.filter(|_| !headers.iter().any(|(name, _)| name.eq_ignore_ascii_case("authorization"))) {
+            head += &format!("Authorization: Bearer {key}\r\n");
         }
         head += "\r\n";
         self.stream.write_all(head.as_bytes()).expect("write the head");

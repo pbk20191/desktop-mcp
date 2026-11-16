@@ -1,5 +1,5 @@
 //! HTTPS from PEM files (`--ssl-certfile`/`--ssl-keyfile`). Holds for both ports; the client is curl.
-use desktop_mcp_parity::{run_to_exit, ServerUnderTest};
+use desktop_mcp_parity::{run_to_exit, ServerUnderTest, DEFAULT_KEY};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -26,7 +26,8 @@ fn curl(arguments: &[&str]) -> (i32, String) {
 fn serves(cert: &Path, key: &Path) {
     let server = ServerUnderTest::start_with(&["--ssl-certfile", cert.to_str().unwrap(), "--ssl-keyfile", key.to_str().unwrap()]);
     let url = format!("https://localhost:{}/mcp", server.port);
-    let request = ["-X", "POST", "-H", "Accept: application/json", "-H", "Content-Type: application/json", "-d", r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#];
+    let authorization = format!("Authorization: Bearer {DEFAULT_KEY}");
+    let request = ["-X", "POST", "-H", "Accept: application/json", "-H", "Content-Type: application/json", "-H", &authorization, "-d", r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#];
     let mut trusted = vec!["--cacert", cert.to_str().unwrap()];
     trusted.extend(request);
     trusted.push(&url);
@@ -58,7 +59,7 @@ fn https_with_an_ec_key() {
 #[test]
 fn a_missing_key_file_is_refused() {
     let (cert, _) = certificate("missing", "rsa");
-    let (status, stderr) = run_to_exit(&["serve", "--transport", "streamable-http", "--port", "0", "--ssl-certfile", cert.to_str().unwrap(), "--ssl-keyfile", "/nonexistent/key.pem"]);
+    let (status, stderr) = run_to_exit(&["serve", "--transport", "streamable-http", "--port", "0", "--auth-key", "k", "--ssl-certfile", cert.to_str().unwrap(), "--ssl-keyfile", "/nonexistent/key.pem"]);
     assert!(!status.success());
     assert!(stderr.contains("key.pem"), "{stderr}");
 }

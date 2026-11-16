@@ -67,7 +67,9 @@ fn only_local_pages_may_call() {
 fn an_unauthenticated_remote_bind_is_refused() {
     let (status, stderr) = run_to_exit(&["serve", "--transport", "streamable-http", "--host", "0.0.0.0", "--port", "0"]);
     assert!(!status.success());
-    assert!(stderr.contains("Refusing to bind HTTP transport to '0.0.0.0' without authentication."), "{stderr}");
+    // Swift: "Refusing to bind HTTP transport to '0.0.0.0' without authentication."; Rust refuses HTTP without
+    // authentication wherever it is bound.
+    assert!(stderr.contains("authentication"), "{stderr}");
 }
 
 #[test]

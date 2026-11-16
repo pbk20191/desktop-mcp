@@ -1,6 +1,6 @@
 //! `config.toml`, option merging, and the security helpers: ported from the Swift port's ConfigTests.
 use desktop_mcp_core::config::{Config, LEGACY_TRANSPORT_WARNING};
-use desktop_mcp_core::plan::{CommandLine, ServePlan, ENV_AUTH_KEY, ENV_EXCLUDE_TOOLS, ENV_IP_ALLOWLIST};
+use desktop_mcp_core::plan::{CommandLine, ServePlan, ENV_AUTH_KEY, ENV_EXCLUDE_TOOLS, ENV_IP_ALLOWLIST, HTTP_NEEDS_AUTH, SOCKET_DISABLED};
 use desktop_mcp_core::security::{constant_time_eq, is_loopback_host, token_url_safe, IpNetwork};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -55,7 +55,7 @@ fn legacy_sse_transport_is_mapped_with_a_warning() {
 
 #[test]
 fn plan_maps_legacy_sse_from_the_command_line() {
-    let plan = resolve(&CommandLine { transport: Some("sse".into()), allow_http: true, ..CommandLine::default() }).unwrap();
+    let plan = resolve(&CommandLine { transport: Some("sse".into()), allow_http: true, auth_key: Some("k".into()), ..CommandLine::default() }).unwrap();
     assert_eq!(plan.transport, "streamable-http");
     assert!(plan.warnings.iter().any(|w| w == LEGACY_TRANSPORT_WARNING));
 }
@@ -129,16 +129,10 @@ fn session_timeout_defaults_to_half_an_hour_and_zero_disables_it() {
 }
 
 #[test]
-fn plan_refuses_unauthenticated_remote_bind() {
-    let mut cli = CommandLine { transport: Some("streamable-http".into()), host: Some("0.0.0.0".into()), allow_http: true, ..CommandLine::default() };
-    assert!(resolve(&cli).unwrap_err().contains("Refusing to bind"));
-    cli.allow_insecure_remote = true;
-    assert!(resolve(&cli).is_ok());
-    cli.allow_insecure_remote = false;
+fn http_requires_authentication_on_loopback_too() {
+    let mut cli = CommandLine { transport: Some("streamable-http".into()), host: Some("127.0.0.1".into()), allow_http: true, allow_insecure_remote: true, ..CommandLine::default() };
+    assert_eq!(resolve(&cli).unwrap_err(), HTTP_NEEDS_AUTH);
     cli.auth_key = Some("secret".into());
-    assert!(resolve(&cli).is_ok());
-    cli.host = Some("127.0.0.1".into());
-    cli.auth_key = None;
     assert!(resolve(&cli).is_ok());
 }
 
@@ -190,19 +184,11 @@ fn loopback_and_tokens() {
 fn http_needs_an_explicit_opt_in() {
     let refused = resolve(&CommandLine { transport: Some("streamable-http".into()), ..CommandLine::default() }).unwrap_err();
     assert!(refused.starts_with("The HTTP transport is off by default"), "{refused}");
-    assert!(resolve(&CommandLine { transport: Some("streamable-http".into()), allow_http: true, ..CommandLine::default() }).is_ok());
+    assert!(resolve(&CommandLine { transport: Some("streamable-http".into()), allow_http: true, auth_key: Some("k".into()), ..CommandLine::default() }).is_ok());
 }
 
 #[test]
-fn the_socket_serves_alone_or_beside_http_with_a_short_path() {
-    let mut cli = CommandLine { transport: Some("socket".into()), socket_path: Some("/tmp/a.sock".into()), ..CommandLine::default() };
-    assert_eq!(resolve(&cli).unwrap().socket_path.as_deref(), Some("/tmp/a.sock"));
-    cli.transport = Some("stdio".into());
-    assert_eq!(resolve(&cli).unwrap_err(), "--socket requires --transport socket or streamable-http.");
-    cli.transport = Some("socket".into());
-    cli.socket_path = None;
-    assert_eq!(resolve(&cli).unwrap_err(), "--transport socket requires --socket <path>.");
-    cli.socket_path = Some(format!("/{}", "a".repeat(110)));
-    assert!(resolve(&cli).unwrap_err().contains("Socket path too long (max 103 bytes)"));
-    assert_eq!(resolve(&CommandLine::default()).unwrap().socket_path, None);
+fn the_socket_transport_is_disabled() {
+    assert_eq!(resolve(&CommandLine { transport: Some("socket".into()), socket_path: Some("/tmp/a.sock".into()), ..CommandLine::default() }).unwrap_err(), SOCKET_DISABLED);
+    assert_eq!(resolve(&CommandLine { socket_path: Some("/tmp/a.sock".into()), ..CommandLine::default() }).unwrap_err(), SOCKET_DISABLED);
 }

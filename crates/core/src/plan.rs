@@ -2,7 +2,7 @@
 //! its environment variable) wins, then `config.toml`, then the default. An empty value, wherever it comes
 //! from, means "not set".
 use crate::config::{Config, LEGACY_TRANSPORT_WARNING, TRANSPORTS};
-use crate::security::{is_loopback_host, IpNetwork};
+use crate::security::IpNetwork;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -17,7 +17,15 @@ pub const ENV_INCLUDE_TOOLS: &str = "DESKTOP_MCP_INCLUDE_TOOLS";
 pub const ENV_ALLOW_HTTP: &str = "DESKTOP_MCP_ALLOW_HTTP";
 
 /// Why HTTP is refused without an explicit opt-in.
-pub const HTTP_DISABLED: &str = "The HTTP transport is off by default: any process on this Mac (or, bound beyond loopback, on the network) that reaches the port could drive the desktop, and it cannot be told which program is calling.\n  Serve stdio (the default), or a Unix socket only this user can open: --transport socket --socket <path>.\n  To serve HTTP anyway pass --allow-http, set DESKTOP_MCP_ALLOW_HTTP=1, or set allow_http = true under [server] in config.toml.";
+pub const HTTP_DISABLED: &str = "The HTTP transport is off by default: any process on this Mac (or, bound beyond loopback, on the network) that reaches the port could drive the desktop, and it cannot be told which program is calling.\n  Serve stdio (the default): the host app that starts desktop-mcp is the one macOS holds responsible for Accessibility.\n  To serve HTTP anyway pass --allow-http, set DESKTOP_MCP_ALLOW_HTTP=1, or set allow_http = true under [server] in config.toml, with --auth-key or OAuth.";
+
+/// Why HTTP is refused without authentication, wherever it is bound.
+pub const HTTP_NEEDS_AUTH: &str = "The HTTP transport requires authentication, on loopback too: any process of any user on this Mac can reach a local port.\n  Use --auth-key <token> (or $DESKTOP_MCP_AUTH_KEY, or auth_key under [server] in config.toml) or --oauth-client-id/--oauth-client-secret.";
+
+/// Why the Unix socket transport (and `connect`) is refused: until clients are verified
+/// (docs/superpowers/specs/2026-11-16-rust-port-client-validation.md), any process of this user could borrow the
+/// server's Accessibility through it.
+pub const SOCKET_DISABLED: &str = "The Unix socket transport is disabled: any process of this user could connect and borrow desktop-mcp's Accessibility, and the program on the other end is not verified yet.\n  Serve stdio (the default), or HTTP with authentication (--allow-http --transport streamable-http --auth-key <token>).";
 
 /// What was given on the command line; `None` means "not given".
 #[derive(Clone, Debug, Default)]
@@ -103,6 +111,9 @@ impl ServePlan {
             return Err(HTTP_DISABLED.into());
         }
         let socket_path = non_empty(cli.socket_path.as_deref());
+        if transport == "socket" || socket_path.is_some() {
+            return Err(SOCKET_DISABLED.into());
+        }
         if transport == "socket" && socket_path.is_none() {
             return Err("--transport socket requires --socket <path>.".into());
         }
@@ -149,10 +160,11 @@ impl ServePlan {
         };
         let ip_allowlist = IpNetwork::parse_list(&allowlist_entries).map_err(|error| format!("Invalid ip_allowlist: {error}"))?;
 
-        if transport == "streamable-http" && !is_loopback_host(&host) && auth_key.is_none() && oauth.is_none() && !allow_insecure_remote {
-            return Err(format!(
-                "Refusing to bind HTTP transport to '{host}' without authentication.\n  Use --auth-key <token> or --oauth-client-id/--oauth-client-secret.\n  Or pass --allow-insecure-remote to explicitly allow unauthenticated access (not recommended)."
-            ));
+        if transport == "streamable-http" && auth_key.is_none() && oauth.is_none() {
+            return Err(HTTP_NEEDS_AUTH.into());
+        }
+        if allow_insecure_remote {
+            warnings.push("allow_insecure_remote has no effect: HTTP always requires authentication".into());
         }
         if transport != "streamable-http" && (auth_key.is_some() || !ip_allowlist.is_empty()) {
             warnings.push(format!("auth_key / ip_allowlist have no effect on {transport} transport"));
