@@ -2,7 +2,6 @@
 use crate::mcp::Desktop;
 use crate::wait::{matches, RunningApp};
 use rmcp::schemars;
-use std::time::Duration;
 
 const LOGINWINDOW: &str = "com.apple.loginwindow";
 
@@ -52,7 +51,7 @@ pub async fn run(desktop: &dyn Desktop, mode: Mode, name: Option<&str>, window_l
             if !desktop.activate_app(name).await {
                 return Ok(format!("Application '{name}' not found."));
             }
-            desktop.sleep(Duration::from_millis(200)).await;
+            desktop.sleep(crate::tuning::SWITCH_SETTLE).await;
             Ok(format!("Switched to {name}."))
         }
         Mode::Resize | Mode::Move => {

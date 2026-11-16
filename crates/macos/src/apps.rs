@@ -4,7 +4,6 @@ use desktop_mcp_core::app::FrameChange;
 use objc2_app_kit::{NSApplicationActivationOptions, NSApplicationActivationPolicy, NSRunningApplication, NSWorkspace};
 use objc2_core_graphics::{CGWindowListCopyWindowInfo, CGWindowListOption};
 use serde_json::Value;
-use std::time::Duration;
 
 /// Window server stacking levels (kCGWindowLayer).
 pub const NORMAL_LEVEL: i64 = 0;
@@ -148,7 +147,7 @@ pub fn activate_by_name(name: &str) -> bool {
 pub async fn launch(name: &str) -> bool {
     for flag in ["-a", "-b"] {
         let argv = vec!["/usr/bin/open".to_string(), flag.to_string(), name.to_string()];
-        if crate::process::run(argv, Duration::from_secs(15)).await.is_ok_and(|run| run.status == 0) {
+        if crate::process::run(argv, crate::tuning::LAUNCH_TIMEOUT).await.is_ok_and(|run| run.status == 0) {
             return true;
         }
     }

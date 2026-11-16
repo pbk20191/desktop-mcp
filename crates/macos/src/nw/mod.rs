@@ -117,7 +117,7 @@ impl Listener for NwListener {
 }
 
 /// When this much is handed to the system and not yet sent, writes wait.
-const HIGH_WATER: usize = 256 * 1024;
+use crate::tuning::WRITE_HIGH_WATER as HIGH_WATER;
 
 /// What a connection's callbacks and hyper's polls share.
 struct IoState {

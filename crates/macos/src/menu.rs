@@ -4,7 +4,6 @@ use desktop_mcp_core::menu::{list, resolve, select, shortcut_label, MenuNode, Re
 use objc2_app_kit::{NSApplicationActivationPolicy, NSWorkspace};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 /// A menu bar item or menu item, read once when made.
 #[derive(Clone)]
@@ -84,11 +83,11 @@ impl MenuNode for AxMenuNode {
         let mut found = self.items();
         // Some apps build a bar item's menu only when it opens.
         if found.is_empty() && self.populates && self.press() {
-            for _ in 0..10 {
+            for _ in 0..crate::tuning::MENU_POPULATE_POLLS {
                 if !found.is_empty() {
                     break;
                 }
-                std::thread::sleep(Duration::from_millis(50));
+                std::thread::sleep(crate::tuning::MENU_POPULATE_POLL);
                 found = self.items();
             }
             if !found.is_empty() {
@@ -146,9 +145,9 @@ fn roots(app: Option<&str>, owner: Option<i32>, populate: bool) -> Result<Vec<Ax
         None => owner.ok_or("No menu bar for the frontmost app.")?,
     };
     let element = Element::application(pid);
-    element.set_messaging_timeout(0.5);
+    element.set_messaging_timeout(crate::tuning::AX_MESSAGING_TIMEOUT);
     let bar = element.attribute("AXMenuBar").and_then(|v| v.element().cloned()).ok_or_else(|| format!("No menu bar for {}.", app.unwrap_or("the frontmost app")))?;
-    bar.set_messaging_timeout(0.5);
+    bar.set_messaging_timeout(crate::tuning::AX_MESSAGING_TIMEOUT);
     Ok(bar.children().into_iter().map(|item| AxMenuNode::new(item, populate)).collect())
 }
 

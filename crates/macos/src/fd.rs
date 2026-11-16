@@ -19,7 +19,7 @@ use std::task::{Context, Poll, Waker};
 use tokio::sync::mpsc;
 
 /// When this much is handed to the system and not yet written, writes wait.
-const HIGH_WATER: usize = 256 * 1024;
+use crate::tuning::WRITE_HIGH_WATER as HIGH_WATER;
 
 #[derive(Default)]
 struct State {

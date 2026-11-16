@@ -106,7 +106,7 @@ fn strerror(code: libc::c_int) -> String {
 /// The exit event can arrive while the child is still finishing its exit, before `waitpid` can reap it, and a
 /// child already exiting when the source registers may never raise one. So the event reaps with a blocking
 /// `waitpid` (the child has exited: it returns at once), and a timer checks without blocking at once and then
-/// every second until the child is reaped.
+/// every [`crate::tuning::REAP_BACKSTOP`] until the child is reaped.
 fn watch_exit(pid: libc::pid_t) -> tokio::sync::oneshot::Receiver<i32> {
     let (exited, exit) = tokio::sync::oneshot::channel();
     let main = DispatchQueue::main();
@@ -146,7 +146,7 @@ fn watch_exit(pid: libc::pid_t) -> tokio::sync::oneshot::Receiver<i32> {
         source.set_event_handler_with_block(block2::RcBlock::as_ptr(&on_exit));
         backstop.set_event_handler_with_block(block2::RcBlock::as_ptr(&on_tick));
     }
-    backstop.set_timer(DispatchTime::NOW, 1_000_000_000, 100_000_000);
+    backstop.set_timer(DispatchTime::NOW, crate::tuning::REAP_BACKSTOP.as_nanos() as u64, crate::tuning::REAP_BACKSTOP.as_nanos() as u64 / 10);
     source.resume();
     backstop.resume();
     exit

@@ -21,8 +21,7 @@ use std::task::{Context, Poll, Wake, Waker};
 
 /// A fire date that never comes: how a timer is parked.
 const NEVER: f64 = 1e10;
-const FAST_INTERVAL: f64 = 0.05;
-const SLOW_INTERVAL: f64 = 1.0;
+use crate::tuning::{FAST_TICK as FAST_INTERVAL, SLOW_TICK as SLOW_INTERVAL};
 
 static TURNS: AtomicUsize = AtomicUsize::new(0);
 

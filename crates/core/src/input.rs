@@ -1,6 +1,7 @@
 //! Synthesised mouse and keyboard input: the event sequences behind Click, Type, Scroll, Move and Shortcut. The
 //! platform posts each event and maps key names to its key codes.
 use crate::mcp::Desktop;
+use crate::tuning::input::*;
 use rmcp::schemars;
 use std::time::Duration;
 
@@ -99,8 +100,8 @@ impl Drop for Release<'_> {
     }
 }
 
-async fn pause(desktop: &dyn Desktop, millis: u64) {
-    desktop.sleep(Duration::from_millis(millis)).await;
+async fn pause(desktop: &dyn Desktop, duration: Duration) {
+    desktop.sleep(duration).await;
 }
 
 pub fn move_to(desktop: &dyn Desktop, x: i64, y: i64) {
@@ -115,10 +116,10 @@ pub async fn click(desktop: &dyn Desktop, x: i64, y: i64, button: Button, count:
     for click in 1..=count.max(1) {
         desktop.post(Event::Down { x: px, y: py, button, click });
         let release = Release { desktop, event: Some(Event::Up { x: px, y: py, button, click }) };
-        pause(desktop, 50).await;
+        pause(desktop, HOLD).await;
         release.now();
         if click < count {
-            pause(desktop, 30).await;
+            pause(desktop, CLICK_GAP).await;
         }
     }
 }
@@ -130,12 +131,11 @@ pub async fn drag(desktop: &dyn Desktop, x: i64, y: i64) {
     let (ex, ey) = (x as f64, y as f64);
     desktop.post(Event::Down { x: sx, y: sy, button: Button::Left, click: 1 });
     let _release = Release { desktop, event: Some(Event::Up { x: ex, y: ey, button: Button::Left, click: 1 }) };
-    pause(desktop, 50).await;
-    const STEPS: u32 = 20;
-    for step in 1..=STEPS {
-        let progress = f64::from(step) / f64::from(STEPS);
+    pause(desktop, DRAG_SETTLE).await;
+    for step in 1..=DRAG_STEPS {
+        let progress = f64::from(step) / f64::from(DRAG_STEPS);
         desktop.post(Event::Drag { x: sx + (ex - sx) * progress, y: sy + (ey - sy) * progress });
-        pause(desktop, 25).await;
+        pause(desktop, DRAG_STEP_GAP).await;
     }
 }
 
@@ -149,22 +149,22 @@ pub async fn scroll(desktop: &dyn Desktop, at: Option<(i64, i64)>, horizontal: b
     }
     if let Some((x, y)) = at {
         move_to(desktop, x, y);
-        pause(desktop, 50).await;
+        pause(desktop, SCROLL_GAP).await;
     }
     let (vertical, horizontal) = match direction {
-        "up" => (3, 0),
-        "down" => (-3, 0),
-        "left" => (0, 3),
-        _ => (0, -3),
+        "up" => (WHEEL_LINES, 0),
+        "down" => (-WHEEL_LINES, 0),
+        "left" => (0, WHEEL_LINES),
+        _ => (0, -WHEEL_LINES),
     };
     for _ in 0..times.max(0) {
         desktop.post(Event::Wheel { vertical, horizontal });
-        pause(desktop, 50).await;
+        pause(desktop, SCROLL_GAP).await;
     }
     None
 }
 
-async fn key_press(desktop: &dyn Desktop, key: &str, modifiers: &[Modifier], hold: u64) {
+async fn key_press(desktop: &dyn Desktop, key: &str, modifiers: &[Modifier], hold: Duration) {
     desktop.post(Event::KeyDown { key: key.to_string(), modifiers: modifiers.to_vec() });
     let release = Release { desktop, event: Some(Event::KeyUp { key: key.to_string(), modifiers: modifiers.to_vec() }) };
     pause(desktop, hold).await;
@@ -194,7 +194,7 @@ async fn hot_key(desktop: &dyn Desktop, keys: &[String]) -> Result<(), String> {
         }
     }
     match main_key {
-        Some(key) => key_press(desktop, key, &modifiers, 50).await,
+        Some(key) => key_press(desktop, key, &modifiers, HOLD).await,
         None => {
             // Modifiers alone: pressed in order, released in reverse.
             let mut releases = Vec::new();
@@ -202,7 +202,7 @@ async fn hot_key(desktop: &dyn Desktop, keys: &[String]) -> Result<(), String> {
                 desktop.post(Event::KeyDown { key: key.clone(), modifiers: vec![] });
                 releases.push(Release { desktop, event: Some(Event::KeyUp { key: key.clone(), modifiers: vec![] }) });
             }
-            pause(desktop, 50).await;
+            pause(desktop, HOLD).await;
             while let Some(release) = releases.pop() {
                 release.now();
             }
@@ -223,11 +223,11 @@ pub async fn type_text(desktop: &dyn Desktop, text: &str) {
         return;
     }
     desktop.post(Event::ReleaseModifiers);
-    pause(desktop, 20).await;
+    pause(desktop, RELEASE_SETTLE).await;
     let restore = desktop.select_typing_layout();
     if restore.is_some() {
         // Give the text system a moment to see the switch before events arrive.
-        pause(desktop, 50).await;
+        pause(desktop, LAYOUT_SETTLE).await;
     }
     let restore = Restore(restore);
     let mut characters = text.chars().peekable();
@@ -237,17 +237,17 @@ pub async fn type_text(desktop: &dyn Desktop, text: &str) {
                 if character == '\r' && characters.peek() == Some(&'\n') {
                     characters.next();
                 }
-                key_press(desktop, "return", &[], 10).await;
+                key_press(desktop, "return", &[], CHARACTER_GAP).await;
             }
-            '\t' => key_press(desktop, "tab", &[], 10).await,
+            '\t' => key_press(desktop, "tab", &[], CHARACTER_GAP).await,
             _ => {
                 desktop.post(Event::Text(character.to_string()));
-                pause(desktop, 10).await;
+                pause(desktop, CHARACTER_GAP).await;
             }
         }
     }
     if restore.0.is_some() {
-        pause(desktop, 50).await;
+        pause(desktop, LAYOUT_SETTLE).await;
     }
 }
 
@@ -266,28 +266,28 @@ impl Drop for Restore {
 /// (which moves focus) and before the first key.
 pub async fn type_at(desktop: &dyn Desktop, x: i64, y: i64, text: &str, caret: Caret, clear: bool, press_enter: bool) -> bool {
     click(desktop, x, y, Button::Left, 1).await;
-    pause(desktop, 100).await;
+    pause(desktop, FOCUS_SETTLE).await;
     let secure = desktop.secure_input_at(x, y).await;
     if clear {
         chord(desktop, &["command", "a"]).await;
-        pause(desktop, 50).await;
+        pause(desktop, CLEAR_SETTLE).await;
         chord(desktop, &["delete"]).await;
-        pause(desktop, 50).await;
+        pause(desktop, CLEAR_SETTLE).await;
     }
     match caret {
         Caret::Start => {
             chord(desktop, &["command", "left"]).await;
-            pause(desktop, 20).await;
+            pause(desktop, CARET_SETTLE).await;
         }
         Caret::End => {
             chord(desktop, &["command", "right"]).await;
-            pause(desktop, 20).await;
+            pause(desktop, CARET_SETTLE).await;
         }
         Caret::Idle => {}
     }
     type_text(desktop, text).await;
     if press_enter {
-        key_press(desktop, "return", &[], 50).await;
+        key_press(desktop, "return", &[], HOLD).await;
     }
     secure
 }

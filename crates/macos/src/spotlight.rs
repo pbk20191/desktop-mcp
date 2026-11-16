@@ -102,7 +102,7 @@ pub fn search(search: Search) -> Result<Found, String> {
     // results before the deadline.
     let running = Arc::new(Mutex::new(Some(Running(md_query.clone()))));
     let stopped_execute = Arc::new(AtomicBool::new(false));
-    let budget = search.timeout.mul_f64(0.8);
+    let budget = search.timeout.mul_f64(crate::tuning::SPOTLIGHT_EXECUTE_SHARE);
     let watchdog = (running.clone(), stopped_execute.clone());
     let _ = DispatchQueue::global_queue(GlobalQueueIdentifier::QualityOfService(DispatchQoS::Default)).after(DispatchTime::try_from(budget).unwrap_or(DispatchTime::FOREVER), move || {
         if let Some(Running(query)) = watchdog.0.lock().unwrap().as_ref() {

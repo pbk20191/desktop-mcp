@@ -3,12 +3,12 @@ use crate::ax::{Element, Value};
 use desktop_mcp_core::element::{walk, ElementAttributes, ElementNode, FoundElement, NotAnswering, MAX_ELEMENTS};
 use std::time::Instant;
 
-/// An element of another app, with a 0.5 s messaging timeout set before its first read.
+/// An element of another app, with the messaging timeout set before its first read.
 pub struct AxNode(Element);
 
 impl AxNode {
     pub fn new(element: Element) -> AxNode {
-        element.set_messaging_timeout(0.5);
+        element.set_messaging_timeout(crate::tuning::AX_MESSAGING_TIMEOUT);
         AxNode(element)
     }
 }
@@ -49,7 +49,7 @@ pub fn find(pids: &[i32], title: Option<&str>, role: Option<&str>, deadline: Ins
     let mut fallback = None;
     for &pid in pids {
         let app = Element::application(pid);
-        app.set_messaging_timeout(0.5);
+        app.set_messaging_timeout(crate::tuning::AX_MESSAGING_TIMEOUT);
         let Some(windows) = app.elements("AXWindows") else { continue };
         let result = walk(windows.into_iter().map(AxNode::new).collect(), title, role, &mut budget, deadline, &|| false);
         if result.exact.is_some() {

@@ -49,7 +49,7 @@ fn regular_apps(app: Option<&str>) -> Vec<(i32, String)> {
 
 fn application(pid: i32) -> Element {
     let app = Element::application(pid);
-    app.set_messaging_timeout(0.5);
+    app.set_messaging_timeout(crate::tuning::AX_MESSAGING_TIMEOUT);
     app
 }
 

@@ -23,7 +23,7 @@ pub fn matches(name: Option<&str>, bundle_id: Option<&str>, query: &str) -> bool
 /// Calls `check` at once, then after 0.1 s, doubling to at most 1 s between checks, until it answers or `deadline`
 /// passes (the last sleep ends at the deadline, and one last check follows). `None` on timeout.
 async fn poll<T>(desktop: &dyn Desktop, deadline: Instant, mut check: impl AsyncFnMut() -> Option<T>) -> Option<T> {
-    let mut delay = Duration::from_millis(100);
+    let mut delay = crate::tuning::wait::FIRST_DELAY;
     loop {
         if let Some(value) = check().await {
             return Some(value);
@@ -33,7 +33,7 @@ async fn poll<T>(desktop: &dyn Desktop, deadline: Instant, mut check: impl Async
             return None;
         }
         desktop.sleep(delay.min(deadline - now)).await;
-        delay = (delay * 2).min(Duration::from_secs(1));
+        delay = (delay * 2).min(crate::tuning::wait::MAX_DELAY);
     }
 }
 
@@ -106,8 +106,6 @@ pub async fn until_window(desktop: &dyn Desktop, app: Option<&str>, title: Optio
     found.ok_or_else(|| format!("Timed out after {timeout}s waiting for {}.", parts.join(" ")))
 }
 
-/// The least time one element check may walk, whatever is left of the timeout.
-const MINIMUM_WALK: Duration = Duration::from_millis(500);
 
 /// Waits until an element with `title` and/or `role` appears in `app` (or the app owning the menu bar); answers
 /// `<role> "<title>" at [x,y]`, the centre in Click coordinates.
@@ -120,7 +118,7 @@ pub async fn until_element(desktop: &dyn Desktop, app: Option<&str>, title: Opti
     let (timeout, deadline) = deadline(timeout);
     let found = poll(desktop, deadline, async || {
         // Every check gets a real walk, even at or past the deadline (timeout 0).
-        let walk_deadline = deadline.max(Instant::now() + MINIMUM_WALK);
+        let walk_deadline = deadline.max(Instant::now() + crate::tuning::wait::MINIMUM_WALK);
         let element = desktop.find_element(app, title, role, walk_deadline).await?;
         Some(format!("{} \"{}\" at [{},{}]", element.role, crate::window::flat(&element.title), element.center.0.round() as i64, element.center.1.round() as i64))
     })

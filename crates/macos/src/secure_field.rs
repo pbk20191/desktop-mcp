@@ -42,12 +42,12 @@ pub fn receives_secure_input<N: Node>(focused: Option<N>, hit: Option<N>) -> boo
     false
 }
 
-/// An element of another app, with a 0.5 s messaging timeout set before its first read.
+/// An element of another app, with the messaging timeout set before its first read.
 pub struct AxNode(Element);
 
 impl AxNode {
     pub fn new(element: Element) -> AxNode {
-        element.set_messaging_timeout(0.5);
+        element.set_messaging_timeout(crate::tuning::AX_MESSAGING_TIMEOUT);
         AxNode(element)
     }
 }
