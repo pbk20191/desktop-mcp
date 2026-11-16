@@ -61,6 +61,7 @@ impl Desktop for MacDesktop {
         let argv = match mode {
             ShellMode::Shell => vec!["/bin/bash".to_string(), "-c".to_string(), command.to_string()],
             ShellMode::Osascript => std::iter::once("/usr/bin/osascript".to_string()).chain(osascript_arguments(command)).collect(),
+            ShellMode::Powershell => return Box::pin(async { Err("powershell is not available on macOS".to_string()) }),
         };
         Box::pin(crate::process::run(argv, timeout))
     }

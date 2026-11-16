@@ -1,7 +1,10 @@
 //! The Launch Agent's plist, and how `connect` finds the agent from it. Ported from the Swift port's
 //! ConnectPlanTests and StdioBridgeTests.
 use desktop_mcp_core::config::Config;
-use desktop_mcp_core::launch_agent::{find_free_port, plist_xml, program_arguments, validate_transport, ConnectPlan, HttpTarget, LABEL};
+use desktop_mcp_core::launch_agent::{find_free_port, program_arguments, validate_transport, ConnectPlan, HttpTarget};
+#[cfg(unix)]
+use desktop_mcp_core::launch_agent::{plist_xml, LABEL};
+#[cfg(unix)]
 use std::path::Path;
 
 fn args(transport: &str, host: &str, port: u16, socket: Option<&str>) -> Vec<String> {

@@ -15,6 +15,9 @@ pub enum ShellMode {
     #[default]
     Shell,
     Osascript,
+    // Windows lists only this one, through its platform text; the core's (macOS) schema leaves it out.
+    #[schemars(skip)]
+    Powershell,
 }
 
 /// A finished (or timed-out) process.

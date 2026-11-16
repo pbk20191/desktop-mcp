@@ -1,5 +1,6 @@
 //! The platform-independent part of desktop-mcp. Nothing here names an operating system.
 pub mod guest;
+pub mod platform;
 pub mod tuning;
 pub mod io;
 pub mod mcp;

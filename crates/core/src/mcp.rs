@@ -109,10 +109,29 @@ pub struct Server {
 impl Server {
     /// A server offering the tools named in `tools`.
     pub fn new(desktop: Rc<dyn Desktop>, tools: &[&str]) -> Server {
+        Self::with_platform(desktop, Rc::new(crate::platform::CoreText), tools)
+    }
+
+    /// A server offering the tools named in `tools`, the shared ones with `platform`'s text, and `platform`'s own.
+    pub fn with_platform(desktop: Rc<dyn Desktop>, platform: Rc<dyn crate::platform::Platform>, tools: &[&str]) -> Server {
         let mut tool_router = Self::tool_router();
+        for extra in platform.tools() {
+            let call = Rc::new(extra.call);
+            tool_router.add_route(rmcp::handler::server::router::tool::ToolRoute::new_dyn(extra.tool, move |context| {
+                let call = call.clone();
+                let arguments = context.arguments.unwrap_or_default();
+                let cancellation = context.request_context.ct.clone();
+                Box::pin(async move { Ok(rmcp::model::CallToolResponse::Complete(call(arguments, cancellation).await)) })
+            }));
+        }
         for tool in tool_router.list_all() {
             if !tools.contains(&tool.name.as_ref()) {
                 tool_router.remove_route(&tool.name);
+            }
+        }
+        for (name, route) in tool_router.map.iter_mut() {
+            if let Some(text) = platform.text(name) {
+                crate::platform::apply(&mut route.attr, text);
             }
         }
         Server { tool_router, desktop }
