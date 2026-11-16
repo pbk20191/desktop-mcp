@@ -105,3 +105,34 @@ fn an_element_outside_its_window_is_not_listed() {
     let walk = walk_window(&Below, "Win", false, (0.0, 0.0, 800.0, 1000.0), &Limits::default());
     assert!(walk.interactive.is_empty(), "{:?}", walk.interactive);
 }
+
+/// An unnamed text box and an unnamed, unfocusable button.
+struct Unnamed;
+
+impl TreeSource for Unnamed {
+    type Node = usize;
+    type Identity = usize;
+    fn root(&self) -> Option<usize> {
+        Some(0)
+    }
+    fn identity(&self, node: &usize) -> Option<usize> {
+        Some(*node)
+    }
+    fn children(&self, node: &usize, _limit: usize) -> Vec<usize> {
+        if *node == 0 { vec![1, 2] } else { vec![] }
+    }
+    fn props(&self, node: &usize) -> ElementProps {
+        match node {
+            0 => props("Pane"),
+            1 => ElementProps { name: String::new(), automation_id: "textBox1".into(), ..props("Edit") },
+            _ => ElementProps { name: String::new(), ..props("Button") },
+        }
+    }
+}
+
+#[test]
+fn an_unnamed_text_box_is_listed_by_its_automation_id() {
+    let walk = walk_window(&Unnamed, "Win", false, (0.0, 0.0, 800.0, 600.0), &Limits::default());
+    let names: Vec<&str> = walk.interactive.iter().map(|element| element.name.as_str()).collect();
+    assert_eq!(names, ["textBox1"]);
+}

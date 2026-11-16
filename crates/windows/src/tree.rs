@@ -120,6 +120,15 @@ fn clipped(rect: (f64, f64, f64, f64), window: (f64, f64, f64, f64)) -> Option<B
     (right > left && bottom > top).then(|| BoundingBox::from_edges(left, top, right, bottom))
 }
 
+/// Text-entry types: listed even unnamed.
+const ENTRY_TYPES: [&str; 5] = ["Edit", "ComboBox", "Document", "Spinner", "Slider"];
+
+/// The element's name; an unnamed one is named by its automation id, else its control type (the C# port's fallback
+/// for scrollables).
+fn fallback_name(element: &ElementProps) -> String {
+    [element.name.trim(), element.automation_id.as_str(), element.control_type.as_str()].into_iter().find(|name| !name.is_empty()).unwrap_or_default().to_string()
+}
+
 fn node(element: &ElementProps, window_name: &str, window: (f64, f64, f64, f64), metadata: Vec<(String, Meta)>) -> Option<TreeNode> {
     Some(TreeNode { bounding_box: clipped(element.rect, window)?, name: element.name.trim().to_string(), control_type: element.control_type.clone(), window_name: window_name.to_string(), metadata })
 }
@@ -142,8 +151,9 @@ pub fn walk_window<S: TreeSource>(source: &S, window_name: &str, browser: bool, 
         walk.read += 1;
         let element = source.props(&current);
         let class = classify(&element, browser);
-        if class.interactive && !element.name.trim().is_empty() {
-            walk.interactive.extend(node(&element, window_name, window, Vec::new()));
+        // An unnamed one is listed only when text can be entered or focus can go there (an empty text box).
+        if class.interactive && (!element.name.trim().is_empty() || ENTRY_TYPES.contains(&element.control_type.as_str()) || element.keyboard_focusable) {
+            walk.interactive.extend(node(&ElementProps { name: fallback_name(&element), ..element.clone() }, window_name, window, Vec::new()));
         }
         if class.scrollable {
             let metadata = vec![
@@ -152,9 +162,7 @@ pub fn walk_window<S: TreeSource>(source: &S, window_name: &str, browser: bool, 
                 ("vertical_scrollable".to_string(), Meta::Bool(true)),
                 ("vertical_scroll_percent".to_string(), Meta::Float((element.vertical_percent * 100.0).round() / 100.0)),
             ];
-            // An unnamed scrollable is named by its automation id, else its control type (the C# port's fallback).
-            let name = [element.name.trim(), element.automation_id.as_str(), element.control_type.as_str()].into_iter().find(|name| !name.is_empty()).unwrap_or_default().to_string();
-            walk.scrollable.extend(node(&ElementProps { name, ..element.clone() }, window_name, window, metadata));
+            walk.scrollable.extend(node(&ElementProps { name: fallback_name(&element), ..element.clone() }, window_name, window, metadata));
         }
         let mut children = source.children(&current, limits.children_per_parent);
         children.reverse(); // depth first, in document order
