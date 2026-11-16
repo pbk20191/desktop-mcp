@@ -58,6 +58,24 @@ fn main() {
         assert_eq!(read, b"");
         assert!(started.elapsed() < Duration::from_secs(1), "took {:?}", started.elapsed());
     });
+
+    // A write blocked on a client that does not read fails promptly when cancelled.
+    run(|_| async move {
+        let (input_read, _input_write) = pipe();
+        let (_output_read, output_write) = pipe();
+        let mut io = StdIo::from_handles(input_read, output_write);
+        let canceller = io.canceller();
+        let started = Instant::now();
+        let bytes = vec![b'x'; 1 << 20];
+        let pending = poll_fn(|cx| Pin::new(&mut io).poll_write(cx, &bytes));
+        let cancel = async {
+            desktop_mcp_windows::pool::sleep(Duration::from_millis(100)).await;
+            canceller.cancel();
+        };
+        let (written, ()) = tokio::join!(pending, cancel);
+        assert!(written.is_err(), "{written:?}");
+        assert!(started.elapsed() < Duration::from_secs(1), "took {:?}", started.elapsed());
+    });
     println!("stdio: ok");
 }
 
