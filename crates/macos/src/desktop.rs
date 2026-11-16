@@ -196,6 +196,10 @@ impl Desktop for MacDesktop {
         })
     }
 
+    fn create_space(&self, open_delay: f64, close_after: bool) -> Pin<Box<dyn Future<Output = String> + '_>> {
+        Box::pin(crate::spaces::create(self, open_delay, close_after))
+    }
+
     fn find_element(&self, app: Option<&str>, title: Option<&str>, role: Option<&str>, deadline: std::time::Instant) -> Pin<Box<dyn Future<Output = Option<desktop_mcp_core::element::FoundElement>>>> {
         // The running apps and the menu bar owner are read here, on the main thread; the walk runs on a worker.
         let pids = crate::element::pids(app, if app.is_none() { crate::menu::menu_bar_owner() } else { None });

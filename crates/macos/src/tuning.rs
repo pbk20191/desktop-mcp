@@ -33,3 +33,11 @@ pub const WRITE_HIGH_WATER: usize = 256 * 1024;
 pub const LAUNCH_TIMEOUT: Duration = Duration::from_secs(15);
 /// How long `osascript` may take to post a notification (Swift port).
 pub const NOTIFY_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Creating a Space through Mission Control (Swift port): how often the Dock is searched for the "Add Desktop"
+/// control while Mission Control opens, the wait after pressing it before counting again, how deep the Dock's
+/// tree is searched, and the wait after closing Mission Control.
+pub const SPACES_POLL: Duration = Duration::from_millis(150);
+pub const SPACES_ADDED_SETTLE: Duration = Duration::from_millis(350);
+pub const SPACES_SEARCH_DEPTH: usize = 12;
+pub const SPACES_CLOSE_SETTLE: Duration = Duration::from_millis(300);

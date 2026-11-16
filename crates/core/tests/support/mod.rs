@@ -89,6 +89,9 @@ pub struct FakeDesktop {
     pub looked: Cell<usize>,
 }
 impl Desktop for FakeDesktop {
+    fn create_space(&self, _open_delay: f64, _close_after: bool) -> Pin<Box<dyn Future<Output = String> + '_>> {
+        Box::pin(async { "Created new desktop space.".to_string() })
+    }
     fn snapshot(&self, _use_vision: bool) -> Pin<Box<dyn Future<Output = desktop_mcp_core::snapshot::State>>> {
         let state = self.snapshot_state.borrow().clone();
         Box::pin(async move { state })

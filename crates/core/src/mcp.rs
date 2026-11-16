@@ -90,6 +90,8 @@ pub trait Desktop: 'static {
     /// none, or when `deadline` passes first.
     /// The desktop's state for Snapshot; with `use_vision`, an annotated screenshot too.
     fn snapshot(&self, use_vision: bool) -> Pin<Box<dyn Future<Output = crate::snapshot::State>>>;
+    /// Creates a desktop Space (Mission Control), waiting `open_delay` seconds for it to open; says how it went.
+    fn create_space(&self, open_delay: f64, close_after: bool) -> Pin<Box<dyn Future<Output = String> + '_>>;
     fn find_element(&self, app: Option<&str>, title: Option<&str>, role: Option<&str>, deadline: std::time::Instant) -> Pin<Box<dyn Future<Output = Option<crate::element::FoundElement>>>>;
 }
 
@@ -392,8 +394,48 @@ struct SnapshotArgs {
     use_vision: bool,
 }
 
+fn yes() -> bool {
+    true
+}
+
+fn open_delay() -> f64 {
+    0.9
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct DesktopArgs {
+    #[serde(default)]
+    mode: SpacesMode,
+    #[serde(default = "yes")]
+    close_after: bool,
+    #[serde(default = "open_delay")]
+    open_delay: f64,
+}
+
+#[derive(Clone, Copy, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum SpacesMode {
+    #[default]
+    Create,
+}
+
 #[tool_router]
 impl Server {
+    #[tool(
+        name = "Desktop",
+        description = "Manages Mission Control desktop Spaces. mode='create' opens Mission Control and clicks 'Add Desktop' to create a new virtual desktop, verifying the space count increased before reporting success. Uses Accessibility only. Requires Accessibility permission. UI layout can vary by macOS version/locale.",
+        annotations(title = "Desktop", read_only_hint = false, destructive_hint = false, idempotent_hint = false, open_world_hint = false)
+    )]
+    async fn desktop(&self, Parameters(args): Parameters<DesktopArgs>, cancellation: CancellationToken) -> CallToolResult {
+        let desktop = self.desktop.as_ref();
+        run_tool("Desktop", cancellation, async move {
+            let SpacesMode::Create = args.mode;
+            crate::input::require_accessibility(desktop).map_err(ToolError)?;
+            Ok(desktop.create_space(args.open_delay, args.close_after).await)
+        })
+        .await
+    }
+
     #[tool(
         name = "Snapshot",
         description = "Captures complete desktop state including: focused window, open applications, interactive elements (buttons, text fields, links, menus with coordinates), and scrollable areas. Set use_vision=True to include screenshot with numbered annotations on interactive elements. Always call this first to understand the current desktop state before taking actions.",
