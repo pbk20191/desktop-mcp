@@ -12,7 +12,8 @@ Install: open the `.mcpb` file with Claude Desktop, or drop it on Settings → E
 
 ## Signatures
 
-The executables and both bundles are signed with a self-signed certificate:
+The executables inside the bundles (`desktop-mcp.exe`, `desktop-mcp-arm64.exe`, the macOS `desktop-mcp`) are signed
+with a self-signed certificate:
 
 - Subject `CN=desktop-mcp (pbk20191)`, valid until 2036-11-16
 - SHA-1 thumbprint `88FE207CD26CF6E483BEE389B2FE701D156DD675`
@@ -25,8 +26,10 @@ macOS this keeps the Accessibility and Screen Recording grants across updates), 
   import `desktop-mcp-codesign.pem` into *Trusted Publishers* and *Trusted Root Certification Authorities* for the
   current user (`certmgr.msc`), after checking the fingerprint above.
 - **macOS** is not notarized; Gatekeeper may block a downloaded binary until you allow it in Privacy & Security.
-- **`mcpb verify` reports "Extension is not signed"** for these bundles. That is a limitation of the mcpb CLI
-  2.1.2: its verification calls a PKCS#7 routine its library does not implement, so it reports every signed bundle
-  as unsigned. To check a bundle's signature yourself, run
-  [`scripts/verify-mcpb-signature.py`](https://github.com/pbk20191/desktop-mcp/blob/master/scripts/verify-mcpb-signature.py)
-  with Python 3 and OpenSSL: `python3 verify-mcpb-signature.py desktop-mcp-windows.mcpb desktop-mcp-codesign.pem`.
+- **The `.mcpb` files themselves are not signed**, so `mcpb verify` and Claude Desktop report them as unsigned. A
+  bundle signed with today's `mcpb sign` cannot be opened by Claude Desktop ("Invalid comment length"), so only the
+  executables carry the signature. Check a download against the SHA-256 in `signing-bundles.txt`.
+
+To check an executable's signature: on Windows, its Properties → Digital Signatures, or
+`Get-AuthenticodeSignature desktop-mcp.exe` (the signer thumbprint above); on macOS,
+`codesign --display --verbose=2 desktop-mcp` (Authority=desktop-mcp (pbk20191)).

@@ -201,11 +201,13 @@ password-protected `.p12`, its base64 text and the public `.cer`). Repository se
 | `CODESIGN_IDENTITY` | optional: the macOS codesign identity, default the certificate in the `.p12` |
 
 With them, the Windows executables are signed with signtool (SHA-256, timestamped by DigiCert), the macOS binary with
-codesign (hardened runtime with the Apple Events entitlement, `scripts/desktop-mcp.entitlements`; no timestamp) and
-each bundle with `mcpb sign`. Without them everything is still built, unsigned (the macOS binary ad-hoc signed), and
+codesign (hardened runtime with the Apple Events entitlement, `scripts/desktop-mcp.entitlements`; no timestamp). The
+`.mcpb` bundles are not signed: `mcpb sign` (2.1.2) appends its signature after the ZIP's end record without a
+matching comment length, and Claude Desktop then refuses to open the bundle ("Invalid comment length"); `mcpb verify`
+also reports every signed bundle as unsigned. Without the secrets everything is still built, unsigned (the macOS binary ad-hoc signed), and
 the job summary says so. Each job records what was signed in its log, its summary and a report beside the bundles
 (`signing-windows.txt`: SHA-256, Authenticode status, signer and thumbprint; `signing-macos.txt`: SHA-256, architectures,
-`codesign --display` and `--verify`; `signing-bundles.txt`: SHA-256 and an OpenSSL check of each bundle signature, since `mcpb verify` 2.1.2 cannot verify any signature), kept in the
+`codesign --display` and `--verify`; `signing-bundles.txt`: each bundle's SHA-256), kept in the
 `desktop-mcp-mcpb` artifact and attached to the release.
 
 What the self-signed certificate gives: a stable identity, so macOS keeps the Accessibility and Screen Recording

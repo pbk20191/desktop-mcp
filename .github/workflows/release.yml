@@ -5,8 +5,9 @@
 #   CODESIGN_P12_BASE64    the .p12 (PKCS#12, RSA key), base64
 #   CODESIGN_P12_PASSWORD  its password
 #   CODESIGN_IDENTITY      optional: the macOS codesign identity; default: the certificate in the .p12
-# Without them everything is still built: the Windows executables and the bundles unsigned, the macOS binary ad-hoc
-# signed.
+# The certificate signs the executables (Authenticode on Windows, codesign on macOS); the .mcpb bundles are not signed
+# (see the bundles job). Without the secrets everything is still built: the Windows executables unsigned, the macOS
+# binary ad-hoc signed.
 name: Release
 
 on:
@@ -172,53 +173,37 @@ jobs:
           if-no-files-found: error
 
   bundles:
-    name: Sign the bundles
+    name: Collect the bundles
     needs: [windows, macos]
     runs-on: ubuntu-latest
     env:
       SIGN: ${{ secrets.CODESIGN_P12_BASE64 != '' && secrets.CODESIGN_P12_PASSWORD != '' }}
     steps:
-      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           pattern: mcpb-*
           merge-multiple: true
           path: dist
-      - name: Sign and verify
+      - name: Public certificate
         if: env.SIGN == 'true'
         env:
           CODESIGN_P12_BASE64: ${{ secrets.CODESIGN_P12_BASE64 }}
           CODESIGN_P12_PASSWORD: ${{ secrets.CODESIGN_P12_PASSWORD }}
         run: |
+          # The public certificate ships with the release, for checking the executables' signatures or trusting them.
+          # The .mcpb bundles themselves are not signed: `mcpb sign` (2.1.2) appends its block after the ZIP's end
+          # record without a matching comment length, and Claude Desktop then refuses the bundle ("Invalid comment
+          # length").
           secrets_dir=$(mktemp -d)
           trap 'rm -rf "$secrets_dir"' EXIT
           echo "$CODESIGN_P12_BASE64" | base64 --decode > "$secrets_dir/codesign.p12"
-          # The public certificate ships with the release, for checking the signatures or trusting them.
           openssl pkcs12 -in "$secrets_dir/codesign.p12" -passin env:CODESIGN_P12_PASSWORD -nokeys -clcerts | openssl x509 -out dist/desktop-mcp-codesign.pem
-          openssl pkcs12 -in "$secrets_dir/codesign.p12" -passin env:CODESIGN_P12_PASSWORD -nocerts -nodes | openssl pkey -out "$secrets_dir/key.pem"
-          # `mcpb verify` 2.1.2 reports every bundle unsigned (node-forge has no PKCS#7 verification), so the signature
-          # is checked with OpenSSL against the certificate instead.
-          for bundle in dist/*.mcpb; do
-            npx -y @anthropic-ai/mcpb@2.1.2 sign "$bundle" --cert dist/desktop-mcp-codesign.pem --key "$secrets_dir/key.pem"
-            python3 scripts/verify-mcpb-signature.py "$bundle" dist/desktop-mcp-codesign.pem
-          done
-          echo "Bundles: signed with the CODESIGN certificate (self-signed)" >> "$GITHUB_STEP_SUMMARY"
-      - name: Unsigned
-        if: env.SIGN != 'true'
+      - name: Bundle report
         run: |
-          echo "Bundles: unsigned (no CODESIGN_P12_BASE64 / CODESIGN_P12_PASSWORD secrets)" >> "$GITHUB_STEP_SUMMARY"
-      - name: Signing report
-        run: |
-          # The signed bundles' report, beside the platform ones (signing-windows.txt, signing-macos.txt) in the
-          # artifact. An unsigned bundle is reported, not an error here.
+          # The bundles' checksums, beside the platform reports (signing-windows.txt, signing-macos.txt).
           for bundle in dist/*.mcpb; do
             echo "$bundle"
             echo "  sha256: $(sha256sum "$bundle" | cut -d' ' -f1)"
-            if [[ -f dist/desktop-mcp-codesign.pem ]]; then
-              python3 scripts/verify-mcpb-signature.py "$bundle" dist/desktop-mcp-codesign.pem 2>&1 | sed 's/^/  /' || true
-            else
-              echo "  unsigned"
-            fi
           done | tee dist/signing-bundles.txt
           if [[ -f dist/desktop-mcp-codesign.pem ]]; then
             {
