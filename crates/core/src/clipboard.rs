@@ -49,7 +49,9 @@ pub async fn read(desktop: &dyn Desktop) -> Vec<ContentBlock> {
             if sections.is_empty() {
                 sections.push(format!("Image ({}×{}).", image.width, image.height));
             }
-            vec![ContentBlock::text(sections.join("\n\n")), ContentBlock::image(base64::engine::general_purpose::STANDARD.encode(&image.png), "image/png")]
+            let png = image.png;
+            let data = crate::mcp::off_loop(desktop, move || base64::engine::general_purpose::STANDARD.encode(png)).await;
+            vec![ContentBlock::text(sections.join("\n\n")), ContentBlock::image(data, "image/png")]
         }
         None if sections.is_empty() => vec![ContentBlock::text("The clipboard is empty.")],
         None => vec![ContentBlock::text(sections.join("\n\n"))],

@@ -40,7 +40,9 @@ pub async fn run(argv: Vec<String>, timeout: Duration) -> Result<Run, String> {
         }
     };
     child.exited = true;
-    Ok(Run { stdout: read(stdout), stderr: read(stderr), status, timed_out })
+    // Up to 10 MiB per stream: read on a worker, off the event loop.
+    let (stdout, stderr) = crate::main_loop::offload(move || (read(stdout), read(stderr))).await;
+    Ok(Run { stdout, stderr, status, timed_out })
 }
 
 /// Kills the child's process group if the call is abandoned before the child exits. The exit watcher stays
