@@ -457,9 +457,11 @@ dependencies = [
  "hyper",
  "markup5ever_rcdom",
  "rcgen",
+ "rmcp",
  "schannel",
  "serde_json",
  "tokio",
+ "tokio-util",
  "windows",
  "windows-future",
 ]

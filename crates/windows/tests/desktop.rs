@@ -26,11 +26,11 @@ fn windows_text_is_listed_and_windows_sounds_are_accepted() {
     let listed = ask(json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}));
     let tools = listed["result"]["tools"].as_array().unwrap();
     let names: Vec<&str> = tools.iter().map(|tool| tool["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["Clipboard", "Notification", "Scrape", "Shell", "Wait"]);
-    let shell = &tools[3];
+    assert_eq!(names, ["Clipboard", "Notification", "Scrape", "Screenshot", "Shell", "Snapshot", "Wait", "Window"]);
+    let shell = tools.iter().find(|tool| tool["name"] == "Shell").unwrap();
     assert!(shell["description"].as_str().unwrap().starts_with("Execute commands on Windows in PowerShell"));
     assert_eq!(shell["inputSchema"]["properties"]["mode"]["enum"], json!(["powershell"]));
-    assert_eq!(tools[1]["inputSchema"]["$defs"]["NotificationSound"]["enum"], json!(["Default", "IM", "Mail", "Reminder", "SMS"]));
+    assert_eq!(tools.iter().find(|tool| tool["name"] == "Notification").unwrap()["inputSchema"]["$defs"]["NotificationSound"]["enum"], json!(["Default", "IM", "Mail", "Reminder", "SMS"]));
 
     // osascript is refused on Windows.
     let called = ask(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"Shell","arguments":{"command":"x","mode":"osascript"}}}));
@@ -61,4 +61,20 @@ fn dropfiles_and_dib_wrapping() {
     assert_eq!(&bmp[..2], b"BM");
     assert_eq!(&bmp[10..14], &54u32.to_le_bytes());
     assert_eq!(bmp.len(), 14 + dib.len());
+}
+
+#[test]
+fn snapshot_reads_the_live_desktop_with_windows_wording() {
+    let _ = unsafe { windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+    let server = Server::with_platform(Rc::new(WindowsDesktop::new()), Rc::new(WindowsPlatform), TOOLS);
+    let message = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"Snapshot","arguments":{"use_vision": false}}});
+    let answer = tokio::task::LocalSet::new().block_on(&runtime, answer_stateless(server, serde_json::from_value(message).unwrap()));
+    let answer = serde_json::to_value(answer.unwrap()).unwrap();
+    let text = answer["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("Focused Window:") && text.contains("Open Applications:") && text.contains("physical pixels"), "{text}");
+    assert!(!text.contains("System Settings") && !text.contains("Screen Recording"), "{text}");
+    let listed = serde_json::to_value(tokio::task::LocalSet::new().block_on(&runtime, answer_stateless(Server::with_platform(Rc::new(WindowsDesktop::new()), Rc::new(WindowsPlatform), TOOLS), serde_json::from_value(json!({"jsonrpc":"2.0","id":1,"method":"tools/list"})).unwrap())).unwrap()).unwrap();
+    let wait = listed["result"]["tools"].as_array().unwrap().iter().find(|tool| tool["name"] == "Wait").unwrap();
+    assert!(wait["description"].as_str().unwrap().contains("UI Automation control type"), "{wait}");
 }

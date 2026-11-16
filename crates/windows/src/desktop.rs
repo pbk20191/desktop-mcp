@@ -116,8 +116,17 @@ impl Desktop for WindowsDesktop {
         ready(())
     }
 
+    /// The applications with a window, once each.
     fn running_apps(&self) -> Pending<Vec<RunningApp>> {
-        ready(Vec::new())
+        Box::pin(async {
+            let mut apps: Vec<RunningApp> = Vec::new();
+            for window in pool::offload(crate::windows_list::top_windows).await {
+                if !apps.iter().any(|app| app.pid == window.pid as i32) {
+                    apps.push(RunningApp { pid: window.pid as i32, name: Some(window.app), bundle_id: Some(window.exe) });
+                }
+            }
+            apps
+        })
     }
 
     fn accessibility_trusted(&self) -> bool {
@@ -162,16 +171,68 @@ impl Desktop for WindowsDesktop {
         ready(Err(NOT_YET.to_string()))
     }
 
-    fn snapshot(&self, _use_vision: bool) -> Pending<desktop_mcp_core::snapshot::State> {
-        ready(Default::default())
+    /// Windows and their UI Automation elements, read on the pool; with `use_vision`, the focused window's display
+    /// captured with the interactive elements numbered on it.
+    fn snapshot(&self, use_vision: bool) -> Pending<desktop_mcp_core::snapshot::State> {
+        Box::pin(async move {
+            let (walk, displays, desktop) = pool::offload(|| {
+                let windows = crate::windows_list::top_windows();
+                (crate::tree::walk(&windows, &crate::tree::Limits::default()), crate::displays::displays(), crate::virtual_desktops::current_desktop_line())
+            })
+            .await;
+            let mut notes: Vec<String> = desktop.into_iter().collect();
+            if walk.stopped_early {
+                notes.push("The element list was cut short (too many elements or too slow to read); Window list narrows it to one app.".to_string());
+            }
+            let mut state = desktop_mcp_core::snapshot::State {
+                active: walk.active.clone(),
+                windows: walk.windows,
+                tree: walk.tree,
+                coordinate_space: crate::displays::coordinate_space(&displays),
+                trusted: true,
+                screenshot: None,
+                notes,
+                screenshot_hint: None,
+            };
+            if use_vision {
+                let focused = walk.active.as_ref().map(|view| {
+                    let b = &view.bounding_box;
+                    desktop_mcp_core::window::Frame::new(b.left as f64, b.top as f64, b.width as f64, b.height as f64)
+                });
+                let display = focused.and_then(|frame| crate::ocr::display_of(&displays, frame)).or_else(|| displays.iter().find(|display| display.main)).cloned();
+                let shot = match display {
+                    Some(display) => crate::capture::capture_display(&display).await,
+                    None => Err("no display".to_string()),
+                };
+                let elements = state.tree.interactive.clone();
+                let image = match shot {
+                    Ok(mut pixels) => pool::offload(move || {
+                        crate::imaging::annotate(&mut pixels, &elements)?;
+                        crate::imaging::encode_png(&pixels, None)
+                    })
+                    .await,
+                    Err(reason) => Err(reason),
+                };
+                match image {
+                    Ok(png) => state.screenshot = Some(png),
+                    Err(reason) => {
+                        state.screenshot_hint = Some(format!("Note: Screenshot capture failed ({reason}), so no annotated image is attached. The elements\nlisted above are still valid; call Snapshot again if you need the screenshot."))
+                    }
+                }
+            }
+            state
+        })
     }
 
     fn create_space(&self, _open_delay: f64, _close_after: bool) -> Pin<Box<dyn Future<Output = String> + '_>> {
         Box::pin(async { NOT_YET.to_string() })
     }
 
-    fn read_text(&self, _request: desktop_mcp_core::ocr::Request) -> Pending<Result<Vec<desktop_mcp_core::ocr::TextLine>, String>> {
-        ready(Err(NOT_YET.to_string()))
+    fn read_text(&self, request: desktop_mcp_core::ocr::Request) -> Pending<Result<Vec<desktop_mcp_core::ocr::TextLine>, String>> {
+        Box::pin(async move {
+            let focused = pool::offload(|| crate::windows_list::top_windows().into_iter().find(|window| window.focused && !window.minimized).map(|window| window.frame)).await;
+            crate::ocr::read_text(request, focused).await
+        })
     }
 
     /// An element of `app`'s windows (else the focused window's app) by UIA control type and name, on the pool.

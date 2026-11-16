@@ -26,7 +26,7 @@ fn stdio_lists_runs_shell_and_exits_at_end_of_input() {
 
     let by_id = |id: i64| answers.iter().find(|answer| answer["id"] == id).unwrap_or_else(|| panic!("no answer {id} in {answers:?}"));
     let names: Vec<&str> = by_id(2)["result"]["tools"].as_array().unwrap().iter().map(|tool| tool["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["Clipboard", "Notification", "Scrape", "Shell", "Wait"]);
+    assert_eq!(names, ["Clipboard", "Notification", "Scrape", "Screenshot", "Shell", "Snapshot", "Wait", "Window"]);
     let text = by_id(3)["result"]["content"][0]["text"].as_str().unwrap();
     assert!(text.starts_with("Shell Response: ") && text.contains("hi") && text.ends_with("Status Code: 0"), "{text}");
 }
