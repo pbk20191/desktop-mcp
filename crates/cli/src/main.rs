@@ -5,6 +5,9 @@ use desktop_mcp_core::plan::{CommandLine, ServePlan};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+#[cfg(windows)]
+mod arch_switch;
+
 #[derive(Parser)]
 #[command(name = "desktop-mcp", version, about = "An MCP server for computer use on the desktop")]
 struct Cli {
@@ -127,6 +130,8 @@ pub fn log(message: &str) {
 }
 
 fn main() -> ExitCode {
+    #[cfg(windows)]
+    arch_switch::run_native_sibling();
     let cli = Cli::parse();
     let args = match cli.command {
         Some(Command::Serve(args)) => args,
