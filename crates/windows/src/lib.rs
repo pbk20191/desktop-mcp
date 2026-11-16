@@ -17,5 +17,6 @@ pub mod stdio;
 pub mod tls;
 mod tls_keys;
 pub mod tls_io;
+pub mod virtual_desktops;
 pub mod windows_list;
 pub mod tuning;

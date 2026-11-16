@@ -31,3 +31,13 @@ fn display_frames_are_physical() {
     assert!(displays.windows(2).all(|pair| pair[0].frame.x <= pair[1].frame.x), "left to right");
     assert!(displays::coordinate_space(&displays).contains("physical pixels"));
 }
+
+#[test]
+fn desktop_line_names_and_counts() {
+    use desktop_mcp_windows::virtual_desktops::desktop_line;
+    let (a, b, c) = (1u128, 2u128, 3u128);
+    let names = [(b, "Work".to_string())];
+    assert_eq!(desktop_line(&[a, b, c], &names, b).as_deref(), Some("Virtual desktop: Work (2 of 3)"));
+    assert_eq!(desktop_line(&[a, b, c], &names, c).as_deref(), Some("Virtual desktop: Desktop 3 (3 of 3)"));
+    assert_eq!(desktop_line(&[a, b, c], &names, 9), None);
+}
