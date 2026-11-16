@@ -41,6 +41,37 @@ the macOS one has. The parity suite learns to run against the Windows binary.
 
 ---
 
+### Task 0: the clipboard on its own STA thread
+
+The W1 review left clipboard calls synchronous on the main thread: a clipboard owner that does not answer stalls
+every request. The WinRT clipboard sits on the OLE clipboard, which needs an STA thread that pumps messages, so the
+calls move to one dedicated thread rather than to the pool.
+
+**Files:**
+- Create: `crates/windows/src/sta.rs`
+- Modify: `crates/windows/src/clipboard.rs`, `crates/windows/src/desktop.rs`
+
+**Interfaces:**
+- Produces:
+  ```rust
+  /// A thread of its own with an STA and a message loop (`CreateDispatcherQueueController(DQTYPE_THREAD_DEDICATED,
+  /// DQTAT_COM_STA)`), created on first use and kept for the process.
+  pub struct StaThread { /* its DispatcherQueue */ }
+  impl StaThread {
+      pub fn shared() -> &'static StaThread;
+      /// Runs `work` there to completion (its awaits are served by that thread's loop); the result comes back
+      /// through a oneshot to the caller's loop.
+      pub fn run<T: Send + 'static, F: Future<Output = T> + 'static>(&self, work: impl FnOnce() -> F + Send + 'static) -> impl Future<Output = T>;
+  }
+  ```
+  The future `work` makes is driven on the STA thread by a minimal executor (poll from a queued handler; the waker
+  re-enqueues), so WinRT awaits there resolve on that thread. `Desktop::read_clipboard`/`write_clipboard` call
+  `StaThread::shared().run(...)`.
+
+- [ ] **Step 1: Test** `sta_runs_work_in_an_sta_off_the_main_thread` (in `tests/main_loop.rs`): inside `run`, `StaThread::shared().run(|| async { (thread id, CoGetApartmentType) })` returns a thread id different from the main one and `APTTYPE_STA`; a second call returns the same thread id; a `pool::sleep(50 ms)` awaited inside `work` completes.
+- [ ] **Step 2:** Run — FAIL. **Step 3:** Implement. **Step 4:** Run — PASS.
+- [ ] **Step 5:** Commit `Move the clipboard to its own STA thread`.
+
 ### Task 1: the TCP listener
 
 **Files:**
