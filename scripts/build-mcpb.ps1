@@ -2,7 +2,8 @@
 # Claude Desktop runs the bundled binary as a stdio server (`serve --transport stdio`). The tools listed in the
 # manifest come from the pinned Windows tools/list, crates\cli\tests\snapshots\windows-tools.json.
 #
-# Usage: scripts\build-mcpb.ps1 [path\to\desktop-mcp.exe]   (default: target\release\desktop-mcp.exe)
+# Usage: powershell -ExecutionPolicy Bypass -File scripts\build-mcpb.ps1 [path\to\desktop-mcp.exe]
+#        (default: target\release\desktop-mcp.exe; pwsh works too)
 param([string]$Binary = 'target\release\desktop-mcp.exe')
 $ErrorActionPreference = 'Stop'
 Set-Location (Join-Path $PSScriptRoot '..')
