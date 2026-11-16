@@ -107,7 +107,8 @@ and wording of the tools that both systems have.
   - **macOS only (to `crates/macos`):** Desktop (Spaces/Mission Control), Menu, Open, Permissions, RunShortcut,
     Spotlight.
   - **Windows only (`crates/windows`), from the C# port's set:** MultiSelect,
-    MultiEdit, Screenshot, DisplayInventory. Their arguments follow the core's naming
+    MultiEdit, Screenshot (the C# DisplayInventory is the core's `Window` with `mode='displays'`). Their arguments
+    follow the core's naming
     style; their behaviour follows `spec/windows/tools.json` and the C# implementation.
   - Not carried over: `FileSystem` (**owner**: a file-system MCP server already covers it, macOS has none, and
     `Shell` can do it), `PowerShell` (it is `Shell`), `WaitFor` (core `Wait` already waits for windows and

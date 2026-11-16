@@ -47,8 +47,8 @@ Gate placement's virtual-desktop note)
    `hung_window_is_listed_not_walked` with a test window whose thread sleeps).
 2. **Mixed-DPI monitors** — window frames, element boxes and display frames share one physical-pixel space (Task 2
    test `display_frames_are_physical`).
-3. **A window on another virtual desktop** — not listed and not walked (Task 3, by the documented
-   `IsWindowOnCurrentVirtualDesktop`; live check).
+3. **A window on another virtual desktop** — not listed and not walked (Task 3, by DWM cloaking,
+   `DWMWA_CLOAKED`; live check).
 4. **Elevated (admin) windows** — UIPI hides their elements: listed with no elements, never an error (Task 4).
 5. **Very large trees (a browser page, Explorer with thousands of files)** — the walk stops at its budget and says
    so; Snapshot answers within its deadline (Task 4 test `budget_stops_the_walk`, synthetic).
