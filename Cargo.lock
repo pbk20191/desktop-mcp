@@ -294,8 +294,10 @@ dependencies = [
  "clap",
  "desktop-mcp-core",
  "desktop-mcp-macos",
+ "desktop-mcp-windows",
  "http",
  "libc",
+ "serde_json",
  "tokio",
 ]
 

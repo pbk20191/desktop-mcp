@@ -19,3 +19,9 @@ http.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 desktop-mcp-macos.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+desktop-mcp-windows.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

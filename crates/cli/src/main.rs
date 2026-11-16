@@ -135,11 +135,17 @@ fn main() -> ExitCode {
             eprintln!("Error: `connect` is disabled. {}", desktop_mcp_core::plan::SOCKET_DISABLED);
             return ExitCode::FAILURE;
         }
+        #[cfg(target_os = "macos")]
         Some(Command::Permissions) => {
             let state = desktop_mcp_macos::permissions::check();
             let asked = desktop_mcp_core::permissions::missing(state);
             asked.iter().for_each(|permission| desktop_mcp_macos::permissions::request(*permission));
             println!("{}", desktop_mcp_core::permissions::format_request(state, &asked));
+            return ExitCode::SUCCESS;
+        }
+        #[cfg(not(target_os = "macos"))]
+        Some(Command::Permissions) => {
+            println!("Windows has no per-app permissions to grant: UI Automation and input need none.");
             return ExitCode::SUCCESS;
         }
         None => cli.serve,
@@ -290,7 +296,11 @@ fn plan(args: &ServeArgs) -> Result<ServePlan, String> {
 
 /// The tools this build lists unless excluded; the opt-in ones ([`desktop_mcp_core::ocr::OPT_IN`]) come only when
 /// included.
+#[cfg(not(windows))]
 const TOOLS: &[&str] = &["App", "Click", "Clipboard", "Desktop", "Menu", "Move", "Notification", "Open", "Permissions", "RunShortcut", "Scrape", "Scroll", "Shell", "Shortcut", "Snapshot", "Spotlight", "Type", "Wait", "Window"];
+
+#[cfg(windows)]
+const TOOLS: &[&str] = desktop_mcp_windows::platform::TOOLS;
 
 /// The tools to offer: the default ones and the included opt-in ones, less the excluded. An include naming a
 /// default or unknown tool is logged and ignored.
@@ -311,6 +321,7 @@ fn selected_tools(plan: &ServePlan) -> Vec<&'static str> {
 }
 
 /// The name of the Launch Agent plist's `Sockets` entry that `install` writes.
+#[cfg(target_os = "macos")]
 const LAUNCHD_SOCKET: &str = "Listener";
 
 #[cfg(target_os = "macos")]
@@ -425,7 +436,33 @@ fn serve(plan: ServePlan) -> ExitCode {
     })
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+fn serve(plan: ServePlan) -> ExitCode {
+    use desktop_mcp_core::guest::Activity;
+    use desktop_mcp_core::mcp::Server;
+    use desktop_mcp_core::stream::serve_stream;
+    use desktop_mcp_windows::{desktop::WindowsDesktop, main_loop, platform::WindowsPlatform, signals, stdio::StdIo};
+    use std::rc::Rc;
+
+    if plan.transport != "stdio" {
+        eprintln!("Error: only the stdio transport is available on Windows in this build");
+        return ExitCode::FAILURE;
+    }
+    let tools = selected_tools(&plan);
+    let (desktop, platform) = (Rc::new(WindowsDesktop::new()), Rc::new(WindowsPlatform));
+    let server = Server::with_platform(desktop, platform, &tools);
+    main_loop::run(|main_loop| async move {
+        let activity = Activity::new(main_loop);
+        let _session = activity.connection();
+        tokio::select! {
+            _ = serve_stream(StdIo::stdio(), server) => {}
+            _ = signals::termination() => {}
+        }
+        ExitCode::SUCCESS
+    })
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 fn serve(_plan: ServePlan) -> ExitCode {
     eprintln!("Error: this platform is not supported yet");
     ExitCode::FAILURE

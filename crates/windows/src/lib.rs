@@ -10,5 +10,6 @@ pub mod platform;
 pub mod pool;
 pub mod process;
 pub mod shell;
+pub mod signals;
 pub mod stdio;
 pub mod tuning;
