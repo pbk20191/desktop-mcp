@@ -64,20 +64,21 @@ pub async fn run(command: &str, timeout: Duration) -> Result<Run, String> {
 
 /// [`run`] with a given interpreter.
 pub async fn run_with(interpreter: &Interpreter, command: &str, timeout: Duration) -> Result<Run, String> {
-    // The command travels base64-encoded, so no quoting rule can change it, but under -Command rather than
-    // -EncodedCommand: with -EncodedCommand Windows PowerShell 5.1 writes errors and progress as CLIXML.
+    // The command travels on stdin, base64-encoded UTF-8: no quoting rule can change it, no console code page can
+    // garble it, and no command-line limit applies. A fixed -Command reads it, rather than -EncodedCommand or
+    // `-Command -`: with those Windows PowerShell 5.1 writes errors and progress as CLIXML.
     let script = format!("$ProgressPreference = 'SilentlyContinue'; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8\n{command}");
-    // UTF-8, not UTF-16: half the length for ASCII, against CreateProcess's 32,767-character command line.
     let encoded = base64::engine::general_purpose::STANDARD.encode(script.as_bytes());
-    // A syntax error in the command surfaces from Create wrapped in a MethodInvocationException; the parser's own
-    // message is what the caller needs, with exit status 1.
-    let invoke = format!(
-        "try {{ $command = [scriptblock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{encoded}'))) }} catch {{ [Console]::Error.WriteLine($_.Exception.InnerException.Message); exit 1 }}; & $command"
-    );
-    let args: Vec<OsString> = ["-NoLogo", "-NoProfile", "-NonInteractive", "-OutputFormat", "Text", "-Command", &invoke].iter().map(OsString::from).collect();
+    // PowerShell takes all of a redirected stdin as the -Command's $input (one line here), so the command itself,
+    // and what it starts, find stdin at its end, as with NUL. A syntax error in the command surfaces
+    // from Create wrapped in a MethodInvocationException; the parser's own message is what the caller needs, with
+    // exit status 1.
+    let invoke = "try { $command = [scriptblock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(-join @($input)))) } catch { [Console]::Error.WriteLine($_.Exception.InnerException.Message); exit 1 }; & $command";
+    let args: Vec<OsString> = ["-NoLogo", "-NoProfile", "-NonInteractive", "-OutputFormat", "Text", "-Command", invoke].iter().map(OsString::from).collect();
     // In the user's profile folder, as the C# port ran it, not wherever the server was started.
     let home = std::env::var_os("USERPROFILE").map(PathBuf::from).filter(|home| home.is_dir());
-    let mut run = process::run(Spawn { program: interpreter.path(), args: &args, env: child_environment(), cwd: home.as_deref() }, timeout).await?;
+    let spawn = Spawn { program: interpreter.path(), args: &args, env: child_environment(), cwd: home.as_deref(), input: Some(encoded.as_bytes()) };
+    let mut run = process::run(spawn, timeout).await?;
     // Line ends as on macOS: PowerShell writes CRLF.
     run.stdout = run.stdout.replace("\r\n", "\n");
     run.stderr = run.stderr.replace("\r\n", "\n");

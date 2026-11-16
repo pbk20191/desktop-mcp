@@ -13,12 +13,12 @@ fn main() {
 
     run(|_| async move {
         // stdout, stderr and the exit code come back.
-        let run = process::run(Spawn { program: &cmd, args: &args("echo out& echo err 1>&2& exit /b 3"), env: process::inherited_environment(), cwd: None }, Duration::from_secs(10)).await.unwrap();
+        let run = process::run(Spawn { program: &cmd, args: &args("echo out& echo err 1>&2& exit /b 3"), env: process::inherited_environment(), cwd: None, input: None }, Duration::from_secs(10)).await.unwrap();
         assert_eq!((run.stdout.trim(), run.stderr.trim(), run.status, run.timed_out), ("out", "err", 3, false));
 
         // A timeout ends the command and what it started, and returns promptly.
         let started = Instant::now();
-        let run = process::run(Spawn { program: &cmd, args: &args("echo early& ping -n 30 127.0.0.1 >nul"), env: process::inherited_environment(), cwd: None }, Duration::from_secs(1)).await.unwrap();
+        let run = process::run(Spawn { program: &cmd, args: &args("echo early& ping -n 30 127.0.0.1 >nul"), env: process::inherited_environment(), cwd: None, input: None }, Duration::from_secs(1)).await.unwrap();
         assert!(run.timed_out);
         assert_eq!(run.stdout.trim(), "early");
         assert!(started.elapsed() < Duration::from_secs(3), "took {:?}", started.elapsed());
@@ -27,11 +27,19 @@ fn main() {
         let run = desktop_mcp_windows::shell::run("Write-Output '한글 ü'", Duration::from_secs(30)).await.unwrap();
         assert_eq!(run.stdout.trim_end(), "한글 ü", "stderr: {}", run.stderr);
 
+        // A command far past CreateProcess's command-line limit arrives whole.
+        let long = format!("$text = '{}'; Write-Output $text.Length", "가".repeat(41_000));
+        let run = desktop_mcp_windows::shell::run(&long, Duration::from_secs(30)).await.unwrap();
+        assert_eq!(run.stdout.trim_end(), "41000", "stderr: {}", run.stderr);
+
         // Windows PowerShell 5.1 reports errors as text, not CLIXML.
         let system_root = PathBuf::from(std::env::var_os("SystemRoot").unwrap());
         let windows_powershell = Interpreter::WindowsPowerShell(system_root.join("System32").join("WindowsPowerShell").join("v1.0").join("powershell.exe"));
         let run = desktop_mcp_windows::shell::run_with(&windows_powershell, "Get-Item C:/no-such-path", Duration::from_secs(60)).await.unwrap();
         assert!(!run.stderr.contains("CLIXML") && run.stderr.contains("Cannot find path"), "stderr: {}", run.stderr);
+        // A syntax error is the parser's message, with exit status 1.
+        let run = desktop_mcp_windows::shell::run_with(&windows_powershell, "if ( {", Duration::from_secs(60)).await.unwrap();
+        assert!(run.status == 1 && !run.stderr.contains("CLIXML") && !run.stderr.contains("MethodInvocationException"), "{run:?}");
     });
 
     // PowerShell 7 on PATH first, then under Program Files, else Windows PowerShell.

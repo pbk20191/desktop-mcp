@@ -1,4 +1,5 @@
-//! Child processes whose stdout and stderr come back on named pipes read with overlapped I/O on the thread pool.
+//! Child processes whose stdout and stderr come back on named pipes read with overlapped I/O on the thread pool,
+//! and whose stdin, when given, is written the same way.
 //!
 //! Our end of each pipe is opened `FILE_FLAG_OVERLAPPED` and bound to a `TP_IO`; the child's end is an ordinary
 //! inheritable handle, and only the three stdio handles are inherited (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`). The
@@ -20,7 +21,10 @@ use tokio::sync::oneshot;
 use windows::core::{PCWSTR, PWSTR};
 use windows::Win32::Foundation::{ERROR_IO_PENDING, GENERIC_READ, GENERIC_WRITE, HANDLE};
 use windows::Win32::Security::SECURITY_ATTRIBUTES;
-use windows::Win32::Storage::FileSystem::{CreateFileW, ReadFile, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, PIPE_ACCESS_INBOUND, FILE_FLAGS_AND_ATTRIBUTES};
+use windows::Win32::Storage::FileSystem::{
+    CreateFileW, ReadFile, WriteFile, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, PIPE_ACCESS_INBOUND, PIPE_ACCESS_OUTBOUND,
+    FILE_FLAGS_AND_ATTRIBUTES,
+};
 use windows::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
     TerminateJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
@@ -43,6 +47,8 @@ pub struct Spawn<'a> {
     pub env: Vec<(OsString, OsString)>,
     /// The working directory; this process's when `None`.
     pub cwd: Option<&'a Path>,
+    /// What the child reads on stdin, then the end of input; stdin is NUL when `None`.
+    pub input: Option<&'a [u8]>,
 }
 
 /// This process's environment.
@@ -105,20 +111,22 @@ fn environment_block(mut env: Vec<(OsString, OsString)>) -> Vec<u16> {
 
 static PIPES: AtomicUsize = AtomicUsize::new(0);
 
-/// Our overlapped read end and the child's inheritable write end.
-fn pipe() -> Result<(OwnedHandle, OwnedHandle), String> {
+/// Our overlapped end and the child's inheritable end: the child writes to an `inbound` pipe and reads from another.
+fn pipe(inbound: bool) -> Result<(OwnedHandle, OwnedHandle), String> {
     // A random part: another process cannot take the name first and make every run fail.
     let random = std::hash::BuildHasher::hash_one(&std::collections::hash_map::RandomState::new(), PIPES.load(Ordering::Relaxed));
     let name = format!(r"\\.\pipe\desktop-mcp-{}-{}-{random:016x}", std::process::id(), PIPES.fetch_add(1, Ordering::Relaxed));
     let name = wide(name.as_ref());
+    let (access, out_size, in_size, child_access) =
+        if inbound { (PIPE_ACCESS_INBOUND, 0, READ_SIZE as u32, GENERIC_WRITE.0) } else { (PIPE_ACCESS_OUTBOUND, READ_SIZE as u32, 0, GENERIC_READ.0) };
     let server = unsafe {
         CreateNamedPipeW(
             PCWSTR(name.as_ptr()),
-            PIPE_ACCESS_INBOUND | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
+            access | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
             PIPE_TYPE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             1,
-            0,
-            READ_SIZE as u32,
+            out_size,
+            in_size,
             0,
             None,
         )
@@ -128,7 +136,7 @@ fn pipe() -> Result<(OwnedHandle, OwnedHandle), String> {
     }
     let server = unsafe { OwnedHandle::from_raw_handle(server.0) };
     let inherit = SECURITY_ATTRIBUTES { nLength: size_of::<SECURITY_ATTRIBUTES>() as u32, lpSecurityDescriptor: std::ptr::null_mut(), bInheritHandle: true.into() };
-    let client = unsafe { CreateFileW(PCWSTR(name.as_ptr()), GENERIC_WRITE.0, FILE_SHARE_READ | FILE_SHARE_WRITE, Some(&inherit), OPEN_EXISTING, FILE_FLAGS_AND_ATTRIBUTES(0), None) }
+    let client = unsafe { CreateFileW(PCWSTR(name.as_ptr()), child_access, FILE_SHARE_READ | FILE_SHARE_WRITE, Some(&inherit), OPEN_EXISTING, FILE_FLAGS_AND_ATTRIBUTES(0), None) }
         .map_err(|error| format!("cannot open a pipe: {error}"))?;
     Ok((server, unsafe { OwnedHandle::from_raw_handle(client.0) }))
 }
@@ -141,7 +149,7 @@ fn null_input() -> Result<OwnedHandle, String> {
     Ok(unsafe { OwnedHandle::from_raw_handle(handle.0) })
 }
 
-/// One overlapped read; the callback owns it once it is issued.
+/// One overlapped read or write; the callback owns it once it is issued.
 #[repr(C)]
 struct Op {
     overlapped: OVERLAPPED,
@@ -149,7 +157,7 @@ struct Op {
     done: Option<oneshot::Sender<(u32, usize, Vec<u8>)>>,
 }
 
-unsafe extern "system" fn read_done(_instance: PTP_CALLBACK_INSTANCE, _context: *mut c_void, overlapped: *mut c_void, result: u32, bytes: usize, _io: PTP_IO) {
+unsafe extern "system" fn io_done(_instance: PTP_CALLBACK_INSTANCE, _context: *mut c_void, overlapped: *mut c_void, result: u32, bytes: usize, _io: PTP_IO) {
     let mut op = unsafe { Box::from_raw(overlapped as *mut Op) };
     if let Some(done) = op.done.take() {
         let _ = done.send((result, bytes, std::mem::take(&mut op.buffer)));
@@ -157,44 +165,68 @@ unsafe extern "system" fn read_done(_instance: PTP_CALLBACK_INSTANCE, _context: 
 }
 
 /// Our end of a pipe, bound to the thread pool.
-struct PipeReader {
+struct Pipe {
     handle: OwnedHandle,
     io: PTP_IO,
 }
 
-impl PipeReader {
-    fn new(handle: OwnedHandle) -> Result<PipeReader, String> {
-        let io = unsafe { CreateThreadpoolIo(HANDLE(handle.as_raw_handle()), Some(read_done), None, None) }.map_err(|error| format!("CreateThreadpoolIo: {error}"))?;
-        Ok(PipeReader { handle, io })
+impl Pipe {
+    fn new(handle: OwnedHandle) -> Result<Pipe, String> {
+        let io = unsafe { CreateThreadpoolIo(HANDLE(handle.as_raw_handle()), Some(io_done), None, None) }.map_err(|error| format!("CreateThreadpoolIo: {error}"))?;
+        Ok(Pipe { handle, io })
+    }
+
+    /// One overlapped read into `buffer`, or write of it: the completion's status, byte count and buffer; `None` when
+    /// it could not start.
+    async fn transfer(&self, buffer: Vec<u8>, write: bool) -> Option<(u32, usize, Vec<u8>)> {
+        let (sender, receiver) = oneshot::channel();
+        let op = Box::into_raw(Box::new(Op { overlapped: OVERLAPPED::default(), buffer, done: Some(sender) }));
+        unsafe { StartThreadpoolIo(self.io) };
+        let handle = HANDLE(self.handle.as_raw_handle());
+        let issued = unsafe {
+            if write {
+                WriteFile(handle, Some((*op).buffer.as_slice()), None, Some(&mut (*op).overlapped))
+            } else {
+                ReadFile(handle, Some((*op).buffer.as_mut_slice()), None, Some(&mut (*op).overlapped))
+            }
+        };
+        if let Err(error) = issued {
+            if error.code() != ERROR_IO_PENDING.to_hresult() {
+                // Failed to start (a closed pipe): no completion comes.
+                unsafe {
+                    CancelThreadpoolIo(self.io);
+                    drop(Box::from_raw(op));
+                }
+                return None;
+            }
+        }
+        receiver.await.ok()
     }
 
     /// Appends to `into` until the pipe closes.
     async fn read_to_end(&self, into: &RefCell<Vec<u8>>) {
         loop {
-            let (sender, receiver) = oneshot::channel();
-            let op = Box::into_raw(Box::new(Op { overlapped: OVERLAPPED::default(), buffer: vec![0; READ_SIZE], done: Some(sender) }));
-            unsafe { StartThreadpoolIo(self.io) };
-            let issued = unsafe { ReadFile(HANDLE(self.handle.as_raw_handle()), Some(&mut (*op).buffer), None, Some(&mut (*op).overlapped)) };
-            if let Err(error) = issued {
-                if error.code() != ERROR_IO_PENDING.to_hresult() {
-                    // Failed to start (a closed pipe): no completion comes.
-                    unsafe {
-                        CancelThreadpoolIo(self.io);
-                        drop(Box::from_raw(op));
-                    }
-                    return;
-                }
-            }
-            let Ok((result, bytes, buffer)) = receiver.await else { return };
+            let Some((result, bytes, buffer)) = self.transfer(vec![0; READ_SIZE], false).await else { return };
             if result != 0 || bytes == 0 {
                 return;
             }
             into.borrow_mut().extend_from_slice(&buffer[..bytes]);
         }
     }
+
+    /// Writes `bytes` (less when the child closes its end first), then closes ours: the child reads the end of input.
+    async fn write_all(self, mut bytes: &[u8]) {
+        while !bytes.is_empty() {
+            let Some((result, written, _)) = self.transfer(bytes[..bytes.len().min(READ_SIZE)].to_vec(), true).await else { return };
+            if result != 0 || written == 0 {
+                return;
+            }
+            bytes = &bytes[written..];
+        }
+    }
 }
 
-impl Drop for PipeReader {
+impl Drop for Pipe {
     fn drop(&mut self) {
         unsafe {
             let _ = CancelIoEx(HANDLE(self.handle.as_raw_handle()), None);
@@ -316,21 +348,32 @@ fn start(spawn: &Spawn<'_>, input: &OwnedHandle, output: &OwnedHandle, error: &O
     result
 }
 
-/// Runs `spawn` with stdin from NUL, collecting stdout and stderr, until it exits or `timeout` passes (then its job
-/// is terminated and `timed_out` set). Dropping the future terminates the job too.
+/// Runs `spawn`, writing its input and collecting stdout and stderr, until it exits or `timeout` passes (then its
+/// job is terminated and `timed_out` set). Dropping the future terminates the job too.
 pub async fn run(spawn: Spawn<'_>, timeout: Duration) -> Result<Run, String> {
-    let (out_server, out_client) = pipe()?;
-    let (err_server, err_client) = pipe()?;
-    let input = null_input()?;
+    let (out_server, out_client) = pipe(true)?;
+    let (err_server, err_client) = pipe(true)?;
+    let (input, writer) = match spawn.input {
+        Some(bytes) => {
+            let (server, client) = pipe(false)?;
+            (client, Some((Pipe::new(server)?, bytes)))
+        }
+        None => (null_input()?, None),
+    };
     let mut child = start(&spawn, &input, &out_client, &err_client)?;
     // Only the child holds the write ends now, so the pipes close when it (and what it started) is gone.
     drop((input, out_client, err_client));
     let (stdout, stderr) = (Rc::new(RefCell::new(Vec::new())), Rc::new(RefCell::new(Vec::new())));
     let readers = {
-        let (out_reader, err_reader) = (PipeReader::new(out_server)?, PipeReader::new(err_server)?);
+        let (out_reader, err_reader) = (Pipe::new(out_server)?, Pipe::new(err_server)?);
         let (stdout, stderr) = (stdout.clone(), stderr.clone());
         async move {
-            tokio::join!(out_reader.read_to_end(&stdout), err_reader.read_to_end(&stderr));
+            let write = async move {
+                if let Some((pipe, bytes)) = writer {
+                    pipe.write_all(bytes).await;
+                }
+            };
+            tokio::join!(write, out_reader.read_to_end(&stdout), err_reader.read_to_end(&stderr));
         }
     };
     let mut readers = std::pin::pin!(readers);
