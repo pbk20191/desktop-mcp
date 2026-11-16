@@ -130,13 +130,14 @@ impl hyper::rt::Read for SocketIo {
 impl hyper::rt::Write for SocketIo {
     fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
         ready!(self.poll_written(cx))?;
-        let socket = self.socket.clone();
-        let bytes = buf.to_vec();
+        // The write starts here, not when the future is next polled: a caller that goes on to read (a TLS
+        // handshake) without flushing must still have its bytes sent.
+        let writer = DataWriter::new().map_err(io_error)?;
+        writer.WriteBytes(buf).map_err(io_error)?;
+        let buffer = writer.DetachBuffer().map_err(io_error)?;
+        let operation = self.socket.OutputStream().map_err(io_error)?.WriteAsync(&buffer).map_err(io_error)?;
         self.writing = Some(Box::pin(async move {
-            let writer = DataWriter::new().map_err(io_error)?;
-            writer.WriteBytes(&bytes).map_err(io_error)?;
-            let buffer = writer.DetachBuffer().map_err(io_error)?;
-            socket.OutputStream().map_err(io_error)?.WriteAsync(&buffer).map_err(io_error)?.into_future().await.map_err(io_error)?;
+            operation.into_future().await.map_err(io_error)?;
             Ok(())
         }));
         Poll::Ready(Ok(buf.len()))

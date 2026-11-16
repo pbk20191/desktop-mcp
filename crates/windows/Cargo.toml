@@ -18,6 +18,8 @@ serde_json.workspace = true
 html5ever.workspace = true
 markup5ever_rcdom.workspace = true
 encoding_rs.workspace = true
+schannel.workspace = true
+getrandom.workspace = true
 
 [[test]]
 name = "main_loop"
@@ -40,9 +42,14 @@ name = "net"
 harness = false
 
 [dev-dependencies]
+rcgen.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
 
 [[test]]
 name = "listener"
+harness = false
+
+[[test]]
+name = "tls"
 harness = false

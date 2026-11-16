@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll, Wake, Waker};
 use windows::Foundation::{TimeSpan, TypedEventHandler};
 use windows::System::{DispatcherQueue, DispatcherQueueController, DispatcherQueueHandler, DispatcherQueueTimer};
-use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
+use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::System::WinRT::{CreateDispatcherQueueController, DispatcherQueueOptions, DQTAT_COM_NONE, DQTYPE_THREAD_CURRENT};
 use windows::Win32::UI::WindowsAndMessaging::{DispatchMessageW, GetMessageW, PostThreadMessageW, TranslateMessage, MSG, WM_QUIT};
@@ -149,7 +149,7 @@ impl MainLoop for Ticks {
 pub fn run<F: Future + 'static>(build: impl FnOnce(Rc<dyn MainLoop>) -> F) -> F::Output {
     // A single-threaded apartment, as a UI thread has: the WinRT clipboard needs one, and this thread pumps
     // messages. (The queue's own apartment option applies only to threads it creates.)
-    let apartment = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+    let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
     let options = DispatcherQueueOptions { dwSize: size_of::<DispatcherQueueOptions>() as u32, threadType: DQTYPE_THREAD_CURRENT, apartmentType: DQTAT_COM_NONE };
     let controller: DispatcherQueueController = unsafe { CreateDispatcherQueueController(options) }.expect("CreateDispatcherQueueController failed");
     let queue = controller.DispatcherQueue().expect("the controller has a queue");
@@ -228,9 +228,8 @@ pub fn run<F: Future + 'static>(build: impl FnOnce(Rc<dyn MainLoop>) -> F) -> F:
         }
     }
     drop(driver);
-    if apartment.is_ok() {
-        unsafe { CoUninitialize() };
-    }
+    // The apartment stays for the thread's life: completions of operations the root started (on sockets it
+    // closed, say) can still arrive after this, and must not find COM torn down.
     let result = output.borrow_mut().take().expect("the root completed");
     match result {
         Ok(value) => value,

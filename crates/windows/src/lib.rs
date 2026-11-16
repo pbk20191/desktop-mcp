@@ -14,4 +14,7 @@ pub mod shell;
 pub mod signals;
 pub mod sta;
 pub mod stdio;
+pub mod tls;
+mod tls_keys;
+pub mod tls_io;
 pub mod tuning;
