@@ -186,12 +186,26 @@ impl Desktop for WindowsDesktop {
         Box::pin(pool::offload(move || crate::apps::launch(&name)))
     }
 
-    /// The app's front window, brought to the foreground.
+    /// The app's front window, brought to the foreground; the app by its Start menu name when no running app goes
+    /// by `name`.
     fn activate_app(&self, name: &str) -> Pending<bool> {
         let name = name.to_string();
         Box::pin(pool::offload(move || {
             let windows = crate::windows_list::top_windows();
-            windows.iter().find(|window| window.is_app(&name)).is_some_and(|window| crate::foreground::bring(window.hwnd))
+            let front = windows.iter().find(|window| window.is_app(&name)).or_else(|| crate::apps::windows_of(&name, &windows).into_iter().next());
+            front.is_some_and(|window| crate::foreground::bring(window.hwnd))
+        }))
+    }
+
+    /// The processes with a window of the Start menu entry `name` names.
+    fn installed_app_pids(&self, name: &str) -> Pending<Vec<i32>> {
+        let name = name.to_string();
+        Box::pin(pool::offload(move || {
+            let windows = crate::windows_list::top_windows();
+            let mut pids: Vec<i32> = crate::apps::windows_of(&name, &windows).into_iter().map(|window| window.pid as i32).collect();
+            pids.sort_unstable();
+            pids.dedup();
+            pids
         }))
     }
 

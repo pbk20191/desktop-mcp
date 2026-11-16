@@ -117,6 +117,11 @@ pub trait Desktop: 'static {
     fn extra_keys(&self) -> &'static [&'static str] {
         &[]
     }
+    /// The processes of the installed app `name` names when no running app goes by it (Windows: its Start menu
+    /// name, which may be localized). None on macOS, where a running app's name is the one it is launched by.
+    fn installed_app_pids(&self, _name: &str) -> Pin<Box<dyn Future<Output = Vec<i32>>>> {
+        Box::pin(async { Vec::new() })
+    }
 }
 
 /// One MCP server. Stateless requests get a fresh one each; a session keeps one.

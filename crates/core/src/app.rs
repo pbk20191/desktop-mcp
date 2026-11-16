@@ -71,7 +71,18 @@ pub async fn run(desktop: &dyn Desktop, mode: Mode, name: Option<&str>, window_l
             let force = mode == Mode::ForceQuit;
             let mode_name = if force { "force_quit" } else { "quit" };
             let name = given(name).map(str::trim).ok_or_else(|| format!("App name or bundle ID required for {mode_name}."))?;
-            let pids = quit_targets(name, &desktop.running_apps().await, std::process::id() as i32)?;
+            let own_pid = std::process::id() as i32;
+            let pids = match quit_targets(name, &desktop.running_apps().await, own_pid) {
+                Ok(pids) => pids,
+                Err(not_running) => {
+                    // A name no running app goes by may still name an installed one (a Start menu name).
+                    let installed: Vec<i32> = desktop.installed_app_pids(name).await.into_iter().filter(|pid| *pid != own_pid).collect();
+                    if installed.is_empty() {
+                        return Err(not_running);
+                    }
+                    installed
+                }
+            };
             if !desktop.terminate(&pids, force).await {
                 return Err(if force { format!("Could not force-quit {name}.") } else { format!("Could not quit {name}.") });
             }

@@ -1,10 +1,14 @@
 //! Applications: the shell's Apps folder (the Start menu's list: desktop and packaged apps alike) and launching
-//! one of them, or an executable, through the shell.
-use windows::core::{HSTRING, PCWSTR, PWSTR};
+//! one of them, or an executable, through the shell; and finding the running windows of an entry.
+use crate::windows_list::TopWindow;
+use windows::core::{GUID, HSTRING, PCWSTR, PWSTR};
+use windows::Win32::Foundation::{CloseHandle, PROPERTYKEY};
+use windows::Win32::Storage::Packaging::Appx::GetPackageFamilyName;
 use windows::Win32::System::Com::CoTaskMemFree;
+use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
 use windows::Win32::UI::Shell::{
-    BHID_EnumItems, FOLDERID_AppsFolder, IEnumShellItems, IShellItem, SHGetKnownFolderItem, ShellExecuteExW, KF_FLAG_DEFAULT, SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW,
-    SIGDN_NORMALDISPLAY, SIGDN_PARENTRELATIVEPARSING,
+    BHID_EnumItems, FOLDERID_AppsFolder, IEnumShellItems, IShellItem, IShellItem2, SHCreateItemFromParsingName, SHGetKnownFolderItem, ShellExecuteExW, KF_FLAG_DEFAULT, SEE_MASK_FLAG_NO_UI,
+    SEE_MASK_NOASYNC, SHELLEXECUTEINFOW, SIGDN_NORMALDISPLAY, SIGDN_PARENTRELATIVEPARSING,
 };
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
@@ -83,4 +87,51 @@ pub fn launch(name: &str) -> bool {
         Some(entry) => shell_execute(&format!(r"shell:AppsFolder\{}", entry.parsing_name)),
         None => false,
     }
+}
+
+/// `System.Link.TargetParsingPath`: the file a desktop app's Start menu entry opens.
+const LINK_TARGET: PROPERTYKEY = PROPERTYKEY { fmtid: GUID::from_u128(0xb9b4b3fc_2b51_4a42_b5d8_324146afcf25), pid: 2 };
+
+/// What runs an Apps folder entry: a packaged app's package family, or a desktop app's executable.
+#[derive(Debug, PartialEq, Eq)]
+enum Runs {
+    Package(String),
+    Executable(String),
+}
+
+fn runs(entry: &AppEntry) -> Option<Runs> {
+    // An app user model id `<family>!<app>` is a packaged app's.
+    if let Some((family, _)) = entry.parsing_name.split_once('!').filter(|_| !entry.parsing_name.contains('\\')) {
+        return Some(Runs::Package(family.to_string()));
+    }
+    let item: IShellItem2 = unsafe { SHCreateItemFromParsingName(&HSTRING::from(format!(r"shell:AppsFolder\{}", entry.parsing_name)), None) }.ok()?;
+    let target = unsafe { item.GetString(&LINK_TARGET) }.ok()?;
+    let path = unsafe { target.to_string() }.ok();
+    unsafe { CoTaskMemFree(Some(target.0 as *const _)) };
+    path.filter(|path| path.to_ascii_lowercase().ends_with(".exe")).map(Runs::Executable)
+}
+
+fn package_family(pid: u32) -> Option<String> {
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
+    let mut buffer = [0u16; 256];
+    let mut length = buffer.len() as u32;
+    let read = unsafe { GetPackageFamilyName(process, &mut length, Some(PWSTR(buffer.as_mut_ptr()))) };
+    unsafe {
+        let _ = CloseHandle(process);
+    }
+    (read.is_ok() && length > 0).then(|| String::from_utf16_lossy(&buffer[..length as usize - 1]))
+}
+
+/// The windows of the Apps folder entry `name` names (as [`launch`] picks it), for a name no running app goes by:
+/// a Start menu name such as a localized one. Blocking (COM, on the pool).
+pub fn windows_of<'a>(name: &str, windows: &'a [TopWindow]) -> Vec<&'a TopWindow> {
+    let entries = catalog();
+    let Some(runs) = best_match(&entries, name).and_then(runs) else { return Vec::new() };
+    windows
+        .iter()
+        .filter(|window| match &runs {
+            Runs::Package(family) => package_family(window.pid).is_some_and(|running| running.eq_ignore_ascii_case(family)),
+            Runs::Executable(path) => crate::windows_list::image_path(window.pid).is_some_and(|running| running.eq_ignore_ascii_case(path)),
+        })
+        .collect()
 }

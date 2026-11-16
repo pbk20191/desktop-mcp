@@ -108,7 +108,8 @@ fn fills_its_monitor(hwnd: HWND, rect: &RECT) -> bool {
     unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool() && info.rcMonitor == *rect
 }
 
-fn image_path(pid: u32) -> Option<String> {
+/// The process's executable path.
+pub fn image_path(pid: u32) -> Option<String> {
     let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
     let mut buffer = [0u16; 1024];
     let mut length = buffer.len() as u32;
