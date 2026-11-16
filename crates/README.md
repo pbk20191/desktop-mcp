@@ -41,9 +41,12 @@ cannot tell which program is calling. How to admit only known clients (for examp
 code signature) is still to be worked out: `docs/superpowers/specs/2026-11-16-rust-port-client-validation.md`.
 
 `--transport stdio` (the default) serves one session on stdin/stdout, newline-delimited JSON; at end of
-input it still answers the requests it has read (not those the client cancelled), then exits. Served this way, the
-host app that starts desktop-mcp is the process macOS holds responsible for Accessibility and Screen Recording, so a
-program without those permissions gains nothing by starting it.
+input it still answers the requests it has read (not those the client cancelled), then exits. Which process macOS
+holds responsible for Accessibility and Screen Recording depends on the host: a host that starts desktop-mcp
+directly (Claude Code in a terminal) is responsible itself, but Claude Desktop starts it through its `disclaimer`
+helper, so the bundled binary holds its own grants, and any program of this user could start it the same way and
+borrow them. Checking which program started desktop-mcp is designed but not built:
+`docs/superpowers/specs/2026-11-16-rust-port-client-check-design.md`.
 
 **Disabled until clients are verified** (the code stays): `--transport socket` / `--socket`, and `connect`. Any
 process of this user could reach the socket and borrow the server's own Accessibility, and `connect` reads the
@@ -77,8 +80,14 @@ identifier `mc.spaces.add` (in WindowManager on macOS 27, the Dock before) and o
 it, so it works whatever the language and the keyboard shortcut; the Swift port matches English labels in the Dock
 and posts control+up, which fails on macOS 27.
 
-Not there yet: `OCR`, and the `install`/`uninstall`, `auth` and `permissions` commands, which are to be redesigned
-with client verification in mind.
+`OCR` (Vision) is listed only when included (`--include-tools OCR`, `[tools] include`, `DESKTOP_MCP_INCLUDE_TOOLS`).
+
+Not ported: the `install`/`uninstall` (launchd agent) and `auth` commands. An agent holds its own grants, which is
+the borrowing problem above, and a key stored in `config.toml` can be read by any program of this user; pass the
+HTTP key with `--auth-key` or `DESKTOP_MCP_AUTH_KEY` instead (for example `openssl rand -hex 32`). To use
+desktop-mcp, register `desktop-mcp serve --transport stdio` in the host's MCP settings, or build a Claude Desktop
+extension with `macos/scripts/build-mcpb.sh <binary>`. The `permissions` command waits for the client check
+design (it adds `Permissions(request=true)`).
 
 ## How it is built
 
