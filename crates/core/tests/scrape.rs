@@ -63,6 +63,9 @@ fn redirect(status: u16, location: &str) -> Response<Full<bytes::Bytes>> {
 }
 
 impl Desktop for FakeWeb {
+    fn snapshot(&self, _use_vision: bool) -> Pin<Box<dyn Future<Output = desktop_mcp_core::snapshot::State>>> {
+        unreachable!()
+    }
     fn find_element(&self, _app: Option<&str>, _title: Option<&str>, _role: Option<&str>, _deadline: std::time::Instant) -> Pin<Box<dyn Future<Output = Option<desktop_mcp_core::element::FoundElement>>>> {
         unreachable!()
     }

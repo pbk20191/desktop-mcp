@@ -35,6 +35,7 @@ impl MainLoop for FakeLoop {
 /// A desktop that records what the tools ask of it and answers as each test sets it up.
 #[derive(Default)]
 pub struct FakeDesktop {
+    pub snapshot_state: RefCell<desktop_mcp_core::snapshot::State>,
     /// What each `find_element` look answers (the last repeats), and the deadlines it was given.
     pub element_looks: RefCell<Vec<Option<desktop_mcp_core::element::FoundElement>>>,
     pub element_deadlines: RefCell<Vec<std::time::Instant>>,
@@ -88,6 +89,10 @@ pub struct FakeDesktop {
     pub looked: Cell<usize>,
 }
 impl Desktop for FakeDesktop {
+    fn snapshot(&self, _use_vision: bool) -> Pin<Box<dyn Future<Output = desktop_mcp_core::snapshot::State>>> {
+        let state = self.snapshot_state.borrow().clone();
+        Box::pin(async move { state })
+    }
     fn find_element(&self, _app: Option<&str>, _title: Option<&str>, _role: Option<&str>, deadline: std::time::Instant) -> Pin<Box<dyn Future<Output = Option<desktop_mcp_core::element::FoundElement>>>> {
         self.element_deadlines.borrow_mut().push(deadline);
         let mut looks = self.element_looks.borrow_mut();

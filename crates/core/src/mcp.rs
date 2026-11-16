@@ -88,6 +88,8 @@ pub trait Desktop: 'static {
     /// An element of `app` (or of the app owning the menu bar) whose role is `role` exactly and whose title,
     /// description or value contains `title`, ignoring case; an exact match is preferred. `None` when there is
     /// none, or when `deadline` passes first.
+    /// The desktop's state for Snapshot; with `use_vision`, an annotated screenshot too.
+    fn snapshot(&self, use_vision: bool) -> Pin<Box<dyn Future<Output = crate::snapshot::State>>>;
     fn find_element(&self, app: Option<&str>, title: Option<&str>, role: Option<&str>, deadline: std::time::Instant) -> Pin<Box<dyn Future<Output = Option<crate::element::FoundElement>>>>;
 }
 
@@ -384,8 +386,23 @@ struct MenuArgs {
     depth: i64,
 }
 
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct SnapshotArgs {
+    #[serde(default)]
+    use_vision: bool,
+}
+
 #[tool_router]
 impl Server {
+    #[tool(
+        name = "Snapshot",
+        description = "Captures complete desktop state including: focused window, open applications, interactive elements (buttons, text fields, links, menus with coordinates), and scrollable areas. Set use_vision=True to include screenshot with numbered annotations on interactive elements. Always call this first to understand the current desktop state before taking actions.",
+        annotations(title = "Snapshot", read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
+    )]
+    async fn snapshot(&self, Parameters(args): Parameters<SnapshotArgs>, cancellation: CancellationToken) -> CallToolResult {
+        run_tool("Snapshot", cancellation, async move { Ok(crate::snapshot::run(self.desktop.as_ref(), args.use_vision).await) }).await
+    }
+
     #[tool(
         name = "Menu",
         description = "Reads and chooses commands from an app's menu bar ('app': name or bundle id; default the frontmost app). 'list' (default) returns an indented tree of item titles with keyboard shortcuts and [disabled], 'depth' levels deep (default 2, max 4), below the optional 'path' prefix. 'select' presses the item 'path' names from the bar item down, e.g. [\"File\", \"Export…\"]: titles match exactly, then ignoring case, then also treating '...' as '…'; the Apple menu is \"Apple\". A disabled item is not pressed.",

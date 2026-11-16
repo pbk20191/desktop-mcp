@@ -248,6 +248,36 @@ pub fn offload<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> 
     }
 }
 
+/// `work` over `items` on libdispatch's workers (`dispatch_apply_f`), results in order. Synchronous, so `work`
+/// may borrow from the caller. Blocks until every item is done: call it off the main thread.
+pub fn concurrent_map<T: Send, U: Send, F: Fn(T) -> U + Sync>(items: Vec<T>, work: F) -> Vec<U> {
+    use std::sync::Mutex;
+    /// What each iteration finds through the context pointer. Every index is touched by one iteration only.
+    struct Job<'a, T, U, F> {
+        inputs: Vec<Mutex<Option<T>>>,
+        outputs: Vec<Mutex<Option<std::thread::Result<U>>>>,
+        work: &'a F,
+    }
+    unsafe extern "C-unwind" fn iteration<T, U, F: Fn(T) -> U>(context: *mut std::ffi::c_void, index: usize) {
+        let job = unsafe { &*(context as *const Job<'_, T, U, F>) };
+        if let Some(item) = job.inputs[index].lock().unwrap().take() {
+            // A panic must not unwind through libdispatch: it is carried out and raised again after the apply.
+            *job.outputs[index].lock().unwrap() = Some(catch_unwind(AssertUnwindSafe(|| (job.work)(item))));
+        }
+    }
+    let count = items.len();
+    let job = Job { inputs: items.into_iter().map(|item| Mutex::new(Some(item))).collect(), outputs: (0..count).map(|_| Mutex::new(None)).collect(), work: &work };
+    let queue = DispatchQueue::global_queue(GlobalQueueIdentifier::QualityOfService(DispatchQoS::UserInitiated));
+    unsafe { DispatchQueue::apply_f(count, Some(&queue), &job as *const Job<'_, T, U, F> as *mut std::ffi::c_void, iteration::<T, U, F>) };
+    job.outputs
+        .into_iter()
+        .map(|slot| match slot.into_inner().unwrap().expect("dispatch_apply ran every index") {
+            Ok(value) => value,
+            Err(payload) => resume_unwind(payload),
+        })
+        .collect()
+}
+
 /// The number of threads in this process.
 pub fn thread_count() -> u32 {
     extern "C" {

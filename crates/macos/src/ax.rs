@@ -117,7 +117,14 @@ fn convert(value: &CFType) -> Read {
     } else if let Some(boolean) = value.downcast_ref::<CFBoolean>() {
         Value::Bool(boolean.value())
     } else if let Some(number) = value.downcast_ref::<CFNumber>() {
-        if number.is_float_type() { Value::Float(number.as_f64().unwrap_or_default()) } else { Value::Int(number.as_i64().unwrap_or_default()) }
+        if number.is_float_type() {
+            let value = number.as_f64().unwrap_or_default();
+            // A 32-bit float keeps its own shortest form ("0.4196429", as NSNumber prints it), not the widened one.
+            let single = matches!(number.r#type(), objc2_core_foundation::CFNumberType::Float32Type | objc2_core_foundation::CFNumberType::FloatType);
+            Value::Float(if single { (value as f32).to_string().parse().unwrap_or(value) } else { value })
+        } else {
+            Value::Int(number.as_i64().unwrap_or_default())
+        }
     } else if let Some(element) = value.downcast_ref::<AXUIElement>() {
         Value::Element(Element(element.retain()))
     } else if let Some(array) = value.downcast_ref::<CFArray>() {
@@ -214,6 +221,32 @@ impl Element {
         (error == AXError::Success && !found.is_null()).then(|| Element(unsafe { CFRetained::from_raw(NonNull::new_unchecked(found.cast_mut())) }))
     }
 
+    /// A parameterized attribute's raw value, for the few callers that need more than [`Value`] keeps.
+    pub fn parameterized_raw(&self, name: &str, parameter: &CFType) -> Option<CFRetained<CFType>> {
+        let mut value: *const CFType = std::ptr::null();
+        let error = unsafe { self.0.copy_parameterized_attribute_value(&CFString::from_str(name), parameter, NonNull::from(&mut value)) };
+        (error == AXError::Success && !value.is_null()).then(|| unsafe { CFRetained::from_raw(NonNull::new_unchecked(value.cast_mut())) })
+    }
+
+    pub fn parameterized(&self, name: &str, parameter: &CFType) -> Option<Value> {
+        match convert(&*self.parameterized_raw(name, parameter)?) {
+            Read::Value(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    pub fn parameterized_names(&self) -> Vec<String> {
+        let mut names: *const CFArray = std::ptr::null();
+        if unsafe { self.0.copy_parameterized_attribute_names(NonNull::from(&mut names)) } != AXError::Success || names.is_null() {
+            return vec![];
+        }
+        let names = unsafe { CFRetained::from_raw(NonNull::new_unchecked(names.cast_mut())) };
+        match convert(&names) {
+            Read::Value(Value::Array(values)) => values.iter().map(|v| v.text().to_string()).collect(),
+            _ => vec![],
+        }
+    }
+
     pub fn set_messaging_timeout(&self, seconds: f32) {
         unsafe { self.0.set_messaging_timeout(seconds) };
     }
@@ -252,6 +285,37 @@ impl Element {
 
     pub fn perform(&self, action: &str) -> bool {
         unsafe { self.0.perform_action(&CFString::from_str(action)) == AXError::Success }
+    }
+}
+
+/// A range as an AXValue, the parameter of the text attributes.
+pub fn range(location: i64, length: i64) -> Option<CFRetained<AXValue>> {
+    let mut range = CFRange { location: location as _, length: length as _ };
+    unsafe { AXValue::new(AXValueType::CFRange, NonNull::from(&mut range).cast()) }
+}
+
+impl Value {
+    /// Python's `str(value)`, as the original stringified attribute values.
+    pub fn describe(&self) -> String {
+        match self {
+            Value::Text(text) => text.clone(),
+            Value::Bool(on) => if *on { "True" } else { "False" }.to_string(),
+            Value::Int(n) => n.to_string(),
+            Value::Float(n) => n.to_string(),
+            other => format!("{other:?}"),
+        }
+    }
+
+    /// Python truthiness.
+    pub fn truthy(&self) -> bool {
+        match self {
+            Value::Text(text) => !text.is_empty(),
+            Value::Bool(on) => *on,
+            Value::Int(n) => *n != 0,
+            Value::Float(n) => *n != 0.0,
+            Value::Array(values) => !values.is_empty(),
+            _ => true,
+        }
     }
 }
 

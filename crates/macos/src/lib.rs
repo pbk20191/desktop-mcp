@@ -20,6 +20,7 @@ pub mod displays;
 pub mod windows;
 pub mod menu;
 pub mod element;
+pub mod snapshot;
 pub mod signals;
 pub mod tls;
 pub mod fd;
