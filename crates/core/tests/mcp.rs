@@ -1,130 +1,20 @@
 //! The MCP server, driven message by message with a fake desktop.
-use desktop_mcp_core::mcp::{answer_stateless, Desktop, Server};
+mod support;
+use support::FakeDesktop;
+use desktop_mcp_core::mcp::{answer_stateless, Server};
 use desktop_mcp_core::shell::{Run, ShellMode};
 use desktop_mcp_core::clipboard::{Clipboard, ClipboardWrite, Image};
 use desktop_mcp_core::open::{Application, Target};
 use desktop_mcp_core::shortcuts::ShortcutRun;
-use desktop_mcp_core::spotlight::{Found, Item as FoundItem, Kind, Query, Search};
+use desktop_mcp_core::spotlight::{Found, Item as FoundItem, Kind, Query};
 use desktop_mcp_core::permissions::{format as permissions_report, Automation, PermissionState};
 use desktop_mcp_core::wait::RunningApp;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use serde_json::{json, Value};
-use std::cell::{Cell, RefCell};
-use std::future::Future;
-use std::pin::Pin;
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
-#[derive(Default)]
-struct FakeDesktop {
-    slept: RefCell<Vec<Duration>>,
-    shells: RefCell<Vec<(String, ShellMode, Duration)>>,
-    shell_answer: RefCell<Option<Result<Run, String>>>,
-    clipboard: RefCell<Clipboard>,
-    image_limits: RefCell<Vec<u32>>,
-    written: RefCell<Vec<ClipboardWrite>>,
-    refuse_writes: bool,
-    opened: RefCell<Vec<(Target, Option<PathBuf>)>>,
-    revealed: RefCell<Vec<PathBuf>>,
-    applications: Vec<(&'static str, Application)>,
-    notified: RefCell<Vec<(String, String, Option<String>, Option<String>)>>,
-    notify_failure: Option<&'static str>,
-    shortcut_names: &'static str,
-    list_failure: Option<Run>,
-    shortcut_run: Option<ShortcutRun>,
-    shortcut_calls: RefCell<Vec<String>>,
-    searches: RefCell<Vec<Search>>,
-    /// Answers for the name query, the content-only query and a raw query, in that order of use.
-    found: RefCell<Vec<Result<Found, String>>>,
-    /// How long each search pretends to take.
-    search_takes: Duration,
-    permissions: Option<PermissionState>,
-    /// The running apps at each look; the last answer repeats.
-    looks: RefCell<Vec<Vec<RunningApp>>>,
-    looked: Cell<usize>,
-}
-impl Desktop for FakeDesktop {
-    fn running_apps(&self) -> Pin<Box<dyn Future<Output = Vec<RunningApp>>>> {
-        self.looked.set(self.looked.get() + 1);
-        let mut looks = self.looks.borrow_mut();
-        let apps = if looks.len() > 1 { looks.remove(0) } else { looks.first().cloned().unwrap_or_default() };
-        Box::pin(async move { apps })
-    }
-    fn permissions(&self) -> Pin<Box<dyn Future<Output = PermissionState>>> {
-        let state = self.permissions.expect("a permission state");
-        Box::pin(async move { state })
-    }
-    fn search_files(&self, search: Search) -> Pin<Box<dyn Future<Output = Result<Found, String>>>> {
-        self.searches.borrow_mut().push(search);
-        std::thread::sleep(self.search_takes);
-        let answer = if self.found.borrow().is_empty() { Ok(Found::default()) } else { self.found.borrow_mut().remove(0) };
-        Box::pin(async move { answer })
-    }
-    fn list_shortcuts(&self, folder: Option<&str>, timeout: Duration) -> Pin<Box<dyn Future<Output = Result<Run, String>>>> {
-        self.shortcut_calls.borrow_mut().push(format!("list {folder:?} {}", timeout.as_secs()));
-        let run = self.list_failure.clone().unwrap_or(Run { stdout: self.shortcut_names.into(), stderr: String::new(), status: 0, timed_out: false });
-        Box::pin(async move { Ok(run) })
-    }
-    fn run_shortcut(&self, name: &str, input: Option<&str>, timeout: Duration) -> Pin<Box<dyn Future<Output = Result<ShortcutRun, String>>>> {
-        self.shortcut_calls.borrow_mut().push(format!("run {name} {input:?} {}", timeout.as_secs()));
-        let run = self.shortcut_run.clone().unwrap_or(ShortcutRun { status: 0, timed_out: false, output: String::new(), stderr: String::new() });
-        Box::pin(async move { Ok(run) })
-    }
-    fn notify(&self, message: &str, title: &str, subtitle: Option<&str>, sound: Option<&str>) -> Pin<Box<dyn Future<Output = Result<(), String>>>> {
-        self.notified.borrow_mut().push((message.into(), title.into(), subtitle.map(Into::into), sound.map(Into::into)));
-        let outcome = self.notify_failure.map(|reason| Err(reason.to_string())).unwrap_or(Ok(()));
-        Box::pin(async move { outcome })
-    }
-    fn open(&self, target: &Target, app: Option<&Path>) -> Pin<Box<dyn Future<Output = Result<(), String>>>> {
-        self.opened.borrow_mut().push((target.clone(), app.map(Path::to_path_buf)));
-        Box::pin(async { Ok(()) })
-    }
-    fn reveal(&self, path: &Path) -> Pin<Box<dyn Future<Output = ()>>> {
-        self.revealed.borrow_mut().push(path.to_path_buf());
-        Box::pin(async {})
-    }
-    fn find_application(&self, name: &str) -> Pin<Box<dyn Future<Output = Option<Application>>>> {
-        let found = self.applications.iter().find(|(known, _)| *known == name).map(|(_, application)| application.clone());
-        Box::pin(async move { found })
-    }
-    fn read_clipboard(&self, image_max_side: u32) -> Pin<Box<dyn Future<Output = Clipboard>>> {
-        self.image_limits.borrow_mut().push(image_max_side);
-        let contents = self.clipboard.borrow().clone();
-        Box::pin(async move { contents })
-    }
-    fn write_clipboard(&self, contents: ClipboardWrite) -> Pin<Box<dyn Future<Output = Result<(), String>>>> {
-        self.written.borrow_mut().push(contents);
-        let refused = self.refuse_writes;
-        Box::pin(async move { if refused { Err("Could not write to the clipboard.".to_string()) } else { Ok(()) } })
-    }
-    fn resolve(&self, _host: &str) -> Pin<Box<dyn Future<Output = Result<Vec<std::net::IpAddr>, String>>>> {
-        Box::pin(async { Err("no network in these tests".to_string()) })
-    }
-    fn connect(&self, _host: &str, _port: u16, _tls: bool) -> Pin<Box<dyn Future<Output = Result<Box<dyn desktop_mcp_core::io::Stream>, String>>>> {
-        Box::pin(async { Err("no network in these tests".to_string()) })
-    }
-    fn parse_html(&self, _body: &[u8], _charset: Option<&str>) -> Option<desktop_mcp_core::html::Element> {
-        None
-    }
-    fn sleep(&self, duration: Duration) -> Pin<Box<dyn Future<Output = ()>>> {
-        self.slept.borrow_mut().push(duration);
-        Box::pin(async {})
-    }
-    fn shell(&self, command: &str, mode: ShellMode, timeout: Duration) -> Pin<Box<dyn Future<Output = Result<Run, String>>>> {
-        self.shells.borrow_mut().push((command.to_string(), mode, timeout));
-        let answer = self.shell_answer.borrow_mut().take().expect("a canned shell answer");
-        Box::pin(async move { answer })
-    }
-}
-impl FakeDesktop {
-    fn answering(answer: Result<Run, String>) -> Rc<FakeDesktop> {
-        let desktop = FakeDesktop::default();
-        *desktop.shell_answer.borrow_mut() = Some(answer);
-        Rc::new(desktop)
-    }
-}
-
-/// Sends one message to a fresh server and returns the answer as JSON.
 fn ask(desktop: &Rc<FakeDesktop>, message: Value) -> Option<Value> {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
     let local = tokio::task::LocalSet::new();
