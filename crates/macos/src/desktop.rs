@@ -168,6 +168,10 @@ impl Desktop for MacDesktop {
         Box::pin(async move { signalled })
     }
 
+    fn window_source(&self) -> std::rc::Rc<dyn desktop_mcp_core::window::WindowSource> {
+        std::rc::Rc::new(crate::windows::AxWindowSource)
+    }
+
     fn find_application(&self, name_or_bundle_id: &str) -> Pin<Box<dyn Future<Output = Option<Application>>>> {
         let name = name_or_bundle_id.to_string();
         Box::pin(crate::main_loop::offload(move || crate::open::application(&name)))

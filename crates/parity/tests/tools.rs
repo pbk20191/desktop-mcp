@@ -193,3 +193,17 @@ fn app_refusals() {
     assert_eq!(said(json!({"mode": "quit", "name": "No Such App desktop-mcp"})), "Error executing tool App: Application 'No Such App desktop-mcp' is not running.");
     assert_eq!(said(json!({"mode": "force_quit", "name": " "})), "Error executing tool App: App name or bundle ID required for force_quit.");
 }
+
+/// Window only through refusals that come before any window is read or changed.
+#[test]
+fn window_refusals() {
+    let server = ServerUnderTest::start();
+    let said = |arguments: Value| text(&server.post(&call("Window", arguments)).json()).to_string();
+    for mode in ["focus", "close", "maximize", "display"] {
+        assert_eq!(said(json!({"mode": mode})), format!("Error executing tool Window: id required for {mode} mode."));
+    }
+    assert_eq!(said(json!({"mode": "display", "id": "1:w1"})), "Error executing tool Window: display required for display mode.");
+    assert_eq!(said(json!({"mode": "move", "id": "1:w1"})), "Error executing tool Window: loc required for move mode.");
+    assert_eq!(said(json!({"mode": "move", "id": "1:w1", "loc": [1]})), "Error executing tool Window: loc must be a list of 2 integers [x, y].");
+    assert_eq!(said(json!({"mode": "resize", "id": "1:w1", "size": [0, 10]})), "Error executing tool Window: size must be 2 positive integers [width, height].");
+}

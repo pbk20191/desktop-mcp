@@ -13,6 +13,7 @@ pub mod permissions;
 pub mod wait;
 pub mod input;
 pub mod app;
+pub mod window;
 pub mod http;
 pub mod session;
 pub mod config;

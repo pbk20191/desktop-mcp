@@ -76,3 +76,7 @@ harness = false
 [[test]]
 name = "apps"
 harness = false
+
+[[test]]
+name = "windows"
+harness = false

@@ -63,6 +63,9 @@ fn redirect(status: u16, location: &str) -> Response<Full<bytes::Bytes>> {
 }
 
 impl Desktop for FakeWeb {
+    fn window_source(&self) -> std::rc::Rc<dyn desktop_mcp_core::window::WindowSource> {
+        unreachable!()
+    }
     fn launch_app(&self, _name: &str) -> Pin<Box<dyn Future<Output = bool>>> {
         unreachable!()
     }

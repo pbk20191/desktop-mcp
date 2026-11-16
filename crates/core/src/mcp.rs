@@ -78,6 +78,8 @@ pub trait Desktop: 'static {
     fn change_front_window(&self, change: Option<FrameChange>) -> Pin<Box<dyn Future<Output = bool>>>;
     /// Asks these processes to quit, or with `force` terminates them; whether any was signalled.
     fn terminate(&self, pids: &[i32], force: bool) -> Pin<Box<dyn Future<Output = bool>>>;
+    /// The application windows and the actions on them.
+    fn window_source(&self) -> Rc<dyn crate::window::WindowSource>;
 }
 
 /// One MCP server. Stateless requests get a fresh one each; a session keeps one.
@@ -373,6 +375,18 @@ struct AppArgs {
 
 #[tool_router]
 impl Server {
+    #[tool(
+        name = "Window",
+        description = "Lists and arranges application windows. 'list' (default) returns one line per window: '<id>\\t<app>\\t\"<title>\"\\t[x,y,w,h]\\t<flags>' (flags: focused, minimized, fullscreen), optionally only for 'app' (name or bundle id). The other modes act on the window 'id' from list: 'focus', 'move' (to 'loc' [x, y]), 'resize' (to 'size' [width, height]), 'minimize', 'restore', 'close' (presses its close button; the app may ask to save), 'maximize' (fills its display minus the menu bar and Dock), 'fullscreen', 'exit_fullscreen', 'display' (moves it to display index 'display', same relative position, kept inside that display). 'displays' (no id) returns one line per display: '<index>\\t<name>\\t[x,y,w,h]\\tvisible [x,y,w,h]\\tscale <s>', then 'main' for the main one, in the same top-left coordinates as window frames. 'maximize' and 'display' refuse a window in full screen or minimized. A window that closed since it was listed is refused; list again. An index id (no 'w') must also be listed again after 'fullscreen' or 'exit_fullscreen'.",
+        annotations(title = "Window", read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = false)
+    )]
+    async fn window(&self, Parameters(args): Parameters<crate::window::Arguments>, cancellation: CancellationToken) -> CallToolResult {
+        let source = self.desktop.window_source();
+        let trusted = self.desktop.accessibility_trusted();
+        let cache = crate::window::CACHE.with(Rc::clone);
+        run_tool("Window", cancellation, async move { crate::window::run(source.as_ref(), &cache, trusted, args).await.map_err(ToolError) }).await
+    }
+
     #[tool(
         name = "App",
         description = "Manages macOS applications with six modes: 'launch' (opens the application), 'resize' (adjusts active window size), 'move' (repositions active window), 'switch' (brings specific app into focus), 'quit' (asks every process with that name or bundle id to quit; the app may ask to save), 'force_quit' (terminates them without asking). Quit never targets desktop-mcp itself or loginwindow.",

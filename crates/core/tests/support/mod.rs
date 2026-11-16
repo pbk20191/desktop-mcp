@@ -35,6 +35,7 @@ impl MainLoop for FakeLoop {
 /// A desktop that records what the tools ask of it and answers as each test sets it up.
 #[derive(Default)]
 pub struct FakeDesktop {
+    pub window_source: Option<Rc<dyn desktop_mcp_core::window::WindowSource>>,
     pub launched: RefCell<Vec<String>>,
     pub launch_fails: bool,
     /// Apps `activate_app` finds, and the names it was asked for.
@@ -83,6 +84,9 @@ pub struct FakeDesktop {
     pub looked: Cell<usize>,
 }
 impl Desktop for FakeDesktop {
+    fn window_source(&self) -> Rc<dyn desktop_mcp_core::window::WindowSource> {
+        self.window_source.clone().expect("a window source")
+    }
     fn launch_app(&self, name: &str) -> Pin<Box<dyn Future<Output = bool>>> {
         self.launched.borrow_mut().push(name.to_string());
         let ok = !self.launch_fails;
