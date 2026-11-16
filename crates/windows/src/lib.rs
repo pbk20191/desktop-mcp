@@ -8,6 +8,7 @@ pub mod html;
 pub mod imaging;
 pub mod input;
 pub mod integrity;
+pub mod apps;
 pub mod capture;
 pub mod listener;
 pub mod main_loop;

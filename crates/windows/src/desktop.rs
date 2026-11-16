@@ -165,20 +165,72 @@ impl Desktop for WindowsDesktop {
         None
     }
 
-    fn launch_app(&self, _name: &str) -> Pending<bool> {
-        ready(false)
+    /// An executable path, or the app the Apps folder (Start menu) names; on the pool.
+    fn launch_app(&self, name: &str) -> Pending<bool> {
+        let name = name.to_string();
+        Box::pin(pool::offload(move || crate::apps::launch(&name)))
     }
 
-    fn activate_app(&self, _name: &str) -> Pending<bool> {
-        ready(false)
+    /// The app's front window, brought to the foreground.
+    fn activate_app(&self, name: &str) -> Pending<bool> {
+        let name = name.to_string();
+        Box::pin(pool::offload(move || {
+            let windows = crate::windows_list::top_windows();
+            windows.iter().find(|window| window.is_app(&name)).is_some_and(|window| crate::foreground::bring(window.hwnd))
+        }))
     }
 
-    fn change_front_window(&self, _change: Option<FrameChange>) -> Pending<bool> {
-        ready(false)
+    /// Moves or resizes the focused window (or with `None` only looks for one).
+    fn change_front_window(&self, change: Option<FrameChange>) -> Pending<bool> {
+        Box::pin(async move {
+            let windows = pool::offload(crate::windows_list::top_windows).await;
+            let Some(front) = windows.into_iter().find(|window| window.focused) else { return false };
+            let source = crate::windows_list::Win32Windows;
+            let info = desktop_mcp_core::window::WindowInfo {
+                pid: front.pid as i32,
+                index: 0,
+                app: front.app,
+                title: front.title,
+                frame: front.frame,
+                focused: true,
+                minimized: front.minimized,
+                fullscreen: front.fullscreen,
+                number: Some(front.hwnd as u32),
+            };
+            match change {
+                None => true,
+                Some(FrameChange::Position(x, y)) => source.move_to(&info, x, y).await,
+                Some(FrameChange::Size(width, height)) => source.resize(&info, width, height).await,
+            }
+        })
     }
 
-    fn terminate(&self, _pids: &[i32], _force: bool) -> Pending<bool> {
-        ready(false)
+    /// `force`: ends the processes; otherwise asks each of their windows to close. The shell is never a target.
+    fn terminate(&self, pids: &[i32], force: bool) -> Pending<bool> {
+        let pids: Vec<u32> = pids.iter().map(|pid| *pid as u32).collect();
+        Box::pin(pool::offload(move || {
+            use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, WPARAM};
+            use windows::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+            use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
+            let windows = crate::windows_list::top_windows();
+            let shell: Vec<u32> = windows.iter().filter(|window| window.exe.eq_ignore_ascii_case("explorer.exe")).map(|window| window.pid).collect();
+            let mut signalled = false;
+            for pid in pids.into_iter().filter(|pid| !shell.contains(pid)) {
+                if force {
+                    if let Ok(process) = unsafe { OpenProcess(PROCESS_TERMINATE, false, pid) } {
+                        signalled |= unsafe { TerminateProcess(process, 1) }.is_ok();
+                        unsafe {
+                            let _ = CloseHandle(process);
+                        }
+                    }
+                } else {
+                    for window in windows.iter().filter(|window| window.pid == pid) {
+                        signalled |= unsafe { PostMessageW(Some(HWND(window.hwnd as *mut _)), WM_CLOSE, WPARAM(0), LPARAM(0)) }.is_ok();
+                    }
+                }
+            }
+            signalled
+        }))
     }
 
     fn window_source(&self) -> Rc<dyn WindowSource> {
