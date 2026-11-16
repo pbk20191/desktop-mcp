@@ -69,10 +69,12 @@ pub fn metadata_text(metadata: &[(String, Meta)]) -> String {
 }
 
 impl TreeNode {
-    /// `id|control_type|name|(x,y)`, then `|{metadata}` when there is any. The window is the `## ` line above.
+    /// `id|control_type|name|(x,y)`, then `|{metadata}` when there is any. The window is the `## ` line above. A `|`
+    /// in the name is written `\|` and a line break as a space, so a row splits into its columns unambiguously.
     fn row(&self, index: usize) -> String {
         let (x, y) = self.bounding_box.center();
-        let row = format!("{index}|{}|{}|({x},{y})", self.control_type, self.name);
+        let name = self.name.replace('|', r"\|").replace(['\r', '\n'], " ");
+        let row = format!("{index}|{}|{name}|({x},{y})", self.control_type);
         if self.metadata.is_empty() { row } else { format!("{row}|{}", metadata_text(&self.metadata)) }
     }
 }
@@ -84,7 +86,7 @@ pub struct TreeState {
     pub scrollable: Vec<TreeNode>,
 }
 
-const HEADER: &str = "# id|control_type|name|coords|metadata (when any), under the \"## window\" they are in";
+const HEADER: &str = "# id|control_type|name|coords|metadata (when any), under the \"## window\" they are in; a | in a name is \\|";
 
 /// The header, then the rows numbered from `base`, with a `## window` line wherever the window changes: a window's
 /// title is printed once, not on every row.

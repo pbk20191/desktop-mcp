@@ -16,7 +16,7 @@ fn the_snapshot_text() {
         active: Some(view.clone()),
         windows: vec![view],
         tree: TreeState {
-            interactive: vec![node("Back", vec![]), node("Go", vec![("value".into(), Meta::Text("a\"b/ü".into())), ("checked".into(), Meta::Bool(true)), ("n".into(), Meta::Float(2.0))])],
+            interactive: vec![node("Back | Home\nPage", vec![]), node("Go", vec![("value".into(), Meta::Text("a\"b/ü".into())), ("checked".into(), Meta::Bool(true)), ("n".into(), Meta::Float(2.0))])],
             scrollable: vec![node("Page", vec![])],
         },
         coordinate_space: "macOS logical points".into(),
@@ -28,9 +28,9 @@ fn the_snapshot_text() {
     *desktop.snapshot_state.borrow_mut() = state;
     let answer = call_tool(&desktop, &["Snapshot"], "Snapshot", json!({"use_vision": true}));
     let dialog = "Docs (com.apple.Safari) - Active - dialog: \"Save?\" (behind other windows; switch to the app to reach it)";
-    let header = "# id|control_type|name|coords|metadata (when any), under the \"## window\" they are in";
+    let header = "# id|control_type|name|coords|metadata (when any), under the \"## window\" they are in; a | in a name is \\|";
     let expected = format!(
-        "{}\nFocused Window:\n{dialog}\n\nInput Coordinate Space:\nmacOS logical points\n\nOpen Applications:\n{dialog}\n\nList of Interactive Elements:\n{header}\n## Safari\n0|AXButton|Back|(30,30)\n1|AXButton|Go|(30,30)|{{\"value\": \"a\\\"b/ü\", \"checked\": true, \"n\": 2}}\n\nList of Scrollable Elements:\n{header}\n## Safari\n2|AXButton|Page|(30,30)\n\nNote: Screenshot capture failed, so no annotated image is attached. The elements\nlisted above are still valid; call Snapshot again if you need the screenshot.\nIf this persists, grant Screen Recording in System Settings > Privacy & Security\n(or call Permissions with request=true).\n",
+        "{}\nFocused Window:\n{dialog}\n\nInput Coordinate Space:\nmacOS logical points\n\nOpen Applications:\n{dialog}\n\nList of Interactive Elements:\n{header}\n## Safari\n0|AXButton|Back \\| Home Page|(30,30)\n1|AXButton|Go|(30,30)|{{\"value\": \"a\\\"b/ü\", \"checked\": true, \"n\": 2}}\n\nList of Scrollable Elements:\n{header}\n## Safari\n2|AXButton|Page|(30,30)\n\nNote: Screenshot capture failed, so no annotated image is attached. The elements\nlisted above are still valid; call Snapshot again if you need the screenshot.\nIf this persists, grant Screen Recording in System Settings > Privacy & Security\n(or call Permissions with request=true).\n",
         desktop_mcp_core::permissions::ACCESSIBILITY_MESSAGE
     );
     assert_eq!(texts(&answer), [expected]);
