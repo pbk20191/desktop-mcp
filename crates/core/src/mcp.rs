@@ -123,6 +123,8 @@ pub trait Desktop: 'static {
 pub struct Server {
     tool_router: ToolRouter<Self>,
     desktop: Rc<dyn Desktop>,
+    gate: Option<Rc<dyn crate::platform::CallGate>>,
+    logging: bool,
 }
 
 impl Server {
@@ -153,7 +155,7 @@ impl Server {
                 crate::platform::apply(&mut route.attr, text);
             }
         }
-        Server { tool_router, desktop }
+        Server { tool_router, desktop, gate: platform.gate(), logging: platform.logging() }
     }
 }
 
@@ -848,8 +850,27 @@ impl Server {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for Server {
+    // Logging is deprecated by MCP's SEP-2577 but still the way upstream's control notifications reach clients.
+    #[allow(deprecated)]
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build()).with_server_info(Implementation::new("desktop-mcp", env!("CARGO_PKG_VERSION")))
+        let capabilities = if self.logging { ServerCapabilities::builder().enable_tools().enable_logging().build() } else { ServerCapabilities::builder().enable_tools().build() };
+        ServerConfig::new(capabilities).with_server_info(Implementation::new("desktop-mcp", env!("CARGO_PKG_VERSION")))
+    }
+
+    /// The router's call, behind the platform's gate when there is one.
+    async fn call_tool(&self, request: rmcp::model::CallToolRequestParams, context: rmcp::service::RequestContext<RoleServer>) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
+        let Some(gate) = self.gate.clone() else {
+            return self.tool_router.call(rmcp::handler::server::tool::ToolCallContext::new(self, request, context)).await;
+        };
+        let arguments = request.arguments.clone().unwrap_or_default();
+        let lease = match gate.admit(&request.name, &arguments, context.peer.clone()).await {
+            crate::platform::Admission::Refuse(result) => return Ok(rmcp::model::CallToolResponse::Complete(result)),
+            crate::platform::Admission::Run(lease) => lease,
+        };
+        match self.tool_router.call(rmcp::handler::server::tool::ToolCallContext::new(self, request, context)).await? {
+            rmcp::model::CallToolResponse::Complete(result) => Ok(rmcp::model::CallToolResponse::Complete(gate.finish(lease, result))),
+            other => Ok(other),
+        }
     }
 }
 
