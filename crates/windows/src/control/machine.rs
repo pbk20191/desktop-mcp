@@ -60,7 +60,7 @@ pub struct Lease {
 }
 
 pub struct Machine {
-    clock: Box<dyn Fn() -> Duration>,
+    clock: Box<dyn Fn() -> Duration + Send>,
     policy: Policy,
     idle_timeout: Duration,
     state: State,
@@ -76,13 +76,13 @@ pub struct Machine {
 }
 
 impl Machine {
-    pub fn new(policy: Policy, idle_timeout: Duration, clock: Box<dyn Fn() -> Duration>) -> Machine {
+    pub fn new(policy: Policy, idle_timeout: Duration, clock: Box<dyn Fn() -> Duration + Send>) -> Machine {
         let now = clock();
         Machine { clock, policy, idle_timeout, state: State::Ready, generation: 0, calls: 0, lease_until: now, last_physical: now, held: HashSet::new(), held_elsewhere: false, armed: false }
     }
 
     /// A machine for a server with control turned off.
-    pub fn disabled(policy: Policy, idle_timeout: Duration, clock: Box<dyn Fn() -> Duration>) -> Machine {
+    pub fn disabled(policy: Policy, idle_timeout: Duration, clock: Box<dyn Fn() -> Duration + Send>) -> Machine {
         Machine { state: State::Disabled, ..Machine::new(policy, idle_timeout, clock) }
     }
 

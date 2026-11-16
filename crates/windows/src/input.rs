@@ -153,6 +153,11 @@ pub fn inputs(event: &Event, screen: (i32, i32, i32, i32)) -> Vec<INPUT> {
     }
 }
 
+/// The event that lets go of every modifier, left and right.
+pub fn release_modifiers() -> Event {
+    Event::ReleaseModifiers
+}
+
 /// The virtual screen: every display's bounding box, in physical pixels.
 pub fn virtual_screen() -> (i32, i32, i32, i32) {
     use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN};

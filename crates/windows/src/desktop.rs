@@ -136,8 +136,14 @@ impl Desktop for WindowsDesktop {
         true
     }
 
-    /// Sent at once with `SendInput` (it only queues the events).
+    /// Sent at once with `SendInput`; dropped instead when the running call has lost control to the user.
     fn post(&self, event: InputEvent) {
+        if let Some(control) = crate::control::coordinator::active() {
+            if !control.allow_input() {
+                return;
+            }
+            control.count_step();
+        }
         if !crate::input::send(&event) {
             self.dropped.set(true);
         }

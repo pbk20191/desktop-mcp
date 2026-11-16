@@ -44,6 +44,10 @@ static DEADLINE: AtomicU64 = AtomicU64::new(0);
 static FAIL_OPEN: AtomicBool = AtomicBool::new(false);
 static SENDER: OnceLock<SyncSender<Seen>> = OnceLock::new();
 
+pub fn deadline() -> u64 {
+    DEADLINE.load(Ordering::Acquire)
+}
+
 pub fn set_deadline(deadline_ms: u64) {
     DEADLINE.store(deadline_ms, Ordering::Release);
 }

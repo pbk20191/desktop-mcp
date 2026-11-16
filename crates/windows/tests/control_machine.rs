@@ -4,18 +4,17 @@ use desktop_mcp_windows::control::machine::{Code, Machine, Physical, State};
 use desktop_mcp_windows::control::policy::{gated, Policy};
 use desktop_mcp_windows::control::status::rejection;
 use serde_json::json;
-use std::cell::Cell;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-fn machine() -> (Machine, Rc<Cell<Duration>>) {
-    let now = Rc::new(Cell::new(Duration::ZERO));
+fn machine() -> (Machine, Arc<Mutex<Duration>>) {
+    let now = Arc::new(Mutex::new(Duration::ZERO));
     let clock = now.clone();
-    (Machine::new(Policy::Relaxed, Duration::from_secs(10), Box::new(move || clock.get())), now)
+    (Machine::new(Policy::Relaxed, Duration::from_secs(10), Box::new(move || *clock.lock().unwrap())), now)
 }
 
-fn advance(now: &Cell<Duration>, seconds: f64) {
-    now.set(now.get() + Duration::from_secs_f64(seconds));
+fn advance(now: &Mutex<Duration>, seconds: f64) {
+    *now.lock().unwrap() += Duration::from_secs_f64(seconds);
 }
 
 #[test]
