@@ -49,3 +49,21 @@ the dev PC. Build: `cargo build -p desktop-mcp-cli` → `target\debug\desktop-mc
       pack falls back to the user's languages.
 - [ ] Screenshot of each display, and of a region; the scale note is right when the image is downscaled.
 - [ ] A hung window (a debugger paused on an app): Snapshot still answers within a few seconds.
+
+## W4
+
+- [ ] Click (single, double, right, middle, `clicks=0` hover) in Notepad and Explorer, on a 100 % and a 150 % display.
+- [ ] Type with Korean and emoji text, `clear`, `caret_position` start and end, `press_enter`; typing into a password
+      field reports "secure field" and never echoes the text.
+- [ ] Scroll vertical and horizontal, with and without `loc`; Move, and Move with `drag` (drag a file in Explorer).
+- [ ] Shortcut `ctrl+a`, `ctrl+c`/`ctrl+v`, `alt+tab`, `win+r` (then Escape), `shift+insert`; no modifier stays held
+      afterwards (type in Notepad after each).
+- [ ] App `launch` by Start menu name (Notepad, Calculator — a packaged app — and on a Korean Windows "메모장"),
+      by full executable path; `switch` while another app has focus; `resize`, `move`; `quit` (Notepad with unsaved
+      text asks to save); `force_quit`.
+- [ ] Window `focus`, `move`, `resize`, `minimize`, `restore`, `maximize`, `display` across two displays of different
+      scale (the frame obtained is the one asked for), `close`; `fullscreen` answers that Windows has none.
+- [ ] Input toward an elevated window (Task Manager run as administrator, Registry Editor): refused with the
+      "runs as administrator" message, nothing typed anywhere.
+- [ ] MultiSelect three files in Explorer with ctrl; `press_ctrl=false` clicks plainly. MultiEdit two fields of a form.
+- [ ] Over Chrome Remote Desktop: clicks and typing land where expected.
