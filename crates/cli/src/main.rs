@@ -261,7 +261,7 @@ fn plan(args: &ServeArgs) -> Result<ServePlan, String> {
 }
 
 /// The tools this build has.
-const TOOLS: &[&str] = &["App", "Click", "Clipboard", "Move", "Notification", "Open", "Permissions", "RunShortcut", "Scrape", "Scroll", "Shell", "Shortcut", "Spotlight", "Type", "Wait", "Window"];
+const TOOLS: &[&str] = &["App", "Click", "Clipboard", "Menu", "Move", "Notification", "Open", "Permissions", "RunShortcut", "Scrape", "Scroll", "Shell", "Shortcut", "Spotlight", "Type", "Wait", "Window"];
 
 /// The name of the Launch Agent plist's `Sockets` entry that `install` writes.
 const LAUNCHD_SOCKET: &str = "Listener";

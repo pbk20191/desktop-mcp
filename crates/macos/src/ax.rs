@@ -244,6 +244,12 @@ impl Element {
         self.set("AXSize", &value)
     }
 
+    /// `perform`, also counting a reply that timed out (`kAXErrorCannotComplete`): the action was delivered.
+    pub fn perform_answering(&self, action: &str) -> bool {
+        let error = unsafe { self.0.perform_action(&CFString::from_str(action)) };
+        error == AXError::Success || error == AXError::CannotComplete
+    }
+
     pub fn perform(&self, action: &str) -> bool {
         unsafe { self.0.perform_action(&CFString::from_str(action)) == AXError::Success }
     }

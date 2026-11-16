@@ -207,3 +207,11 @@ fn window_refusals() {
     assert_eq!(said(json!({"mode": "move", "id": "1:w1", "loc": [1]})), "Error executing tool Window: loc must be a list of 2 integers [x, y].");
     assert_eq!(said(json!({"mode": "resize", "id": "1:w1", "size": [0, 10]})), "Error executing tool Window: size must be 2 positive integers [width, height].");
 }
+
+/// Menu only through a refusal that comes before the menu bar is read.
+#[test]
+fn menu_select_needs_a_path() {
+    let server = ServerUnderTest::start();
+    let answer = server.post(&call("Menu", json!({"mode": "select"}))).json();
+    assert_eq!(text(&answer), "Error executing tool Menu: path required for select mode.");
+}

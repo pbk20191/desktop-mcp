@@ -17,6 +17,7 @@ pub mod secure_field;
 pub mod apps;
 pub mod displays;
 pub mod windows;
+pub mod menu;
 pub mod signals;
 pub mod tls;
 pub mod fd;

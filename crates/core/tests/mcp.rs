@@ -18,7 +18,7 @@ use std::time::Duration;
 fn ask(desktop: &Rc<FakeDesktop>, message: Value) -> Option<Value> {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
     let local = tokio::task::LocalSet::new();
-    let server = Server::new(desktop.clone(), &["Wait", "Shell", "Scrape", "Clipboard", "Open", "Notification", "RunShortcut", "Spotlight", "Permissions", "Click", "Type", "Scroll", "Move", "Shortcut", "App", "Window"]);
+    let server = Server::new(desktop.clone(), &["Wait", "Shell", "Scrape", "Clipboard", "Open", "Notification", "RunShortcut", "Spotlight", "Permissions", "Click", "Type", "Scroll", "Move", "Shortcut", "App", "Window", "Menu"]);
     local.block_on(&runtime, async move {
         let answer = answer_stateless(server, serde_json::from_value(message).unwrap()).await;
         answer.map(|message| serde_json::to_value(message).unwrap())
@@ -36,7 +36,7 @@ fn listed_tools(desktop: &Rc<FakeDesktop>) -> Vec<Value> {
 fn only_the_requested_tools_are_listed() {
     let desktop = Rc::new(FakeDesktop::default());
     let names: Vec<String> = listed_tools(&desktop).iter().map(|tool| tool["name"].as_str().unwrap().to_string()).collect();
-    assert_eq!(names, ["App", "Click", "Clipboard", "Move", "Notification", "Open", "Permissions", "RunShortcut", "Scrape", "Scroll", "Shell", "Shortcut", "Spotlight", "Type", "Wait", "Window"]);
+    assert_eq!(names, ["App", "Click", "Clipboard", "Menu", "Move", "Notification", "Open", "Permissions", "RunShortcut", "Scrape", "Scroll", "Shell", "Shortcut", "Spotlight", "Type", "Wait", "Window"]);
     let desktop = Rc::new(FakeDesktop::default());
     let server = Server::new(desktop.clone(), &["Wait"]);
     let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
@@ -536,4 +536,17 @@ fn the_accessibility_message_says_how_to_grant_it() {
         desktop_mcp_core::permissions::ACCESSIBILITY_MESSAGE,
         "Accessibility is not granted to desktop-mcp. Grant it in System Settings > Privacy & Security > Accessibility, then restart desktop-mcp."
     );
+}
+
+#[test]
+fn menu_requests_reach_the_platform_after_their_checks() {
+    use desktop_mcp_core::menu::Request;
+    let desktop = Rc::new(FakeDesktop::default());
+    assert_eq!(texts(&call(&desktop, "Menu", json!({}))), ["menu"]);
+    assert_eq!(texts(&call(&desktop, "Menu", json!({"mode": "select", "app": "Safari", "path": ["File", "New"]}))), ["menu"]);
+    assert_eq!(texts(&call(&desktop, "Menu", json!({"mode": "select"}))), ["Error executing tool Menu: path required for select mode."]);
+    assert_eq!(*desktop.menu_requests.borrow(), [(None, Request::List { path: vec![], depth: 2 }), (Some("Safari".into()), Request::Select { path: vec!["File".into(), "New".into()] })]);
+    let untrusted = Rc::new(FakeDesktop { untrusted: true, ..FakeDesktop::default() });
+    assert_eq!(texts(&call(&untrusted, "Menu", json!({}))), [format!("Error executing tool Menu: {}", desktop_mcp_core::permissions::ACCESSIBILITY_MESSAGE)]);
+    assert!(untrusted.menu_requests.borrow().is_empty());
 }

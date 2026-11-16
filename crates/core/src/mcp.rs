@@ -80,6 +80,8 @@ pub trait Desktop: 'static {
     fn terminate(&self, pids: &[i32], force: bool) -> Pin<Box<dyn Future<Output = bool>>>;
     /// The application windows and the actions on them.
     fn window_source(&self) -> Rc<dyn crate::window::WindowSource>;
+    /// Lists or selects in the menu bar of `app` (name or bundle id), or of the app that owns the menu bar.
+    fn menu(&self, app: Option<String>, request: crate::menu::Request) -> Pin<Box<dyn Future<Output = Result<String, String>>>>;
 }
 
 /// One MCP server. Stateless requests get a fresh one each; a session keeps one.
@@ -373,8 +375,34 @@ struct AppArgs {
     window_size: Option<Vec<i64>>,
 }
 
+fn two() -> i64 {
+    2
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct MenuArgs {
+    #[serde(default)]
+    mode: crate::menu::Mode,
+    app: Option<String>,
+    path: Option<Vec<String>>,
+    #[serde(default = "two")]
+    depth: i64,
+}
+
 #[tool_router]
 impl Server {
+    #[tool(
+        name = "Menu",
+        description = "Reads and chooses commands from an app's menu bar ('app': name or bundle id; default the frontmost app). 'list' (default) returns an indented tree of item titles with keyboard shortcuts and [disabled], 'depth' levels deep (default 2, max 4), below the optional 'path' prefix. 'select' presses the item 'path' names from the bar item down, e.g. [\"File\", \"Export…\"]: titles match exactly, then ignoring case, then also treating '...' as '…'; the Apple menu is \"Apple\". A disabled item is not pressed.",
+        annotations(title = "Menu", read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = false)
+    )]
+    async fn menu(&self, Parameters(args): Parameters<MenuArgs>, cancellation: CancellationToken) -> CallToolResult {
+        run_tool("Menu", cancellation, async move {
+            crate::menu::run(self.desktop.as_ref(), args.mode, args.app, args.path.unwrap_or_default(), args.depth).await.map_err(ToolError)
+        })
+        .await
+    }
+
     #[tool(
         name = "Window",
         description = "Lists and arranges application windows. 'list' (default) returns one line per window: '<id>\\t<app>\\t\"<title>\"\\t[x,y,w,h]\\t<flags>' (flags: focused, minimized, fullscreen), optionally only for 'app' (name or bundle id). The other modes act on the window 'id' from list: 'focus', 'move' (to 'loc' [x, y]), 'resize' (to 'size' [width, height]), 'minimize', 'restore', 'close' (presses its close button; the app may ask to save), 'maximize' (fills its display minus the menu bar and Dock), 'fullscreen', 'exit_fullscreen', 'display' (moves it to display index 'display', same relative position, kept inside that display). 'displays' (no id) returns one line per display: '<index>\\t<name>\\t[x,y,w,h]\\tvisible [x,y,w,h]\\tscale <s>', then 'main' for the main one, in the same top-left coordinates as window frames. 'maximize' and 'display' refuse a window in full screen or minimized. A window that closed since it was listed is refused; list again. An index id (no 'w') must also be listed again after 'fullscreen' or 'exit_fullscreen'.",

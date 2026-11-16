@@ -172,6 +172,12 @@ impl Desktop for MacDesktop {
         std::rc::Rc::new(crate::windows::AxWindowSource)
     }
 
+    fn menu(&self, app: Option<String>, request: desktop_mcp_core::menu::Request) -> Pin<Box<dyn Future<Output = Result<String, String>>>> {
+        // The active app owns the menu bar even when it has no window; the frontmost window can be another's.
+        let owner = if app.is_none() { crate::menu::menu_bar_owner() } else { None };
+        Box::pin(crate::main_loop::offload(move || crate::menu::answer(app.as_deref(), owner, request)))
+    }
+
     fn find_application(&self, name_or_bundle_id: &str) -> Pin<Box<dyn Future<Output = Option<Application>>>> {
         let name = name_or_bundle_id.to_string();
         Box::pin(crate::main_loop::offload(move || crate::open::application(&name)))

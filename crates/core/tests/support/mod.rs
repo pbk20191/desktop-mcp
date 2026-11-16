@@ -35,6 +35,7 @@ impl MainLoop for FakeLoop {
 /// A desktop that records what the tools ask of it and answers as each test sets it up.
 #[derive(Default)]
 pub struct FakeDesktop {
+    pub menu_requests: RefCell<Vec<(Option<String>, desktop_mcp_core::menu::Request)>>,
     pub window_source: Option<Rc<dyn desktop_mcp_core::window::WindowSource>>,
     pub launched: RefCell<Vec<String>>,
     pub launch_fails: bool,
@@ -84,6 +85,10 @@ pub struct FakeDesktop {
     pub looked: Cell<usize>,
 }
 impl Desktop for FakeDesktop {
+    fn menu(&self, app: Option<String>, request: desktop_mcp_core::menu::Request) -> Pin<Box<dyn Future<Output = Result<String, String>>>> {
+        self.menu_requests.borrow_mut().push((app, request));
+        Box::pin(async { Ok("menu".to_string()) })
+    }
     fn window_source(&self) -> Rc<dyn desktop_mcp_core::window::WindowSource> {
         self.window_source.clone().expect("a window source")
     }
