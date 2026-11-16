@@ -45,7 +45,8 @@ pub async fn until_app(desktop: &dyn Desktop, app: Option<&str>, running: bool, 
     let deadline = Instant::now() + Duration::from_secs(timeout as u64);
     let mut first = true;
     let found = poll(desktop, deadline, async || {
-        let is_running = desktop.running_apps().await.iter().any(|running| matches(running.name.as_deref(), running.bundle_id.as_deref(), app));
+        // As App matches it: a running app's name, else the installed app it names (a Start menu name on Windows).
+        let is_running = desktop.running_apps().await.iter().any(|running| matches(running.name.as_deref(), running.bundle_id.as_deref(), app)) || !desktop.installed_app_pids(app).await.is_empty();
         let was_first = std::mem::replace(&mut first, false);
         if is_running != running {
             return None;

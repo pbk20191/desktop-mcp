@@ -21,6 +21,15 @@ fn top_windows_are_sane() {
 }
 
 #[test]
+fn a_uwp_frame_is_its_core_window_s_app() {
+    let child = |class: &str, pid: u32| (class.to_string(), pid);
+    let children = [child("ApplicationFrameTitleBarWindow", 10), child("Windows.UI.Core.CoreWindow", 42)];
+    assert_eq!(windows_list::hosted_by(10, &children), Some(42));
+    assert_eq!(windows_list::hosted_by(10, &[child("Windows.UI.Core.CoreWindow", 10)]), None, "not the host's own");
+    assert_eq!(windows_list::hosted_by(10, &[]), None);
+}
+
+#[test]
 fn display_frames_are_physical() {
     use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
     per_monitor_aware();

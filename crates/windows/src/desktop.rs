@@ -192,8 +192,7 @@ impl Desktop for WindowsDesktop {
         let name = name.to_string();
         Box::pin(pool::offload(move || {
             let windows = crate::windows_list::top_windows();
-            let front = windows.iter().find(|window| window.is_app(&name)).or_else(|| crate::apps::windows_of(&name, &windows).into_iter().next());
-            front.is_some_and(|window| crate::foreground::bring(window.hwnd))
+            crate::windows_list::app_windows(&name, &windows).first().is_some_and(|window| crate::foreground::bring(window.hwnd))
         }))
     }
 
@@ -234,7 +233,8 @@ impl Desktop for WindowsDesktop {
         })
     }
 
-    /// `force`: ends the processes; otherwise asks each of their windows to close. The shell is never a target.
+    /// `force`: ends the processes; otherwise asks each of their windows to close. The shell is never a target, nor
+    /// ApplicationFrameHost.exe, which frames every UWP app's windows (a UWP window is listed under the app it hosts).
     fn terminate(&self, pids: &[i32], force: bool) -> Pending<bool> {
         let pids: Vec<u32> = pids.iter().map(|pid| *pid as u32).collect();
         Box::pin(pool::offload(move || {
@@ -242,9 +242,14 @@ impl Desktop for WindowsDesktop {
             use windows::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
             use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
             let windows = crate::windows_list::top_windows();
-            let shell: Vec<u32> = windows.iter().filter(|window| window.exe.eq_ignore_ascii_case("explorer.exe")).map(|window| window.pid).collect();
+            let protected = |pid: &u32| {
+                crate::windows_list::image_path(*pid).is_some_and(|path| {
+                    let exe = path.rsplit('\\').next().unwrap_or(&path);
+                    exe.eq_ignore_ascii_case("explorer.exe") || exe.eq_ignore_ascii_case("ApplicationFrameHost.exe")
+                })
+            };
             let mut signalled = false;
-            for pid in pids.into_iter().filter(|pid| !shell.contains(pid)) {
+            for pid in pids.into_iter().filter(|pid| !protected(pid)) {
                 if force {
                     if let Ok(process) = unsafe { OpenProcess(PROCESS_TERMINATE, false, pid) } {
                         signalled |= unsafe { TerminateProcess(process, 1) }.is_ok();
@@ -340,7 +345,7 @@ impl Desktop for WindowsDesktop {
         Box::pin(pool::offload(move || {
             let windows = crate::windows_list::top_windows();
             let owner = match &app {
-                Some(app) => windows.iter().find(|window| window.is_app(app)).map(|window| window.pid),
+                Some(app) => crate::windows_list::app_windows(app, &windows).first().map(|window| window.pid),
                 None => windows.iter().find(|window| window.focused).map(|window| window.pid),
             }?;
             let mut fallback = None;

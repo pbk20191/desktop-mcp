@@ -1,6 +1,9 @@
 //! Applications: the shell's Apps folder (the Start menu's list: desktop and packaged apps alike) and launching
 //! one of them, or an executable, through the shell; and finding the running windows of an entry.
 use crate::windows_list::TopWindow;
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use windows::core::{GUID, HSTRING, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{CloseHandle, PROPERTYKEY};
 use windows::Win32::Storage::Packaging::Appx::GetPackageFamilyName;
@@ -93,7 +96,7 @@ pub fn launch(name: &str) -> bool {
 const LINK_TARGET: PROPERTYKEY = PROPERTYKEY { fmtid: GUID::from_u128(0xb9b4b3fc_2b51_4a42_b5d8_324146afcf25), pid: 2 };
 
 /// What runs an Apps folder entry: a packaged app's package family, or a desktop app's executable.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Runs {
     Package(String),
     Executable(String),
@@ -122,11 +125,28 @@ fn package_family(pid: u32) -> Option<String> {
     (read.is_ok() && length > 0).then(|| String::from_utf16_lossy(&buffer[..length as usize - 1]))
 }
 
+/// Name → what runs the entry it names, with when it was read: polling callers (Wait) read the Apps folder once a
+/// minute, not on every poll.
+static RESOLVED: Mutex<Option<HashMap<String, (Instant, Option<Runs>)>>> = Mutex::new(None);
+const RESOLVED_FOR: Duration = Duration::from_secs(60);
+
+fn runs_named(name: &str) -> Option<Runs> {
+    let key = name.trim().to_lowercase();
+    if let Some((read, known)) = RESOLVED.lock().unwrap().get_or_insert_with(HashMap::new).get(&key) {
+        if read.elapsed() < RESOLVED_FOR {
+            return known.clone();
+        }
+    }
+    let entries = catalog();
+    let resolved = best_match(&entries, name).and_then(runs);
+    RESOLVED.lock().unwrap().get_or_insert_with(HashMap::new).insert(key, (Instant::now(), resolved.clone()));
+    resolved
+}
+
 /// The windows of the Apps folder entry `name` names (as [`launch`] picks it), for a name no running app goes by:
 /// a Start menu name such as a localized one. Blocking (COM, on the pool).
 pub fn windows_of<'a>(name: &str, windows: &'a [TopWindow]) -> Vec<&'a TopWindow> {
-    let entries = catalog();
-    let Some(runs) = best_match(&entries, name).and_then(runs) else { return Vec::new() };
+    let Some(runs) = runs_named(name) else { return Vec::new() };
     windows
         .iter()
         .filter(|window| match &runs {

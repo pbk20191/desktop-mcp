@@ -16,7 +16,7 @@ use windows::Win32::Storage::FileSystem::{GetFileVersionInfoSizeW, GetFileVersio
 use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
 use windows::Win32::Foundation::WPARAM;
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClassNameW, GetForegroundWindow, GetWindow, GetWindowLongW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
+    EnumChildWindows, EnumWindows, GetClassNameW, GetForegroundWindow, GetWindow, GetWindowLongW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
     IsWindow, IsWindowVisible, IsZoomed, PostMessageW, SetWindowPos, ShowWindow, ShowWindowAsync, GWL_EXSTYLE, GWL_STYLE, GW_OWNER, SWP_NOACTIVATE, SWP_NOZORDER, SW_MINIMIZE,
     SW_RESTORE, WM_CLOSE, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW, WS_THICKFRAME,
 };
@@ -26,6 +26,7 @@ type Pending<T> = Pin<Box<dyn Future<Output = T>>>;
 #[derive(Clone, Debug)]
 pub struct TopWindow {
     pub hwnd: isize,
+    /// The window's process; for a UWP app's frame, the hosted app's (the frame stays `hwnd`).
     pub pid: u32,
     /// The executable's file name (`notepad.exe`).
     pub exe: String,
@@ -162,6 +163,17 @@ fn names(pid: u32) -> (String, String) {
     named
 }
 
+/// The windows of the app `app` names, as every tool taking an app name matches it: a running app's name or
+/// executable, else (only when none goes by it) the Start menu entry it names, such as a localized name.
+/// Blocking (COM, on the pool).
+pub fn app_windows<'a>(app: &str, windows: &'a [TopWindow]) -> Vec<&'a TopWindow> {
+    let named: Vec<&TopWindow> = windows.iter().filter(|window| window.is_app(app)).collect();
+    if !named.is_empty() {
+        return named;
+    }
+    crate::apps::windows_of(app, windows)
+}
+
 /// The applications' top-level windows in z-order (front first). Blocking: run it on the pool.
 pub fn top_windows() -> Vec<TopWindow> {
     windows_where(is_app_window)
@@ -182,18 +194,70 @@ pub fn foreground_root() -> Option<isize> {
     Some(if root.is_invalid() { foreground } else { root }.0 as isize)
 }
 
-fn windows_where(keep: fn(HWND) -> bool) -> Vec<TopWindow> {
+fn top_level_handles() -> Vec<HWND> {
     let mut handles: Vec<HWND> = Vec::new();
     unsafe {
         let _ = EnumWindows(Some(collect), LPARAM(&mut handles as *mut _ as isize));
     }
+    handles
+}
+
+fn process_of(hwnd: HWND) -> u32 {
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    pid
+}
+
+/// The frame ApplicationFrameHost.exe draws around a UWP app (Settings, Microsoft Store, Calculator).
+const UWP_FRAME: &str = "ApplicationFrameWindow";
+/// The UWP app's own window, in the app's process.
+const UWP_CORE: &str = "Windows.UI.Core.CoreWindow";
+
+/// The process a UWP frame hosts, from the frame's children as (class, process): the one whose core window runs in
+/// another process than the frame's.
+pub fn hosted_by(frame_pid: u32, children: &[(String, u32)]) -> Option<u32> {
+    children.iter().find(|(class, pid)| class == UWP_CORE && *pid != frame_pid && *pid != 0).map(|(_, pid)| *pid)
+}
+
+/// The app process a UWP frame (`ApplicationFrameWindow`, owned by the shared ApplicationFrameHost.exe) hosts.
+/// While the app runs, its core window is a child of the frame (EnumChildWindows walks them in the system, with no
+/// recursion here). While it is minimized or suspended, Windows detaches the core window: it is then a top-level
+/// (cloaked or hidden) window of the app's process, titled as the frame, so it is matched by title among
+/// `top_level`. `None` when neither finds it: the frame stays ApplicationFrameHost.exe's (which is never ended).
+fn hosted_app(frame: HWND, frame_pid: u32, top_level: &[HWND]) -> Option<u32> {
+    let mut children: Vec<HWND> = Vec::new();
+    unsafe {
+        let _ = EnumChildWindows(Some(frame), Some(collect), LPARAM(&mut children as *mut _ as isize));
+    }
+    let children: Vec<(String, u32)> = children.into_iter().map(|child| (class_name(child), process_of(child))).collect();
+    hosted_by(frame_pid, &children).or_else(|| {
+        let name = title(frame);
+        if name.is_empty() {
+            return None;
+        }
+        let detached: Vec<(String, u32)> = top_level.iter().map(|window| (*window, class_name(*window))).filter(|(window, class)| class == UWP_CORE && title(*window) == name).map(|(window, class)| (class, process_of(window))).collect();
+        hosted_by(frame_pid, &detached)
+    })
+}
+
+/// The window's process, a UWP frame's being the hosted app's.
+fn owner(hwnd: HWND, top_level: &mut Option<Vec<HWND>>) -> u32 {
+    let pid = process_of(hwnd);
+    if pid == 0 || class_name(hwnd) != UWP_FRAME {
+        return pid;
+    }
+    hosted_app(hwnd, pid, top_level.get_or_insert_with(top_level_handles)).unwrap_or(pid)
+}
+
+fn windows_where(keep: fn(HWND) -> bool) -> Vec<TopWindow> {
+    let handles = top_level_handles();
+    let mut top_level = Some(handles.clone());
     let foreground = unsafe { GetForegroundWindow() };
     handles
         .into_iter()
         .filter(|hwnd| keep(*hwnd))
         .filter_map(|hwnd| {
-            let mut pid = 0u32;
-            unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+            let pid = owner(hwnd, &mut top_level);
             let (exe, app) = names(pid);
             if pid == 0 || exe.is_empty() {
                 return None;
@@ -212,9 +276,7 @@ fn find(window: &WindowInfo) -> Option<isize> {
     if !unsafe { IsWindow(Some(hwnd)) }.as_bool() {
         return None;
     }
-    let mut pid = 0u32;
-    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
-    (pid as i32 == window.pid).then_some(hwnd.0 as isize)
+    (owner(hwnd, &mut None) as i32 == window.pid).then_some(hwnd.0 as isize)
 }
 
 /// Runs `action` on the window on the pool (calls into another process can block); false when it is gone or does
@@ -297,7 +359,18 @@ pub struct Win32Windows;
 impl WindowSource for Win32Windows {
     fn windows(&self, app: Option<&str>) -> Pending<Vec<WindowInfo>> {
         let app = app.map(str::to_string);
-        Box::pin(async move { infos(pool::offload(top_windows).await.into_iter().filter(|window| app.as_deref().is_none_or(|app| window.is_app(app))).collect()) })
+        Box::pin(async move {
+            infos(
+                pool::offload(move || {
+                    let windows = top_windows();
+                    match app {
+                        Some(app) => app_windows(&app, &windows).into_iter().cloned().collect(),
+                        None => windows,
+                    }
+                })
+                .await,
+            )
+        })
     }
     fn reading(&self, app: Option<&str>) -> Pending<WindowReading> {
         let windows = self.windows(app);
@@ -308,7 +381,7 @@ impl WindowSource for Win32Windows {
     }
     fn app_exists(&self, app: &str) -> Pending<bool> {
         let app = app.to_string();
-        Box::pin(async move { pool::offload(top_windows).await.iter().any(|window| window.is_app(&app)) })
+        Box::pin(pool::offload(move || !app_windows(&app, &top_windows()).is_empty()))
     }
     fn focus(&self, window: &WindowInfo) -> Pending<bool> {
         act(window, |hwnd| crate::foreground::bring(hwnd.0 as isize))
