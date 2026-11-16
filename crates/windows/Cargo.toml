@@ -12,6 +12,7 @@ tokio.workspace = true
 hyper.workspace = true
 windows.workspace = true
 windows-future.workspace = true
+windows-collections.workspace = true
 base64.workspace = true
 serde_json.workspace = true
 html5ever.workspace = true
@@ -37,3 +38,7 @@ harness = false
 [[test]]
 name = "net"
 harness = false
+
+[dev-dependencies]
+tokio.workspace = true
+serde_json.workspace = true

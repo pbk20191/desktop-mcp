@@ -269,7 +269,10 @@ struct NotificationArgs {
     #[serde(default = "notification")]
     title: String,
     subtitle: Option<String>,
-    sound: Option<NotificationSound>,
+    // Listed as the core's (macOS) sounds; a platform lists its own through its text, and its `notify` judges the
+    // name, so the value stays a string here.
+    #[schemars(with = "Option<NotificationSound>")]
+    sound: Option<String>,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -712,7 +715,7 @@ impl Server {
     )]
     async fn notification(&self, Parameters(args): Parameters<NotificationArgs>, cancellation: CancellationToken) -> CallToolResult {
         run_tool("Notification", cancellation, async move {
-            let sound = args.sound.map(|sound| serde_json::to_value(sound).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default());
+            let sound = args.sound.filter(|sound| !sound.is_empty());
             let subtitle = args.subtitle.filter(|subtitle| !subtitle.is_empty());
             Ok(match self.desktop.notify(&args.message, &args.title, subtitle.as_deref(), sound.as_deref()).await {
                 Ok(()) => format!("Notification sent: [{}] {}", args.title, args.message),
