@@ -1,6 +1,6 @@
 //! The application catalog (read only; nothing is launched).
 #![cfg(windows)]
-use desktop_mcp_windows::apps::{best_match, catalog, frame_titled_as, match_by_executable, AppEntry};
+use desktop_mcp_windows::apps::{best_match, catalog, frame_titled_as, match_by_executable, match_by_package, AppEntry};
 
 fn entry(name: &str) -> AppEntry {
     AppEntry { name: name.into(), parsing_name: format!("id-{name}") }
@@ -24,6 +24,21 @@ fn match_by_executable_takes_the_file_stem() {
     assert_eq!(match_by_executable(&targets, "notepad").map(|found| found.name.as_str()), Some("메모장"));
     assert_eq!(match_by_executable(&targets, "NOTEPAD.EXE").map(|found| found.name.as_str()), Some("메모장"));
     assert!(match_by_executable(&targets, "note").is_none(), "the whole stem, not a prefix");
+}
+
+#[test]
+fn match_by_package_takes_the_english_name_in_the_app_id() {
+    let packaged = |name: &str, id: &str| AppEntry { name: name.into(), parsing_name: id.into() };
+    let entries = [
+        packaged("계산기", "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App"),
+        packaged("설정", "windows.immersivecontrolpanel_cw5n1h2txyewy!microsoft.windows.immersivecontrolpanel"),
+        packaged("WSL Settings", r"C:\Program Files\WSL\wslsettings\wslsettings.exe"),
+        packaged("사진", "Microsoft.OneDrive.Photos_8wekyb3d8bbwe!OneDrive.App"),
+    ];
+    assert_eq!(match_by_package(&entries, "Calculator").map(|found| found.name.as_str()), Some("계산기"));
+    assert_eq!(match_by_package(&entries, "settings").map(|found| found.name.as_str()), Some("설정"));
+    assert_eq!(match_by_package(&entries, "photos").map(|found| found.name.as_str()), Some("사진"));
+    assert!(match_by_package(&entries, "lator").is_none(), "a whole word");
 }
 
 #[test]

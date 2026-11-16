@@ -102,6 +102,28 @@ pub fn match_by_executable<'a>(targets: &'a [(AppEntry, String)], query: &str) -
         .min_by_key(|entry| entry.name.chars().count())
 }
 
+/// The packaged entry whose package name ends in `query` as a word, ignoring case: whatever the language, the app id
+/// `Microsoft.WindowsCalculator_…!App` names Calculator ("계산기" in Korean). Settings' package has no English name in
+/// it, so it goes by "settings". The shortest-named one when several do.
+pub fn match_by_package<'a>(entries: &'a [AppEntry], query: &str) -> Option<&'a AppEntry> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return None;
+    }
+    let names = |entry: &AppEntry| -> bool {
+        let Some((family, _)) = entry.parsing_name.split_once('!').filter(|_| !entry.parsing_name.contains('\\')) else { return false };
+        let package = family.split('_').next().unwrap_or(family);
+        if package.eq_ignore_ascii_case("windows.immersivecontrolpanel") {
+            return query == "settings";
+        }
+        let Some(start) = package.len().checked_sub(query.len()) else { return false };
+        // A word: after a dot, or a capital starting a camel-case word ("WindowsCalculator").
+        package.get(start..).is_some_and(|tail| tail.to_lowercase() == query)
+            && (start == 0 || package[..start].ends_with('.') || package[start..].starts_with(|c: char| c.is_ascii_uppercase()))
+    };
+    entries.iter().filter(|entry| names(entry)).min_by_key(|entry| entry.name.chars().count())
+}
+
 /// The executable an Apps folder entry runs: its shortcut's target, else the entry itself when it is one.
 fn executable(entry: &AppEntry) -> Option<String> {
     match runs(entry) {
@@ -154,7 +176,7 @@ fn command_path(name: &str) -> Option<String> {
 }
 
 /// Opens `name`: an executable path as it is; else the Apps folder entry with exactly that Start menu name, else the
-/// one whose executable has that file name; else the command the Run dialog would open (App Paths, then PATH: notepad,
+/// one whose executable has that file name; else the packaged app it names (calculator, settings); else the command the Run dialog would open (App Paths, then PATH: notepad,
 /// calc); else the Apps folder entry whose name starts with or contains it. So "notepad" opens Notepad, not
 /// Notepad++. What it opened, or `None` when nothing did. Blocking.
 pub fn launch(name: &str) -> Option<Launched> {
@@ -177,6 +199,9 @@ pub fn launch(name: &str) -> Option<Launched> {
     if let Some(entry) = match_by_executable(&targets, name) {
         let exe = targets.iter().find(|(target, _)| target == entry).map(|(_, path)| file_name(path).to_string());
         return open_entry(entry, exe);
+    }
+    if let Some(entry) = match_by_package(&entries, name) {
+        return open_entry(entry, None);
     }
     if let Some(command) = command_path(name) {
         return open_path(&command);
@@ -255,7 +280,8 @@ fn entry_named(name: &str) -> Option<(String, Option<Runs>)> {
         }
     }
     let entries = catalog();
-    let resolved = best_match(&entries, name).map(|entry| (entry.name.clone(), runs(entry)));
+    let exact = entries.iter().find(|entry| entry.name.to_lowercase() == key);
+    let resolved = exact.or_else(|| match_by_package(&entries, name)).or_else(|| best_match(&entries, name)).map(|entry| (entry.name.clone(), runs(entry)));
     RESOLVED.lock().unwrap().get_or_insert_with(HashMap::new).insert(key, (Instant::now(), resolved.clone()));
     resolved
 }
