@@ -10,7 +10,7 @@ Only the command name, the config directory (`~/.desktop-mcp`) and the environme
 | Port | Port of | Status | Language |
 |---|---|---|---|
 | [`macos/`](macos/) + root `Package.swift` | [CursorTouch/MacOS-MCP](https://github.com/CursorTouch/MacOS-MCP) | working, 18 tools (plus opt-in `OCR`) | Swift 6 (SwiftPM) |
-| [`crates/`](crates/) + root `Cargo.toml` | the same, sharing its core with the Windows port | in progress: stateless Streamable HTTP and one tool (`Wait` by duration) | Rust |
+| [`crates/`](crates/) + root `Cargo.toml` | the same, sharing its core with the Windows port | all tools (plus opt-in `OCR`); stdio, and HTTP only with authentication; no `install`/`connect` | Rust |
 | `windows/` | [CursorTouch/Windows-MCP](https://github.com/CursorTouch/Windows-MCP) | planned | Rust, on the core crate under `crates/` |
 | `linux/` | none upstream | idea | to be decided (Rust) |
 

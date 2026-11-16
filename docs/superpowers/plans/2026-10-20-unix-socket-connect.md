@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Swift 6 strict concurrency; no new `@unchecked Sendable` (`Locked`/`UncheckedSendable` exist); platform stays `.macOS(.v13)`; SDK pinned at 0.12.1; no runtime dependencies.
-- Build/test: `DEVELOPER_DIR=/Applications/Xcode-16.4.app/Contents/Developer swift test --package-path /Users/bagbyeong-gwan/IDE/xcodes/desktop-mcp --filter <Tests>`, with `ANONYMIZED_TELEMETRY=false` in the environment. Never run `desktop-mcp install`/`uninstall`; never write under `~/.desktop-mcp`; test socket paths live under `FileManager.default.temporaryDirectory` and must stay under 104 bytes.
+- Build/test: `DEVELOPER_DIR=/Applications/Xcode-16.4.app/Contents/Developer swift test --package-path . --filter <Tests>`, with `ANONYMIZED_TELEMETRY=false` in the environment. Never run `desktop-mcp install`/`uninstall`; never write under `~/.desktop-mcp`; test socket paths live under `FileManager.default.temporaryDirectory` and must stay under 104 bytes.
 - `swift test` re-adds pins to `Package.resolved`: run `git checkout -- Package.resolved` before every commit.
 - Socket path: `<config dir>/mcp.sock`; `sun_path` limit → path of 104 bytes or more is `ConfigErrorText("Socket path too long (max 103 bytes): <path>")`.
 - Plist `Sockets` entry: key `Listener`, `SockPathName`, `SockFamily = "Unix"`, `SockType = "stream"`, `SockPathMode = 384`.

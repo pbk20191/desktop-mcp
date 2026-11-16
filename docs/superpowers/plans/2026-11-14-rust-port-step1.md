@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust (stable), `rmcp =3.10.0` (`server`, `macros`, `local`), `tokio 1` (`rt`, `time`, `sync`, `macros`), `hyper 1` (`http1`, `server`), `http-body 1`, `http-body-util 0.1`, `bytes 1`, `serde`/`serde_json 1`, `clap 4` (`derive`), `block2 0.6`, `dispatch2 0.3`, `objc2-core-foundation 0.3`, `libtest-mimic 0.8` (tests that must own the main thread).
 
-**Spec:** `docs/superpowers/specs/2026-11-14-rust-port-design.md`. Working code for every unfamiliar piece is in the sibling repo `/Users/bagbyeong-gwan/IDE/async-swift-rs/docs/superpowers/specs/spikes/tokio-guest/src/bin/` (`nothread.rs`, `nw_hyper.rs`, `stateless.rs`, `schema.rs`); read the named spike before each task. Do not add a dependency on `async-swift-rs`.
+**Spec:** `docs/superpowers/specs/2026-11-14-rust-port-design.md`. Working code for every unfamiliar piece is in the sibling repo `../async-swift-rs/docs/superpowers/specs/spikes/tokio-guest/src/bin/` (`nothread.rs`, `nw_hyper.rs`, `stateless.rs`, `schema.rs`); read the named spike before each task. Do not add a dependency on `async-swift-rs`.
 
 ## Global Constraints
 
@@ -114,7 +114,7 @@ pub fn run<F: Future + 'static>(build: impl FnOnce(Rc<dyn MainLoop>) -> F) -> F:
 pub fn offload<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> impl Future<Output = T>;
 pub fn thread_count() -> u32;    // mach task_threads; used by tests and later by diagnostics
 ```
-`run` creates the `Guest`, holds its `EnterGuard`, installs three `CFRunLoopTimer`s in common modes (kick: one-shot re-armed by `kick()`; fast 50 ms; slow 1 s; `set_tick` arms one of the last two and parks the other at a far date), wraps the future with `Guest::root`, and loops `CFRunLoop::run_in_mode(default, 1e10, false)` until the future is done; it then invalidates the source and timers. Nested run loops: track run loop entry depth with a `CFRunLoopObserver` and stop only the loop `run` itself started (copy the structure of `/Users/bagbyeong-gwan/IDE/async-swift-rs/src/runloop.rs`).
+`run` creates the `Guest`, holds its `EnterGuard`, installs three `CFRunLoopTimer`s in common modes (kick: one-shot re-armed by `kick()`; fast 50 ms; slow 1 s; `set_tick` arms one of the last two and parks the other at a far date), wraps the future with `Guest::root`, and loops `CFRunLoop::run_in_mode(default, 1e10, false)` until the future is done; it then invalidates the source and timers. Nested run loops: track run loop entry depth with a `CFRunLoopObserver` and stop only the loop `run` itself started (copy the structure of `../async-swift-rs/src/runloop.rs`).
 
 - [ ] **Step 1: Write the failing tests:**
   - `run_returns_the_output`: `run(|_| async { 7 }) == 7`.

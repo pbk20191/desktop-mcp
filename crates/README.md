@@ -135,3 +135,20 @@ scripts/parity.sh                                        # the parity suite, aga
 Tests under `crates/macos/tests` run on the main thread with their own small runner, because the
 code under test owns the main run loop. After reviewing a change to `tools/list`, refresh its
 snapshot with `UPDATE_SNAPSHOTS=1 cargo test -p desktop-mcp-core --test mcp snapshot`.
+
+## Starting the Windows port
+
+`core` has no platform code; a port supplies three things:
+
+- `guest::MainLoop` (`crates/core/src/guest.rs`): wakes the guest runtime and arms its ticks. macOS uses the main
+  CFRunLoop (`crates/macos/src/main_loop.rs`); on Windows, the message loop of the thread that owns the UI is the
+  counterpart.
+- `mcp::Desktop` (`crates/core/src/mcp.rs`): one method per system call the tools make (processes, clipboard,
+  windows, accessibility tree, input, screenshots, permissions). The tools' logic and wording stay in `core`;
+  `crates/core/tests/support/mod.rs` has a recording fake of the whole trait.
+- The transports: stdio and the HTTP listener (`crates/macos/src/fd.rs`, `crates/macos/src/nw/`), giving `core`
+  byte streams.
+
+Still open for both ports: checking which program started the server
+(`docs/superpowers/specs/2026-11-16-rust-port-client-check-design.md`, with the Windows APIs in
+`2026-11-16-rust-port-client-validation.md`).
