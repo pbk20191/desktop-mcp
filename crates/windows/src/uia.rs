@@ -7,7 +7,7 @@ use windows::Win32::System::Variant::VARIANT;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::{CoCreateInstance, CoIncrementMTAUsage, CLSCTX_INPROC_SERVER};
 use windows::Win32::UI::Accessibility::{
-    CUIAutomation8, IUIAutomation, IUIAutomation2, IUIAutomationCacheRequest, IUIAutomationElement, IUIAutomationTreeWalker, UIA_BoundingRectanglePropertyId,
+    CUIAutomation8, IUIAutomation, IUIAutomation2, IUIAutomationCacheRequest, IUIAutomationElement, IUIAutomationTreeWalker, UIA_AutomationIdPropertyId, UIA_BoundingRectanglePropertyId,
     UIA_ControlTypePropertyId, UIA_ExpandCollapseExpandCollapseStatePropertyId, UIA_IsControlElementPropertyId, UIA_IsEnabledPropertyId, UIA_IsKeyboardFocusablePropertyId,
     UIA_IsOffscreenPropertyId, UIA_LegacyIAccessibleDefaultActionPropertyId, UIA_LegacyIAccessibleRolePropertyId, UIA_NamePropertyId, UIA_PROPERTY_ID,
     UIA_ScrollHorizontalScrollPercentPropertyId, UIA_ScrollHorizontallyScrollablePropertyId, UIA_ScrollVerticalScrollPercentPropertyId, UIA_ScrollVerticallyScrollablePropertyId,
@@ -33,9 +33,10 @@ pub fn control_type_name(id: i32) -> &'static str {
     id.checked_sub(50000).and_then(|index| usize::try_from(index).ok()).and_then(|index| CONTROL_TYPES.get(index)).copied().unwrap_or("Unknown")
 }
 
-const PROPERTIES: [UIA_PROPERTY_ID; 14] = [
+const PROPERTIES: [UIA_PROPERTY_ID; 15] = [
     UIA_ControlTypePropertyId,
     UIA_NamePropertyId,
+    UIA_AutomationIdPropertyId,
     UIA_IsOffscreenPropertyId,
     UIA_IsEnabledPropertyId,
     UIA_IsControlElementPropertyId,
@@ -60,18 +61,24 @@ pub struct WindowTree {
 const CONNECTION_TIMEOUT_MS: u32 = 1000;
 const TRANSACTION_TIMEOUT_MS: u32 = 2000;
 
+/// A UI Automation client whose calls give up on a provider after the timeouts above.
+fn automation() -> Option<IUIAutomation> {
+    ensure_mta();
+    let automation: IUIAutomation = unsafe { CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER) }.ok()?;
+    if let Ok(bounded) = automation.cast::<IUIAutomation2>() {
+        unsafe {
+            let _ = bounded.SetConnectionTimeout(CONNECTION_TIMEOUT_MS);
+            let _ = bounded.SetTransactionTimeout(TRANSACTION_TIMEOUT_MS);
+        }
+    }
+    Some(automation)
+}
+
 impl WindowTree {
     /// The tree of the window `hwnd`; `None` when UI Automation cannot reach it (an elevated window, one that
     /// closed).
     pub fn new(hwnd: isize) -> Option<WindowTree> {
-        ensure_mta();
-        let automation: IUIAutomation = unsafe { CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER) }.ok()?;
-        if let Ok(bounded) = automation.cast::<IUIAutomation2>() {
-            unsafe {
-                let _ = bounded.SetConnectionTimeout(CONNECTION_TIMEOUT_MS);
-                let _ = bounded.SetTransactionTimeout(TRANSACTION_TIMEOUT_MS);
-            }
-        }
+        let automation = automation()?;
         let cache = unsafe { automation.CreateCacheRequest() }.ok()?;
         for property in PROPERTIES {
             unsafe { cache.AddProperty(property) }.ok()?;
@@ -128,6 +135,7 @@ impl TreeSource for WindowTree {
         ElementProps {
             control_type: control_type_name(cached_i32(node, UIA_ControlTypePropertyId).unwrap_or(0)).to_string(),
             name: cached_text(node, UIA_NamePropertyId),
+            automation_id: cached_text(node, UIA_AutomationIdPropertyId),
             enabled: cached_bool(node, UIA_IsEnabledPropertyId),
             offscreen: cached_bool(node, UIA_IsOffscreenPropertyId),
             control_element: cached_bool(node, UIA_IsControlElementPropertyId),
@@ -146,8 +154,7 @@ impl TreeSource for WindowTree {
 
 /// Whether the element at (x, y) in screen pixels is a password field; false when nothing can be read there.
 pub fn is_password_at(x: i32, y: i32) -> bool {
-    ensure_mta();
-    let Ok(automation) = (unsafe { CoCreateInstance::<_, IUIAutomation>(&CUIAutomation8, None, CLSCTX_INPROC_SERVER) }) else { return false };
+    let Some(automation) = automation() else { return false };
     let point = windows::Win32::Foundation::POINT { x, y };
     unsafe { automation.ElementFromPoint(point) }.and_then(|element| unsafe { element.CurrentIsPassword() }).map(|password| password.as_bool()).unwrap_or(false)
 }

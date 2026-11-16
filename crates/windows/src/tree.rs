@@ -13,6 +13,7 @@ pub struct ElementProps {
     /// The UIA control type's programmatic name without "Control": `Button`, `Edit`, …
     pub control_type: String,
     pub name: String,
+    pub automation_id: String,
     pub enabled: bool,
     pub offscreen: bool,
     pub control_element: bool,
@@ -37,6 +38,9 @@ pub struct Classification {
 
 const INTERACTIVE_TYPES: [&str; 17] =
     ["Button", "ListItem", "MenuItem", "Edit", "CheckBox", "RadioButton", "ComboBox", "Hyperlink", "SplitButton", "TabItem", "TreeItem", "DataItem", "HeaderItem", "TextBox", "Spinner", "Slider", "ScrollBar"];
+/// Types never listed as scrollable (the C# port's informative types): an interactive element is listed once, as
+/// interactive.
+const INFORMATIVE_TYPES: [&str; 3] = ["Text", "Image", "StatusBar"];
 const FOCUSABLE_TYPES: [&str; 6] = ["Edit", "Button", "CheckBox", "RadioButton", "TabItem", "ListItem"];
 /// MSAA roles that mean "something to act on": buttons, links, text fields, lists, menus, tabs, outlines, sliders,
 /// headers, cells.
@@ -50,7 +54,7 @@ fn area(rect: (f64, f64, f64, f64)) -> f64 {
 /// Whether an element is interactive and whether it scrolls.
 pub fn classify(element: &ElementProps, browser: bool) -> Classification {
     let kind = element.control_type.as_str();
-    let scrollable = !element.offscreen && element.vertically_scrollable;
+    let scrollable = !element.offscreen && element.vertically_scrollable && !INTERACTIVE_TYPES.contains(&kind) && !INFORMATIVE_TYPES.contains(&kind);
     let visible = area(element.rect) > 0.0 && (!element.offscreen || kind == "Edit" || (kind == "ListItem" && browser)) && element.control_element;
     if !visible || !element.enabled {
         return Classification { interactive: false, scrollable };
@@ -139,7 +143,9 @@ pub fn walk_window<S: TreeSource>(source: &S, window_name: &str, browser: bool, 
                 ("vertical_scrollable".to_string(), Meta::Bool(true)),
                 ("vertical_scroll_percent".to_string(), Meta::Float((element.vertical_percent * 100.0).round() / 100.0)),
             ];
-            walk.scrollable.extend(node(&element, window_name, window, metadata));
+            // An unnamed scrollable is named by its automation id, else its control type (the C# port's fallback).
+            let name = [element.name.trim(), element.automation_id.as_str(), element.control_type.as_str()].into_iter().find(|name| !name.is_empty()).unwrap_or_default().to_string();
+            walk.scrollable.extend(node(&ElementProps { name, ..element.clone() }, window_name, window, metadata));
         }
         let mut children = source.children(&current, limits.children_per_parent);
         children.reverse(); // depth first, in document order

@@ -347,6 +347,12 @@ fn refuse(desktop: &dyn Desktop, at: Option<(i64, i64)>) -> Result<(), ToolError
     desktop.input_refusal(at).map_or(Ok(()), |reason| Err(ToolError(reason)))
 }
 
+/// The pointer's position, rounded to whole pixels.
+fn pointer(desktop: &dyn Desktop) -> (i64, i64) {
+    let (x, y) = desktop.cursor_position();
+    (x.round() as i64, y.round() as i64)
+}
+
 /// `loc` as a point, or `message` when it is not two numbers.
 fn point(loc: &[i64], message: &str) -> Result<(i64, i64), ToolError> {
     match loc {
@@ -645,7 +651,8 @@ impl Server {
         run_tool("Scroll", cancellation, async move {
             let at = args.loc.as_deref().map(|loc| point(loc, LOCATION)).transpose()?;
             crate::input::require_accessibility(desktop).map_err(ToolError)?;
-            refuse(desktop, at)?;
+            // Without a location the wheel goes to the window under the pointer, not the focused one.
+            refuse(desktop, at.or_else(|| Some(pointer(desktop))))?;
             let kind = if args.kind == ScrollType::Horizontal { "horizontal" } else { "vertical" };
             let direction = serde_json::to_value(args.direction).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
             let refused = crate::input::scroll(desktop, at, args.kind == ScrollType::Horizontal, &direction, args.wheel_times).await;
@@ -671,6 +678,8 @@ impl Server {
             crate::input::require_accessibility(desktop).map_err(ToolError)?;
             refuse(desktop, Some((x, y)))?;
             if args.drag {
+                // The drag starts where the pointer is: that window must take the input too.
+                refuse(desktop, Some(pointer(desktop)))?;
                 crate::input::drag(desktop, x, y).await;
                 delivered(desktop)?;
                 return Ok(format!("Dragged to ({x},{y})."));

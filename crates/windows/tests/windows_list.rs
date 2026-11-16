@@ -40,4 +40,5 @@ fn desktop_line_names_and_counts() {
     assert_eq!(desktop_line(&[a, b, c], &names, b).as_deref(), Some("Virtual desktop: Work (2 of 3)"));
     assert_eq!(desktop_line(&[a, b, c], &names, c).as_deref(), Some("Virtual desktop: Desktop 3 (3 of 3)"));
     assert_eq!(desktop_line(&[a, b, c], &names, 9), None);
+    assert_eq!(desktop_line(&[a], &names, a), None, "a single desktop");
 }

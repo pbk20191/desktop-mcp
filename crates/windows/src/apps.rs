@@ -46,7 +46,7 @@ pub fn catalog() -> Vec<AppEntry> {
 }
 
 /// The entry `query` names: the same name ignoring case, else the shortest name starting with it, else the shortest
-/// containing it.
+/// containing it that is not an uninstaller (unless the query asks for one).
 pub fn best_match<'a>(entries: &'a [AppEntry], query: &str) -> Option<&'a AppEntry> {
     let query = query.trim().to_lowercase();
     if query.is_empty() {
@@ -54,7 +54,7 @@ pub fn best_match<'a>(entries: &'a [AppEntry], query: &str) -> Option<&'a AppEnt
     }
     let lowered = |entry: &AppEntry| entry.name.to_lowercase();
     let shortest = |test: &dyn Fn(&str) -> bool| entries.iter().filter(|entry| test(&lowered(entry))).min_by_key(|entry| entry.name.chars().count());
-    shortest(&|name| name == query).or_else(|| shortest(&|name| name.starts_with(&query))).or_else(|| shortest(&|name| name.contains(&query)))
+    shortest(&|name| name == query).or_else(|| shortest(&|name| name.starts_with(&query))).or_else(|| shortest(&|name| name.contains(&query) && (!name.contains("uninstall") || query.contains("uninstall"))))
 }
 
 fn shell_execute(file: &str) -> bool {

@@ -7,6 +7,8 @@ use desktop_mcp_core::clipboard::{Clipboard, ClipboardWrite, Image};
 use std::ffi::c_void;
 use std::future::IntoFuture;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use windows::Graphics::Imaging::{BitmapAlphaMode, BitmapDecoder, BitmapEncoder, BitmapInterpolationMode, BitmapPixelFormat, BitmapTransform, ColorManagementMode, ExifOrientationMode};
 use windows::Storage::Streams::{DataReader, DataWriter, InMemoryRandomAccessStream};
@@ -49,13 +51,25 @@ pub fn dropfiles(paths: &[PathBuf]) -> Vec<u8> {
 pub fn bmp_file(dib: &[u8]) -> Option<Vec<u8>> {
     let u32_at = |at: usize| dib.get(at..at + 4).map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()));
     let header = u32_at(0)? as usize;
-    let bits = u16::from_le_bytes(dib.get(14..16)?.try_into().ok()?) as u32;
-    let compression = u32_at(16)?;
-    let used = u32_at(32).unwrap_or(0);
-    let palette = if used > 0 { used } else if bits <= 8 { 1 << bits } else { 0 } as usize * 4;
-    // BI_BITFIELDS with the 40-byte header: three masks follow it.
-    let masks = if compression == 3 && header == 40 { 12 } else { 0 };
-    let offset = 14 + header + masks + palette;
+    let u16_at = |at: usize| dib.get(at..at + 2).map(|bytes| u16::from_le_bytes(bytes.try_into().unwrap()) as u32);
+    let offset = if header == 12 {
+        // BITMAPCOREHEADER: no compression, no colour count, and three-byte colour table entries.
+        let bits = u16_at(10)?;
+        let colours: usize = if bits <= 8 { 1 << bits } else { 0 };
+        14 + header + colours * 3
+    } else {
+        let bits = u16_at(14)?;
+        let compression = u32_at(16)?;
+        let used = u32_at(32).unwrap_or(0);
+        let palette = if used > 0 { used } else if bits <= 8 { 1 << bits } else { 0 } as usize * 4;
+        // With the 40-byte header, BI_BITFIELDS puts three masks after it and BI_ALPHABITFIELDS four.
+        let masks = match (compression, header) {
+            (3, 40) => 12,
+            (6, 40) => 16,
+            _ => 0,
+        };
+        14 + header + masks + palette
+    };
     let mut file = Vec::with_capacity(14 + dib.len());
     file.extend(b"BM");
     file.extend(((14 + dib.len()) as u32).to_le_bytes());
@@ -156,13 +170,18 @@ fn global_copy(bytes: &[u8]) -> Result<HGLOBAL, String> {
     Ok(memory)
 }
 
-fn write_raw(contents: ClipboardWrite) -> Result<(), String> {
+/// `abandoned` is set when the caller gave up: a write still waiting on the clipboard owner then does not land.
+fn write_raw(contents: ClipboardWrite, abandoned: &AtomicBool) -> Result<(), String> {
     let (format, bytes) = match contents {
         ClipboardWrite::Text(text) => (CF_UNICODETEXT.0, text.encode_utf16().chain(Some(0)).flat_map(u16::to_le_bytes).collect::<Vec<u8>>()),
         ClipboardWrite::Files(paths) => (CF_HDROP.0, dropfiles(&paths)),
     };
     let _open = Open::new()?;
     unsafe { EmptyClipboard() }.map_err(|error| format!("cannot empty the clipboard: {}", error.message()))?;
+    // Emptying waits on the previous owner; the tool may have reported a timeout meanwhile.
+    if abandoned.load(Ordering::SeqCst) {
+        return Err(NOT_ANSWERING.to_string());
+    }
     let memory = global_copy(&bytes)?;
     if let Err(error) = unsafe { SetClipboardData(format as u32, Some(HANDLE(memory.0 as *mut c_void))) } {
         unsafe {
@@ -191,7 +210,11 @@ pub async fn read(image_max_side: u32) -> Clipboard {
 }
 
 pub async fn write(contents: ClipboardWrite) -> Result<(), String> {
-    on_pool(move || write_raw(contents)).await
+    let abandoned = Arc::new(AtomicBool::new(false));
+    let flag = abandoned.clone();
+    let result = on_pool(move || write_raw(contents, &flag)).await;
+    abandoned.store(true, Ordering::SeqCst);
+    result
 }
 
 /// A `.bmp` file as PNG at most `max_side` on its longer side.

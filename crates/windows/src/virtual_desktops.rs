@@ -7,8 +7,11 @@ use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_R
 const KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\VirtualDesktops";
 
 /// "Virtual desktop: <name> (<n> of <count>)"; unnamed desktops are "Desktop <n>". `None` when `current` is not
-/// among `ids`.
+/// among `ids`, or there is only one desktop (nothing to tell apart).
 pub fn desktop_line(ids: &[u128], names: &[(u128, String)], current: u128) -> Option<String> {
+    if ids.len() < 2 {
+        return None;
+    }
     let position = ids.iter().position(|id| *id == current)?;
     let name = names.iter().find(|(id, _)| *id == current).map(|(_, name)| name.clone()).filter(|name| !name.is_empty()).unwrap_or_else(|| format!("Desktop {}", position + 1));
     Some(format!("Virtual desktop: {name} ({} of {})", position + 1, ids.len()))

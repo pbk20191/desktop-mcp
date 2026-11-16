@@ -17,6 +17,7 @@ fn classify_rules() {
     assert!(!classify(&ElementProps { keyboard_focusable: false, ..props("DataItem") }, true).interactive, "an unfocusable browser data item");
     assert!(classify(&ElementProps { vertically_scrollable: true, ..props("Pane") }, false).scrollable);
     assert!(!classify(&ElementProps { vertically_scrollable: true, offscreen: true, ..props("Pane") }, false).scrollable);
+    assert!(!classify(&ElementProps { vertically_scrollable: true, ..props("Edit") }, false).scrollable, "a multi-line edit is listed once, as interactive");
 }
 
 /// A tree whose root has `children` buttons.

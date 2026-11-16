@@ -17,7 +17,8 @@ pub enum Level {
 fn token_level(token: HANDLE) -> Option<u32> {
     let mut size = 0u32;
     let _ = unsafe { GetTokenInformation(token, TokenIntegrityLevel, None, 0, &mut size) };
-    let mut buffer = vec![0u8; size as usize];
+    // u64s: the buffer holds a TOKEN_MANDATORY_LABEL, which needs pointer alignment.
+    let mut buffer = vec![0u64; (size as usize).div_ceil(8)];
     unsafe { GetTokenInformation(token, TokenIntegrityLevel, Some(buffer.as_mut_ptr() as *mut _), size, &mut size) }.ok()?;
     let label = unsafe { &*(buffer.as_ptr() as *const TOKEN_MANDATORY_LABEL) };
     let count = unsafe { *GetSidSubAuthorityCount(label.Label.Sid) };

@@ -8,11 +8,12 @@ fn entry(name: &str) -> AppEntry {
 
 #[test]
 fn best_match_prefers_exact_then_prefix_then_contains() {
-    let entries = [entry("Notepad++"), entry("Notepad"), entry("Microsoft Edge"), entry("Edge Tools")];
+    let entries = [entry("Notepad++"), entry("Notepad"), entry("Microsoft Edge"), entry("Edge Tools"), entry("Uninstall Teams"), entry("Microsoft Teams")];
     assert_eq!(best_match(&entries, "notepad").map(|found| found.name.as_str()), Some("Notepad"));
     assert_eq!(best_match(&entries, "note").map(|found| found.name.as_str()), Some("Notepad"), "shortest prefix match");
     assert_eq!(best_match(&entries, "edge").map(|found| found.name.as_str()), Some("Edge Tools"), "a prefix beats a substring");
     assert_eq!(best_match(&entries, "soft ed").map(|found| found.name.as_str()), Some("Microsoft Edge"));
+    assert_eq!(best_match(&entries, "teams").map(|found| found.name.as_str()), Some("Microsoft Teams"), "not the uninstaller");
     assert!(best_match(&entries, "zzz").is_none());
     assert!(best_match(&entries, "  ").is_none());
 }

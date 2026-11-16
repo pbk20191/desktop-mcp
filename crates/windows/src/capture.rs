@@ -8,7 +8,7 @@ use windows::Graphics::Capture::{Direct3D11CaptureFramePool, GraphicsCaptureItem
 use windows::Graphics::DirectX::Direct3D11::IDirect3DDevice;
 use windows::Graphics::DirectX::DirectXPixelFormat;
 use windows::Win32::Foundation::{HMODULE, POINT};
-use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
+use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_WARP};
 use windows::Win32::Graphics::Direct3D11::{
     D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D, D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_READ,
     D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
@@ -35,12 +35,15 @@ async fn borderless_allowed() -> bool {
         ANSWER.store(2, Ordering::Relaxed);
         return false;
     };
-    let allowed = tokio::select! {
-        status = request.into_future() => status.is_ok_and(|status| status == AppCapabilityAccessStatus::Allowed),
-        _ = crate::pool::sleep(Duration::from_secs(2)) => false,
+    let answer = tokio::select! {
+        status = request.into_future() => Some(status.is_ok_and(|status| status == AppCapabilityAccessStatus::Allowed)),
+        _ = crate::pool::sleep(Duration::from_secs(2)) => None,
     };
-    ANSWER.store(if allowed { 1 } else { 2 }, Ordering::Relaxed);
-    allowed
+    // A request that was only slow is asked again next time.
+    if let Some(allowed) = answer {
+        ANSWER.store(if allowed { 1 } else { 2 }, Ordering::Relaxed);
+    }
+    answer.unwrap_or(false)
 }
 
 /// How long to wait for the first frame.
@@ -58,8 +61,11 @@ pub async fn capture_display(display: &DisplayFrame) -> Result<Pixels, String> {
     let item: GraphicsCaptureItem = unsafe { interop.CreateForMonitor(monitor) }.map_err(message)?;
 
     let (mut device, mut context): (Option<ID3D11Device>, Option<ID3D11DeviceContext>) = (None, None);
-    unsafe { D3D11CreateDevice(None, D3D_DRIVER_TYPE_HARDWARE, HMODULE::default(), D3D11_CREATE_DEVICE_BGRA_SUPPORT, None, D3D11_SDK_VERSION, Some(&mut device), None, Some(&mut context)) }
-        .map_err(message)?;
+    // The GPU, else the WARP software rasterizer (no usable GPU driver).
+    let create = |driver, device: &mut Option<ID3D11Device>, context: &mut Option<ID3D11DeviceContext>| unsafe {
+        D3D11CreateDevice(None, driver, HMODULE::default(), D3D11_CREATE_DEVICE_BGRA_SUPPORT, None, D3D11_SDK_VERSION, Some(device), None, Some(context))
+    };
+    create(D3D_DRIVER_TYPE_HARDWARE, &mut device, &mut context).or_else(|_| create(D3D_DRIVER_TYPE_WARP, &mut device, &mut context)).map_err(message)?;
     let (device, context) = (device.ok_or("no Direct3D device")?, context.ok_or("no Direct3D context")?);
     let dxgi: IDXGIDevice = device.cast().map_err(message)?;
     let winrt_device: IDirect3DDevice = unsafe { CreateDirect3D11DeviceFromDXGIDevice(&dxgi) }.map_err(message)?.cast().map_err(message)?;

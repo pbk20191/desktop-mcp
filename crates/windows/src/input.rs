@@ -81,9 +81,13 @@ fn modifier_key(modifier: Modifier) -> Option<VIRTUAL_KEY> {
     }
 }
 
-/// Keys whose scan codes sit on the extended keypad.
+/// Keys whose scan codes carry the E0 prefix: the extended keypad, the right-hand ctrl and alt, and the media keys.
 fn extended(key: VIRTUAL_KEY) -> bool {
-    [VK_LEFT, VK_RIGHT, VK_UP, VK_DOWN, VK_HOME, VK_END, VK_PRIOR, VK_NEXT, VK_INSERT, VK_DELETE, VK_LWIN, VK_RWIN, VK_APPS, VK_SNAPSHOT, VK_NUMLOCK].contains(&key)
+    [
+        VK_LEFT, VK_RIGHT, VK_UP, VK_DOWN, VK_HOME, VK_END, VK_PRIOR, VK_NEXT, VK_INSERT, VK_DELETE, VK_LWIN, VK_RWIN, VK_APPS, VK_SNAPSHOT, VK_NUMLOCK, VK_RCONTROL, VK_RMENU,
+        VK_VOLUME_UP, VK_VOLUME_DOWN, VK_VOLUME_MUTE, VK_MEDIA_PLAY_PAUSE, VK_MEDIA_NEXT_TRACK, VK_MEDIA_PREV_TRACK, VK_BROWSER_BACK, VK_BROWSER_FORWARD,
+    ]
+    .contains(&key)
 }
 
 fn key(key: VIRTUAL_KEY, up: bool) -> INPUT {

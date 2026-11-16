@@ -29,6 +29,11 @@ pub fn bring(hwnd: isize) -> bool {
     }
     if unsafe { IsIconic(window) }.as_bool() {
         let _ = unsafe { ShowWindowAsync(window, SW_RESTORE) };
+        // The restore is asynchronous: a window still minimized does not take the foreground.
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while unsafe { IsIconic(window) }.as_bool() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
     let _ = unsafe { SetForegroundWindow(window) };
     if poll(window, Duration::from_millis(500)) {

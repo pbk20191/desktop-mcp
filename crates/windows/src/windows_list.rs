@@ -215,12 +215,13 @@ fn find(window: &WindowInfo) -> Option<isize> {
     (pid as i32 == window.pid).then_some(hwnd.0 as isize)
 }
 
-/// Runs `action` on the window on the pool (calls into another process can block); false when it is gone.
+/// Runs `action` on the window on the pool (calls into another process can block); false when it is gone or does
+/// not answer (a hung window would hold the pool thread).
 fn act(window: &WindowInfo, action: impl FnOnce(HWND) -> bool + Send + 'static) -> Pending<bool> {
     let found = find(window);
     Box::pin(async move {
         match found {
-            Some(hwnd) => pool::offload(move || action(HWND(hwnd as *mut _))).await,
+            Some(hwnd) => pool::offload(move || crate::tree::answers(hwnd) && action(HWND(hwnd as *mut _))).await,
             None => false,
         }
     })
@@ -325,7 +326,7 @@ impl WindowSource for Win32Windows {
         let found = find(window);
         Box::pin(async move {
             match found {
-                Some(hwnd) => pool::offload(move || place(HWND(hwnd as *mut _), frame)).await,
+                Some(hwnd) => pool::offload(move || if crate::tree::answers(hwnd) { place(HWND(hwnd as *mut _), frame) } else { FrameResult::Failed }).await,
                 None => FrameResult::Failed,
             }
         })
