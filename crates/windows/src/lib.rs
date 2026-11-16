@@ -2,6 +2,7 @@
 #![cfg(windows)]
 pub mod clipboard;
 pub mod desktop;
+pub mod displays;
 pub mod html;
 pub mod listener;
 pub mod main_loop;
@@ -16,4 +17,5 @@ pub mod stdio;
 pub mod tls;
 mod tls_keys;
 pub mod tls_io;
+pub mod windows_list;
 pub mod tuning;

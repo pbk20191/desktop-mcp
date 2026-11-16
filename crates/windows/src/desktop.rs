@@ -13,7 +13,7 @@ use desktop_mcp_core::shell::{Run, ShellMode};
 use desktop_mcp_core::shortcuts::ShortcutRun;
 use desktop_mcp_core::spotlight::{Found, Search};
 use desktop_mcp_core::wait::RunningApp;
-use desktop_mcp_core::window::{DisplayFrame, Frame, FrameResult, WindowInfo, WindowReading, WindowSource};
+use desktop_mcp_core::window::WindowSource;
 use std::future::Future;
 use std::net::IpAddr;
 use std::path::Path;
@@ -155,7 +155,7 @@ impl Desktop for WindowsDesktop {
     }
 
     fn window_source(&self) -> Rc<dyn WindowSource> {
-        Rc::new(NoWindows)
+        Rc::new(crate::windows_list::Win32Windows)
     }
 
     fn menu(&self, _app: Option<String>, _request: desktop_mcp_core::menu::Request) -> Pending<Result<String, String>> {
@@ -176,47 +176,5 @@ impl Desktop for WindowsDesktop {
 
     fn find_element(&self, _app: Option<&str>, _title: Option<&str>, _role: Option<&str>, _deadline: std::time::Instant) -> Pending<Option<desktop_mcp_core::element::FoundElement>> {
         ready(None)
-    }
-}
-
-/// No windows until the window tools come (W3).
-struct NoWindows;
-
-impl WindowSource for NoWindows {
-    fn windows(&self, _app: Option<&str>) -> Pending<Vec<WindowInfo>> {
-        ready(Vec::new())
-    }
-    fn reading(&self, _app: Option<&str>) -> Pending<WindowReading> {
-        ready(WindowReading { windows: Vec::new(), complete: true })
-    }
-    fn windows_of(&self, _pid: i32) -> Pending<Vec<WindowInfo>> {
-        ready(Vec::new())
-    }
-    fn app_exists(&self, _app: &str) -> Pending<bool> {
-        ready(false)
-    }
-    fn focus(&self, _window: &WindowInfo) -> Pending<bool> {
-        ready(false)
-    }
-    fn set_minimized(&self, _window: &WindowInfo, _on: bool) -> Pending<bool> {
-        ready(false)
-    }
-    fn move_to(&self, _window: &WindowInfo, _x: f64, _y: f64) -> Pending<bool> {
-        ready(false)
-    }
-    fn resize(&self, _window: &WindowInfo, _width: f64, _height: f64) -> Pending<bool> {
-        ready(false)
-    }
-    fn close(&self, _window: &WindowInfo) -> Pending<bool> {
-        ready(false)
-    }
-    fn set_frame(&self, _window: &WindowInfo, _frame: Frame) -> Pending<FrameResult> {
-        ready(FrameResult::Failed)
-    }
-    fn set_full_screen(&self, _window: &WindowInfo, _on: bool) -> Pending<bool> {
-        ready(false)
-    }
-    fn displays(&self) -> Pending<Vec<DisplayFrame>> {
-        ready(Vec::new())
     }
 }

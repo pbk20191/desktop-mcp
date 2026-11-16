@@ -451,6 +451,10 @@ fn serve(plan: ServePlan) -> ExitCode {
     use desktop_mcp_windows::{desktop::WindowsDesktop, main_loop, platform::WindowsPlatform, signals, stdio::StdIo};
     use std::rc::Rc;
 
+    // Coordinates are physical pixels on every display: per-monitor DPI awareness before any window is read.
+    unsafe {
+        let _ = windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    }
     if plan.transport != "stdio" && plan.transport != "streamable-http" {
         eprintln!("Error: the {} transport is not available on Windows", plan.transport);
         return ExitCode::FAILURE;
