@@ -10,7 +10,7 @@ use windows::Win32::UI::Accessibility::{
     CUIAutomation8, IUIAutomation, IUIAutomation2, IUIAutomationCacheRequest, IUIAutomationElement, IUIAutomationTreeWalker, UIA_AutomationIdPropertyId, UIA_BoundingRectanglePropertyId,
     UIA_ControlTypePropertyId, UIA_ExpandCollapseExpandCollapseStatePropertyId, UIA_IsControlElementPropertyId, UIA_IsEnabledPropertyId, UIA_IsKeyboardFocusablePropertyId,
     UIA_IsOffscreenPropertyId, UIA_LegacyIAccessibleDefaultActionPropertyId, UIA_LegacyIAccessibleRolePropertyId, UIA_NamePropertyId, UIA_PROPERTY_ID,
-    UIA_ScrollHorizontalScrollPercentPropertyId, UIA_ScrollHorizontallyScrollablePropertyId, UIA_ScrollVerticalScrollPercentPropertyId, UIA_ScrollVerticallyScrollablePropertyId,
+    UIA_RuntimeIdPropertyId, UIA_ScrollHorizontalScrollPercentPropertyId, UIA_ScrollHorizontallyScrollablePropertyId, UIA_ScrollVerticalScrollPercentPropertyId, UIA_ScrollVerticallyScrollablePropertyId,
 };
 
 /// Pool threads join the process's multithreaded apartment, which this keeps alive.
@@ -33,7 +33,8 @@ pub fn control_type_name(id: i32) -> &'static str {
     id.checked_sub(50000).and_then(|index| usize::try_from(index).ok()).and_then(|index| CONTROL_TYPES.get(index)).copied().unwrap_or("Unknown")
 }
 
-const PROPERTIES: [UIA_PROPERTY_ID; 15] = [
+const PROPERTIES: [UIA_PROPERTY_ID; 16] = [
+    UIA_RuntimeIdPropertyId,
     UIA_ControlTypePropertyId,
     UIA_NamePropertyId,
     UIA_AutomationIdPropertyId,
@@ -109,8 +110,32 @@ fn cached_text(element: &IUIAutomationElement, property: UIA_PROPERTY_ID) -> Str
     cached(element, property).and_then(|value| BSTR::try_from(&value).ok()).map(|text| text.to_string()).unwrap_or_default()
 }
 
+/// The element's cached runtime id (a `VT_ARRAY | VT_I4`); `None` when the provider gives none.
+fn cached_runtime_id(element: &IUIAutomationElement) -> Option<Vec<i32>> {
+    use windows::Win32::System::Ole::{SafeArrayAccessData, SafeArrayGetLBound, SafeArrayGetUBound, SafeArrayUnaccessData};
+    use windows::Win32::System::Variant::{VT_ARRAY, VT_I4};
+    let value = cached(element, UIA_RuntimeIdPropertyId)?;
+    let inner = unsafe { &value.Anonymous.Anonymous };
+    let array = unsafe { inner.Anonymous.parray };
+    if inner.vt != (VT_ARRAY | VT_I4) || array.is_null() {
+        return None;
+    }
+    let (low, high) = unsafe { (SafeArrayGetLBound(array, 1).ok()?, SafeArrayGetUBound(array, 1).ok()?) };
+    let length = usize::try_from(high - low + 1).ok().filter(|&length| length > 0)?;
+    let mut data = std::ptr::null_mut();
+    unsafe { SafeArrayAccessData(array, &mut data) }.ok()?;
+    let id = unsafe { std::slice::from_raw_parts(data as *const i32, length) }.to_vec();
+    let _ = unsafe { SafeArrayUnaccessData(array) };
+    Some(id)
+}
+
 impl TreeSource for WindowTree {
     type Node = IUIAutomationElement;
+    type Identity = Vec<i32>;
+
+    fn identity(&self, node: &IUIAutomationElement) -> Option<Vec<i32>> {
+        cached_runtime_id(node)
+    }
 
     fn root(&self) -> Option<IUIAutomationElement> {
         Some(self.root.clone())

@@ -3,6 +3,7 @@
 //! [`TreeSource`], UI Automation in use (`crate::uia`) or a synthetic one in tests.
 use crate::windows_list::TopWindow;
 use desktop_mcp_core::snapshot::{AppStatus, BoundingBox, Meta, TreeNode, TreeState, WindowView};
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{SendMessageTimeoutW, SMTO_ABORTIFHUNG, SMTO_BLOCK, WM_NULL};
@@ -79,7 +80,11 @@ pub fn classify(element: &ElementProps, browser: bool) -> Classification {
 /// A tree to walk: the UI Automation tree of one window, or a synthetic one.
 pub trait TreeSource {
     type Node;
+    /// What tells two nodes apart (UIA's runtime id), so a provider whose tree loops back is not walked twice.
+    type Identity: Eq + std::hash::Hash;
     fn root(&self) -> Option<Self::Node>;
+    /// `None` when the node has no identity; such a node is always walked.
+    fn identity(&self, node: &Self::Node) -> Option<Self::Identity>;
     /// At most `limit` children.
     fn children(&self, node: &Self::Node, limit: usize) -> Vec<Self::Node>;
     fn props(&self, node: &Self::Node) -> ElementProps;
@@ -125,10 +130,14 @@ pub fn walk_window<S: TreeSource>(source: &S, window_name: &str, browser: bool, 
     let mut walk = WindowWalk::default();
     let Some(root) = source.root() else { return walk };
     let mut stack = vec![root];
+    let mut seen = HashSet::new();
     while let Some(current) = stack.pop() {
         if walk.read >= limits.elements || started.elapsed() > limits.deadline {
             walk.stopped_early = true;
             break;
+        }
+        if source.identity(&current).is_some_and(|identity| !seen.insert(identity)) {
+            continue;
         }
         walk.read += 1;
         let element = source.props(&current);
@@ -223,9 +232,13 @@ pub fn find_in<S: TreeSource>(source: &S, title: Option<&str>, role: Option<&str
     let title = title.map(str::to_lowercase);
     let mut best: Option<ElementProps> = None;
     let mut stack: Vec<S::Node> = source.root().into_iter().collect();
+    let mut seen = HashSet::new();
     while let Some(current) = stack.pop() {
         if Instant::now() > deadline {
             break;
+        }
+        if source.identity(&current).is_some_and(|identity| !seen.insert(identity)) {
+            continue;
         }
         let element = source.props(&current);
         let role_matches = role.is_none_or(|role| element.control_type.eq_ignore_ascii_case(role));

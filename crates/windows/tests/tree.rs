@@ -27,8 +27,12 @@ struct Wide {
 
 impl TreeSource for Wide {
     type Node = usize;
+    type Identity = usize;
     fn root(&self) -> Option<usize> {
         Some(0)
+    }
+    fn identity(&self, node: &usize) -> Option<usize> {
+        Some(*node)
     }
     fn children(&self, node: &usize, limit: usize) -> Vec<usize> {
         if *node == 0 { (1..=self.children.min(limit)).collect() } else { Vec::new() }
@@ -81,8 +85,12 @@ struct Below;
 
 impl TreeSource for Below {
     type Node = usize;
+    type Identity = usize;
     fn root(&self) -> Option<usize> {
         Some(0)
+    }
+    fn identity(&self, node: &usize) -> Option<usize> {
+        Some(*node)
     }
     fn children(&self, node: &usize, _limit: usize) -> Vec<usize> {
         if *node == 0 { vec![1] } else { vec![] }
