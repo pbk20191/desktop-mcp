@@ -16,3 +16,7 @@ windows-future.workspace = true
 [[test]]
 name = "main_loop"
 harness = false
+
+[[test]]
+name = "pool"
+harness = false
