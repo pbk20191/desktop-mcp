@@ -267,8 +267,8 @@ pub fn concurrent_map<T: Send, U: Send, F: Fn(T) -> U + Sync>(items: Vec<T>, wor
     }
     let count = items.len();
     let job = Job { inputs: items.into_iter().map(|item| Mutex::new(Some(item))).collect(), outputs: (0..count).map(|_| Mutex::new(None)).collect(), work: &work };
-    let queue = DispatchQueue::global_queue(GlobalQueueIdentifier::QualityOfService(DispatchQoS::UserInitiated));
-    unsafe { DispatchQueue::apply_f(count, Some(&queue), &job as *const Job<'_, T, U, F> as *mut std::ffi::c_void, iteration::<T, U, F>) };
+    // DISPATCH_APPLY_AUTO (no queue): libdispatch picks the root queue for the caller's QoS.
+    unsafe { DispatchQueue::apply_f(count, None, &job as *const Job<'_, T, U, F> as *mut std::ffi::c_void, iteration::<T, U, F>) };
     job.outputs
         .into_iter()
         .map(|slot| match slot.into_inner().unwrap().expect("dispatch_apply ran every index") {

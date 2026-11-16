@@ -1,6 +1,7 @@
 //! desktop-mcp on macOS.
 #![cfg(target_os = "macos")]
 pub mod main_loop;
+pub mod source;
 pub mod tuning;
 pub mod nw;
 pub mod desktop;

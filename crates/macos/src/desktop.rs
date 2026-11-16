@@ -1,5 +1,4 @@
 //! The tools' behaviour on macOS.
-use block2::RcBlock;
 use desktop_mcp_core::mcp::Desktop;
 use crate::nw::NwIo;
 use desktop_mcp_core::clipboard::{Clipboard, ClipboardWrite};
@@ -15,7 +14,7 @@ use std::path::Path;
 use desktop_mcp_core::io::Stream;
 use desktop_mcp_core::shell::{Run, ShellMode};
 use std::net::IpAddr;
-use dispatch2::{DispatchObject, DispatchQueue, DispatchRetained, DispatchSource, DispatchTime};
+use dispatch2::{DispatchObject, DispatchRetained, DispatchSource, DispatchTime};
 use std::cell::Cell;
 use std::future::Future;
 use std::pin::Pin;
@@ -253,16 +252,13 @@ pub(crate) async fn sleep(duration: Duration) {
     let Ok(start) = DispatchTime::try_from(duration) else { return std::future::pending().await };
     let (fired, wait) = tokio::sync::oneshot::channel::<()>();
     let fired = Cell::new(Some(fired));
-    let kind = &raw const dispatch2::_dispatch_source_type_timer;
-    let source = unsafe { DispatchSource::new(kind.cast_mut(), 0, 0, Some(DispatchQueue::main())) };
-    let leeway = (duration.as_nanos() / 100).min(100_000_000) as u64;
-    source.set_timer(start, NO_REPEAT, leeway);
-    let handler = RcBlock::new(move || {
+    let source = crate::source::on_main(&raw const dispatch2::_dispatch_source_type_timer, 0, 0, move || {
         if let Some(fired) = fired.take() {
             let _ = fired.send(());
         }
-    });
-    unsafe { source.set_event_handler_with_block(RcBlock::as_ptr(&handler)) };
+    }, None);
+    let leeway = (duration.as_nanos() / 100).min(100_000_000) as u64;
+    source.set_timer(start, NO_REPEAT, leeway);
     source.resume();
     let timer = Timer(source);
     let _ = wait.await;

@@ -357,9 +357,7 @@ fn accept_on(listener: c_int, sender: mpsc::UnboundedSender<FdIo>, name: String)
         let flags = libc::fcntl(listener, libc::F_GETFL);
         libc::fcntl(listener, libc::F_SETFL, flags | libc::O_NONBLOCK);
     }
-    let kind = &raw const dispatch2::_dispatch_source_type_read;
-    let source = unsafe { DispatchSource::new(kind.cast_mut(), listener as usize, 0, Some(DispatchQueue::main())) };
-    let accept = RcBlock::new(move || loop {
+    let accept = move || loop {
         let fd = unsafe { libc::accept(listener, std::ptr::null_mut(), std::ptr::null_mut()) };
         if fd >= 0 {
             let (mut uid, mut gid) = (0, 0);
@@ -379,14 +377,11 @@ fn accept_on(listener: c_int, sender: mpsc::UnboundedSender<FdIo>, name: String)
             Some(libc::EINTR) | Some(libc::ECONNABORTED) => continue,
             _ => return, // EAGAIN: nothing more waits; anything else is retried on the next event
         }
-    });
-    let closed = RcBlock::new(move || unsafe {
+    };
+    let closed: Box<dyn Fn()> = Box::new(move || unsafe {
         libc::close(listener);
     });
-    unsafe {
-        source.set_event_handler_with_block(RcBlock::as_ptr(&accept));
-        source.set_cancel_handler_with_block(RcBlock::as_ptr(&closed));
-    }
+    let source = crate::source::on_main(&raw const dispatch2::_dispatch_source_type_read, listener as usize, 0, accept, Some(closed));
     source.resume();
     Accepting(source)
 }

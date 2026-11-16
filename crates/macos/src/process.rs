@@ -2,12 +2,13 @@
 //! the timeout by a libdispatch timer, both on the main queue.
 use crate::desktop::sleep;
 use desktop_mcp_core::shell::Run;
-use dispatch2::{DispatchObject, DispatchQueue, DispatchRetained, DispatchSource, DispatchTime};
+use dispatch2::{DispatchObject, DispatchRetained, DispatchSource, DispatchTime};
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::ffi::CString;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::os::fd::{AsRawFd, FromRawFd};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// `<spawn.h>`'s `POSIX_SPAWN_SETSID`, which `libc` does not declare.
@@ -111,19 +112,14 @@ fn strerror(code: libc::c_int) -> String {
 /// every [`crate::tuning::REAP_BACKSTOP`] until the child is reaped.
 fn watch_exit(pid: libc::pid_t) -> tokio::sync::oneshot::Receiver<i32> {
     let (exited, exit) = tokio::sync::oneshot::channel();
-    let main = DispatchQueue::main();
-    let proc_kind = &raw const dispatch2::_dispatch_source_type_proc;
-    let source = unsafe { DispatchSource::new(proc_kind.cast_mut(), pid as usize, PROC_EXIT, Some(main)) };
-    let timer_kind = &raw const dispatch2::_dispatch_source_type_timer;
-    let backstop = unsafe { DispatchSource::new(timer_kind.cast_mut(), 0, 0, Some(main)) };
-    // Shared by both handlers; whichever sees the exit first reaps. The handlers hold the sources until they cancel
-    // them, which releases the handlers.
-    let pending = Arc::new(Mutex::new(Some(exited)));
-    let reap: Arc<dyn Fn(bool) + Send + Sync> = Arc::new({
-        let sources: [DispatchRetained<DispatchSource>; 2] = [source.clone(), backstop.clone()];
+    // Shared by both handlers, on the main queue; whichever sees the exit first reaps. The sources are held here
+    // until then, and let go once reaped so they (and these closures, their contexts) are freed.
+    let pending = Rc::new(RefCell::new(Some(exited)));
+    let sources: Rc<RefCell<Vec<DispatchRetained<DispatchSource>>>> = Rc::default();
+    let reap: Rc<dyn Fn(bool)> = Rc::new({
+        let sources = sources.clone();
         move |exited: bool| {
-            let mut pending = pending.lock().unwrap();
-            if pending.is_none() {
+            if pending.borrow().is_none() {
                 return;
             }
             let mut status = 0;
@@ -134,23 +130,23 @@ fn watch_exit(pid: libc::pid_t) -> tokio::sync::oneshot::Receiver<i32> {
                 }
             };
             if result == pid || (result < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD)) {
-                sources.iter().for_each(|source| source.cancel());
-                let _ = pending.take().unwrap().send(if result == pid { decode(status) } else { -1 });
+                for source in sources.borrow_mut().drain(..) {
+                    source.cancel();
+                }
+                let _ = pending.borrow_mut().take().unwrap().send(if result == pid { decode(status) } else { -1 });
             }
         }
     });
-    let on_exit = block2::RcBlock::new({
+    let source = crate::source::on_main(&raw const dispatch2::_dispatch_source_type_proc, pid as usize, PROC_EXIT, {
         let reap = reap.clone();
         move || reap(true)
-    });
-    let on_tick = block2::RcBlock::new(move || reap(false));
-    unsafe {
-        source.set_event_handler_with_block(block2::RcBlock::as_ptr(&on_exit));
-        backstop.set_event_handler_with_block(block2::RcBlock::as_ptr(&on_tick));
-    }
-    backstop.set_timer(DispatchTime::NOW, crate::tuning::REAP_BACKSTOP.as_nanos() as u64, crate::tuning::REAP_BACKSTOP.as_nanos() as u64 / 10);
+    }, None);
+    let backstop = crate::source::on_main(&raw const dispatch2::_dispatch_source_type_timer, 0, 0, move || reap(false), None);
+    let interval = crate::tuning::REAP_BACKSTOP.as_nanos() as u64;
+    backstop.set_timer(DispatchTime::NOW, interval, interval / 10);
     source.resume();
     backstop.resume();
+    sources.borrow_mut().extend([source, backstop]);
     exit
 }
 
