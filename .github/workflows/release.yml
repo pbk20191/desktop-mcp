@@ -206,7 +206,8 @@ jobs:
           echo "Bundles: signed with the CODESIGN certificate (self-signed)" >> "$GITHUB_STEP_SUMMARY"
       - name: Unsigned
         if: env.SIGN != 'true'
-        run: echo "Bundles: unsigned (no CODESIGN_P12_BASE64 / CODESIGN_P12_PASSWORD secrets)" >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          echo "Bundles: unsigned (no CODESIGN_P12_BASE64 / CODESIGN_P12_PASSWORD secrets)" >> "$GITHUB_STEP_SUMMARY"
       - name: Signing report
         run: |
           # The signed bundles' report, beside the platform ones (signing-windows.txt, signing-macos.txt) in the
