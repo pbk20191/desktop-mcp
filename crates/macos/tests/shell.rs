@@ -108,6 +108,25 @@ fn huge_output_is_truncated() {
     assert_eq!(run.stdout.len(), 10 * 1024 * 1024 + "\n...[output truncated at 10485760 bytes]".len());
 }
 
+/// Many short commands at once, as a busy server runs them: every one is reaped and answers, none waits for its
+/// timeout (an exit event can arrive before the child can be reaped).
+fn many_short_commands_are_all_reaped() {
+    let started = Instant::now();
+    let statuses = run(|_| async {
+        let desktop = MacDesktop::new();
+        let calls: Vec<_> = (0..200).map(|i| desktop.shell(&format!("exit {}", i % 7), ShellMode::Shell, Duration::from_secs(30))).collect();
+        let mut statuses = Vec::new();
+        for call in calls {
+            statuses.push(call.await.expect("started").status);
+        }
+        statuses
+    });
+    assert_eq!(statuses, (0..200).map(|i| i % 7).collect::<Vec<_>>());
+    assert!(started.elapsed() < Duration::from_secs(20), "took {:?}", started.elapsed());
+    let mut status = 0;
+    assert_eq!(unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) }, -1, "a child was left unreaped");
+}
+
 fn main() {
     support::run(&[
         ("combines_stdout_and_stderr_and_reports_the_exit_code", combines_stdout_and_stderr_and_reports_the_exit_code),
@@ -121,5 +140,6 @@ fn main() {
         ("osascript_language_is_chosen_by_the_first_line", osascript_language_is_chosen_by_the_first_line),
         ("osascript_runs_javascript_when_asked", osascript_runs_javascript_when_asked),
         ("huge_output_is_truncated", huge_output_is_truncated),
+        ("many_short_commands_are_all_reaped", many_short_commands_are_all_reaped),
     ])
 }

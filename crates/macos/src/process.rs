@@ -2,7 +2,7 @@
 //! the timeout by a libdispatch timer, both on the main queue.
 use crate::desktop::sleep;
 use desktop_mcp_core::shell::Run;
-use dispatch2::{DispatchObject, DispatchQueue, DispatchRetained, DispatchSource};
+use dispatch2::{DispatchObject, DispatchQueue, DispatchRetained, DispatchSource, DispatchTime};
 use std::ffi::CString;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -102,36 +102,53 @@ fn strerror(code: libc::c_int) -> String {
 
 /// Completes with the exit status once `pid` exits, reaping it. Keeps watching after the receiver is dropped,
 /// so an abandoned child is still reaped.
+///
+/// The exit event can arrive while the child is still finishing its exit, before `waitpid` can reap it, and a
+/// child already exiting when the source registers may never raise one. So the event reaps with a blocking
+/// `waitpid` (the child has exited: it returns at once), and a timer checks without blocking at once and then
+/// every second until the child is reaped.
 fn watch_exit(pid: libc::pid_t) -> tokio::sync::oneshot::Receiver<i32> {
     let (exited, exit) = tokio::sync::oneshot::channel();
-    let kind = &raw const dispatch2::_dispatch_source_type_proc;
-    let source = unsafe { DispatchSource::new(kind.cast_mut(), pid as usize, PROC_EXIT, Some(DispatchQueue::main())) };
-    // Shared by the source's handler and the check below; whichever sees the exit first reaps. The handler
-    // holds the source until it cancels it, which releases the handler.
+    let main = DispatchQueue::main();
+    let proc_kind = &raw const dispatch2::_dispatch_source_type_proc;
+    let source = unsafe { DispatchSource::new(proc_kind.cast_mut(), pid as usize, PROC_EXIT, Some(main)) };
+    let timer_kind = &raw const dispatch2::_dispatch_source_type_timer;
+    let backstop = unsafe { DispatchSource::new(timer_kind.cast_mut(), 0, 0, Some(main)) };
+    // Shared by both handlers; whichever sees the exit first reaps. The handlers hold the sources until they cancel
+    // them, which releases the handlers.
     let pending = Arc::new(Mutex::new(Some(exited)));
-    let reap: Arc<dyn Fn() + Send + Sync> = Arc::new({
-        let source: DispatchRetained<DispatchSource> = source.clone();
-        move || {
+    let reap: Arc<dyn Fn(bool) + Send + Sync> = Arc::new({
+        let sources: [DispatchRetained<DispatchSource>; 2] = [source.clone(), backstop.clone()];
+        move |exited: bool| {
             let mut pending = pending.lock().unwrap();
             if pending.is_none() {
                 return;
             }
             let mut status = 0;
-            let result = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+            let result = loop {
+                let result = unsafe { libc::waitpid(pid, &mut status, if exited { 0 } else { libc::WNOHANG }) };
+                if result >= 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+                    break result;
+                }
+            };
             if result == pid || (result < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD)) {
-                source.cancel();
+                sources.iter().for_each(|source| source.cancel());
                 let _ = pending.take().unwrap().send(if result == pid { decode(status) } else { -1 });
             }
         }
     });
-    let handler = block2::RcBlock::new({
+    let on_exit = block2::RcBlock::new({
         let reap = reap.clone();
-        move || reap()
+        move || reap(true)
     });
-    unsafe { source.set_event_handler_with_block(block2::RcBlock::as_ptr(&handler)) };
+    let on_tick = block2::RcBlock::new(move || reap(false));
+    unsafe {
+        source.set_event_handler_with_block(block2::RcBlock::as_ptr(&on_exit));
+        backstop.set_event_handler_with_block(block2::RcBlock::as_ptr(&on_tick));
+    }
+    backstop.set_timer(DispatchTime::NOW, 1_000_000_000, 100_000_000);
     source.resume();
-    // The child may have exited before the source was armed.
-    DispatchQueue::main().exec_async(move || reap());
+    backstop.resume();
     exit
 }
 
