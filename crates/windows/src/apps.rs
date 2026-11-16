@@ -127,30 +127,61 @@ impl Launched {
     }
 }
 
-/// Opens `name`: an executable path as it is; else the Apps folder entry it names by its Start menu name, else by
-/// its executable's file name; else, for a bare name, the command the Run dialog would open (App Paths, then PATH:
-/// notepad, calc). What it opened, or `None` when nothing did. Blocking.
+/// The executable the Run dialog would open for the bare command `name` (notepad, calc): its App Paths entry, else
+/// `<name>.exe` in an absolute PATH folder. Never the working directory. Blocking.
+fn command_path(name: &str) -> Option<String> {
+    use windows::Win32::Foundation::ERROR_SUCCESS;
+    use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ};
+    if name.is_empty() || name.contains(['\\', '/', ' ']) {
+        return None;
+    }
+    let exe = if name.to_ascii_lowercase().ends_with(".exe") { name.to_string() } else { format!("{name}.exe") };
+    let key = HSTRING::from(format!(r"Software\Microsoft\Windows\CurrentVersion\App Paths\{exe}"));
+    for hive in [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE] {
+        let mut buffer = [0u16; 1024];
+        let mut size = (buffer.len() * 2) as u32;
+        let status = unsafe { RegGetValueW(hive, &key, PCWSTR::null(), RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ, None, Some(buffer.as_mut_ptr().cast()), Some(&mut size)) };
+        if status == ERROR_SUCCESS {
+            let value = String::from_utf16_lossy(&buffer[..(size as usize / 2)]);
+            let value = value.trim_end_matches('\0').trim().trim_matches('"').to_string();
+            if std::path::Path::new(&value).is_file() {
+                return Some(value);
+            }
+        }
+    }
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path).filter(|folder| folder.is_absolute()).map(|folder| folder.join(&exe)).find(|candidate| candidate.is_file()).map(|found| found.to_string_lossy().into_owned())
+}
+
+/// Opens `name`: an executable path as it is; else the Apps folder entry with exactly that Start menu name, else the
+/// one whose executable has that file name; else the command the Run dialog would open (App Paths, then PATH: notepad,
+/// calc); else the Apps folder entry whose name starts with or contains it. So "notepad" opens Notepad, not
+/// Notepad++. What it opened, or `None` when nothing did. Blocking.
 pub fn launch(name: &str) -> Option<Launched> {
     let name = name.trim();
     let path = std::path::Path::new(name);
+    let open_path = |path: &str| {
+        let exe = Some(file_name(path).to_string());
+        shell_execute(path).then(|| Launched { name: name.to_string(), exe, runs: Some(Runs::Executable(path.to_string())) })
+    };
     if path.is_absolute() && path.is_file() {
-        let exe = Some(file_name(name).to_string());
-        return shell_execute(name).then(|| Launched { name: name.to_string(), exe, runs: Some(Runs::Executable(name.to_string())) });
+        return open_path(name);
     }
     let entries = catalog();
-    let found = best_match(&entries, name).map(|entry| (entry.clone(), None)).or_else(|| {
-        let targets: Vec<(AppEntry, String)> = entries.iter().filter_map(|entry| executable(entry).map(|path| (entry.clone(), path))).collect();
-        let entry = match_by_executable(&targets, name)?;
-        let path = targets.iter().find(|(target, _)| target == entry).map(|(_, path)| file_name(path).to_string());
-        Some((entry.clone(), path))
-    });
-    if let Some((entry, exe)) = found {
-        return shell_execute(&format!(r"shell:AppsFolder\{}", entry.parsing_name)).then(|| Launched { name: name.to_string(), exe, runs: runs(&entry) });
+    let open_entry = |entry: &AppEntry, exe: Option<String>| shell_execute(&format!(r"shell:AppsFolder\{}", entry.parsing_name)).then(|| Launched { name: name.to_string(), exe, runs: runs(entry) });
+    let lowered = name.to_lowercase();
+    if let Some(entry) = entries.iter().filter(|entry| entry.name.to_lowercase() == lowered).min_by_key(|entry| entry.name.chars().count()) {
+        return open_entry(entry, None);
     }
-    if name.is_empty() || name.contains(['\\', '/']) {
-        return None;
+    let targets: Vec<(AppEntry, String)> = entries.iter().filter_map(|entry| executable(entry).map(|path| (entry.clone(), path))).collect();
+    if let Some(entry) = match_by_executable(&targets, name) {
+        let exe = targets.iter().find(|(target, _)| target == entry).map(|(_, path)| file_name(path).to_string());
+        return open_entry(entry, exe);
     }
-    shell_execute(name).then(|| Launched { name: name.to_string(), exe: Some(name.to_string()), runs: None })
+    if let Some(command) = command_path(name) {
+        return open_path(&command);
+    }
+    best_match(&entries, name).and_then(|entry| open_entry(entry, None))
 }
 
 /// The launched app's window among `windows` (front first), given the window handles listed before the launch: a
