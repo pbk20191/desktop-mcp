@@ -18,6 +18,7 @@ pub mod apps;
 pub mod displays;
 pub mod windows;
 pub mod menu;
+pub mod element;
 pub mod signals;
 pub mod tls;
 pub mod fd;

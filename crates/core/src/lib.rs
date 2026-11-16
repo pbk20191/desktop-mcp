@@ -15,6 +15,7 @@ pub mod input;
 pub mod app;
 pub mod window;
 pub mod menu;
+pub mod element;
 pub mod http;
 pub mod session;
 pub mod config;

@@ -63,6 +63,9 @@ fn redirect(status: u16, location: &str) -> Response<Full<bytes::Bytes>> {
 }
 
 impl Desktop for FakeWeb {
+    fn find_element(&self, _app: Option<&str>, _title: Option<&str>, _role: Option<&str>, _deadline: std::time::Instant) -> Pin<Box<dyn Future<Output = Option<desktop_mcp_core::element::FoundElement>>>> {
+        unreachable!()
+    }
     fn menu(&self, _app: Option<String>, _request: desktop_mcp_core::menu::Request) -> Pin<Box<dyn Future<Output = Result<String, String>>>> {
         unreachable!()
     }

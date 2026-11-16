@@ -91,13 +91,6 @@ fn wait_without_duration_is_an_error_result() {
     assert!(desktop.slept.borrow().is_empty());
 }
 
-#[test]
-fn window_and_element_waits_are_refused_for_now() {
-    let desktop = Rc::new(FakeDesktop::default());
-    let answer = call(&desktop, "Wait", json!({"until": "window", "app": "Finder"}));
-    assert_eq!(answer["result"]["isError"], true);
-    assert_eq!(answer["result"]["content"][0]["text"], "Error executing tool Wait: Wait until 'window' is not available in this build.");
-}
 
 fn preview() -> RunningApp {
     RunningApp { pid: 42, name: Some("Preview".into()), bundle_id: Some("com.apple.Preview".into()) }

@@ -35,6 +35,9 @@ impl MainLoop for FakeLoop {
 /// A desktop that records what the tools ask of it and answers as each test sets it up.
 #[derive(Default)]
 pub struct FakeDesktop {
+    /// What each `find_element` look answers (the last repeats), and the deadlines it was given.
+    pub element_looks: RefCell<Vec<Option<desktop_mcp_core::element::FoundElement>>>,
+    pub element_deadlines: RefCell<Vec<std::time::Instant>>,
     pub menu_requests: RefCell<Vec<(Option<String>, desktop_mcp_core::menu::Request)>>,
     pub window_source: Option<Rc<dyn desktop_mcp_core::window::WindowSource>>,
     pub launched: RefCell<Vec<String>>,
@@ -85,6 +88,12 @@ pub struct FakeDesktop {
     pub looked: Cell<usize>,
 }
 impl Desktop for FakeDesktop {
+    fn find_element(&self, _app: Option<&str>, _title: Option<&str>, _role: Option<&str>, deadline: std::time::Instant) -> Pin<Box<dyn Future<Output = Option<desktop_mcp_core::element::FoundElement>>>> {
+        self.element_deadlines.borrow_mut().push(deadline);
+        let mut looks = self.element_looks.borrow_mut();
+        let found = if looks.len() > 1 { looks.remove(0) } else { looks.first().cloned().flatten() };
+        Box::pin(async move { found })
+    }
     fn menu(&self, app: Option<String>, request: desktop_mcp_core::menu::Request) -> Pin<Box<dyn Future<Output = Result<String, String>>>> {
         self.menu_requests.borrow_mut().push((app, request));
         Box::pin(async { Ok("menu".to_string()) })

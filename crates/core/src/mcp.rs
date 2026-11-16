@@ -82,6 +82,10 @@ pub trait Desktop: 'static {
     fn window_source(&self) -> Rc<dyn crate::window::WindowSource>;
     /// Lists or selects in the menu bar of `app` (name or bundle id), or of the app that owns the menu bar.
     fn menu(&self, app: Option<String>, request: crate::menu::Request) -> Pin<Box<dyn Future<Output = Result<String, String>>>>;
+    /// An element of `app` (or of the app owning the menu bar) whose role is `role` exactly and whose title,
+    /// description or value contains `title`, ignoring case; an exact match is preferred. `None` when there is
+    /// none, or when `deadline` passes first.
+    fn find_element(&self, app: Option<&str>, title: Option<&str>, role: Option<&str>, deadline: std::time::Instant) -> Pin<Box<dyn Future<Output = Option<crate::element::FoundElement>>>>;
 }
 
 /// One MCP server. Stateless requests get a fresh one each; a session keeps one.
@@ -144,23 +148,11 @@ enum WaitUntil {
     Element,
 }
 
-impl WaitUntil {
-    fn name(self) -> &'static str {
-        match self {
-            WaitUntil::AppRunning => "app_running",
-            WaitUntil::AppQuit => "app_quit",
-            WaitUntil::Window => "window",
-            WaitUntil::WindowGone => "window_gone",
-            WaitUntil::Element => "element",
-        }
-    }
-}
 
 fn ten() -> i64 {
     10
 }
 
-#[allow(dead_code)] // `title` and `role` belong to the conditions that are not ported yet
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct WaitArgs {
     duration: Option<i64>,
@@ -651,7 +643,11 @@ impl Server {
         match args.until {
             Some(WaitUntil::AppRunning) => return crate::wait::until_app(self.desktop.as_ref(), args.app.as_deref(), true, args.timeout).await.map_err(ToolError),
             Some(WaitUntil::AppQuit) => return crate::wait::until_app(self.desktop.as_ref(), args.app.as_deref(), false, args.timeout).await.map_err(ToolError),
-            Some(until) => return Err(ToolError(format!("Wait until '{}' is not available in this build.", until.name()))),
+            Some(WaitUntil::Window) => return crate::wait::until_window(self.desktop.as_ref(), args.app.as_deref(), args.title.as_deref(), false, args.timeout).await.map_err(ToolError),
+            Some(WaitUntil::WindowGone) => return crate::wait::until_window(self.desktop.as_ref(), args.app.as_deref(), args.title.as_deref(), true, args.timeout).await.map_err(ToolError),
+            Some(WaitUntil::Element) => {
+                return crate::wait::until_element(self.desktop.as_ref(), args.app.as_deref(), args.title.as_deref(), args.role.as_deref(), args.timeout).await.map_err(ToolError)
+            }
             None => {}
         }
         let duration = args.duration.ok_or_else(|| ToolError("Missing required argument 'duration'".to_string()))?;

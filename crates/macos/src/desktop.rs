@@ -178,6 +178,13 @@ impl Desktop for MacDesktop {
         Box::pin(crate::main_loop::offload(move || crate::menu::answer(app.as_deref(), owner, request)))
     }
 
+    fn find_element(&self, app: Option<&str>, title: Option<&str>, role: Option<&str>, deadline: std::time::Instant) -> Pin<Box<dyn Future<Output = Option<desktop_mcp_core::element::FoundElement>>>> {
+        // The running apps and the menu bar owner are read here, on the main thread; the walk runs on a worker.
+        let pids = crate::element::pids(app, if app.is_none() { crate::menu::menu_bar_owner() } else { None });
+        let (title, role) = (title.map(str::to_string), role.map(str::to_string));
+        Box::pin(crate::main_loop::offload(move || crate::element::find(&pids, title.as_deref(), role.as_deref(), deadline)))
+    }
+
     fn find_application(&self, name_or_bundle_id: &str) -> Pin<Box<dyn Future<Output = Option<Application>>>> {
         let name = name_or_bundle_id.to_string();
         Box::pin(crate::main_loop::offload(move || crate::open::application(&name)))

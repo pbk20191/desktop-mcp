@@ -40,7 +40,7 @@ async fn poll<T>(desktop: &dyn Desktop, deadline: Instant, mut check: impl Async
 /// Waits until `app` (name or bundle id) runs, or with `running` false, until it quits.
 pub async fn until_app(desktop: &dyn Desktop, app: Option<&str>, running: bool, timeout: i64) -> Result<String, String> {
     let condition = if running { "app_running" } else { "app_quit" };
-    let app = app.filter(|app| !app.trim().is_empty()).ok_or_else(|| format!("app required for {condition}."))?;
+    let app = given(app).ok_or_else(|| format!("app required for {condition}."))?;
     let timeout = crate::shell::clamp_timeout(timeout, std::env::var(crate::shell::MAX_TIMEOUT_ENV).ok().as_deref()).max(0);
     let deadline = Instant::now() + Duration::from_secs(timeout as u64);
     let mut first = true;
@@ -59,4 +59,78 @@ pub async fn until_app(desktop: &dyn Desktop, app: Option<&str>, running: bool, 
     })
     .await;
     found.ok_or_else(|| format!("Timed out after {timeout}s waiting for app {app} to {}.", if running { "run" } else { "quit" }))
+}
+
+/// The argument, or `None` when absent or blank.
+pub fn given(value: Option<&str>) -> Option<&str> {
+    value.filter(|value| !value.trim().is_empty())
+}
+
+fn deadline(timeout: i64) -> (i64, Instant) {
+    let timeout = crate::shell::clamp_timeout(timeout, std::env::var(crate::shell::MAX_TIMEOUT_ENV).ok().as_deref()).max(0);
+    (timeout, Instant::now() + Duration::from_secs(timeout as u64))
+}
+
+/// Waits until a window matching `app` and/or `title` (a case-insensitive substring) appears (its Window list
+/// lines), or with `gone` until none is left. An app that does not answer may still have the window: not gone yet.
+pub async fn until_window(desktop: &dyn Desktop, app: Option<&str>, title: Option<&str>, gone: bool, timeout: i64) -> Result<String, String> {
+    let (app, title) = (given(app), given(title));
+    let condition = if gone { "window_gone" } else { "window" };
+    if app.is_none() && title.is_none() {
+        return Err(format!("app or title required for {condition}."));
+    }
+    crate::input::require_accessibility(desktop)?;
+    let (timeout, deadline) = deadline(timeout);
+    let source = desktop.window_source();
+    let wanted = title.map(str::to_lowercase);
+    let found = poll(desktop, deadline, async || {
+        let reading = source.reading(app).await;
+        let matching: Vec<_> = reading.windows.into_iter().filter(|w| wanted.as_ref().is_none_or(|t| w.title.to_lowercase().contains(t))).collect();
+        if gone {
+            (matching.is_empty() && reading.complete).then(|| "No window matches any more.".to_string())
+        } else {
+            (!matching.is_empty()).then(|| crate::window::format(&matching))
+        }
+    })
+    .await;
+    let mut parts = vec!["window".to_string()];
+    if let Some(title) = title {
+        parts.push(format!("\"{title}\""));
+    }
+    if let Some(app) = app {
+        parts.push(format!("in {app}"));
+    }
+    if gone {
+        parts.push("to close".to_string());
+    }
+    found.ok_or_else(|| format!("Timed out after {timeout}s waiting for {}.", parts.join(" ")))
+}
+
+/// The least time one element check may walk, whatever is left of the timeout.
+const MINIMUM_WALK: Duration = Duration::from_millis(500);
+
+/// Waits until an element with `title` and/or `role` appears in `app` (or the app owning the menu bar); answers
+/// `<role> "<title>" at [x,y]`, the centre in Click coordinates.
+pub async fn until_element(desktop: &dyn Desktop, app: Option<&str>, title: Option<&str>, role: Option<&str>, timeout: i64) -> Result<String, String> {
+    let (app, title, role) = (given(app), given(title), given(role));
+    if title.is_none() && role.is_none() {
+        return Err("title or role required for element.".to_string());
+    }
+    crate::input::require_accessibility(desktop)?;
+    let (timeout, deadline) = deadline(timeout);
+    let found = poll(desktop, deadline, async || {
+        // Every check gets a real walk, even at or past the deadline (timeout 0).
+        let walk_deadline = deadline.max(Instant::now() + MINIMUM_WALK);
+        let element = desktop.find_element(app, title, role, walk_deadline).await?;
+        Some(format!("{} \"{}\" at [{},{}]", element.role, crate::window::flat(&element.title), element.center.0.round() as i64, element.center.1.round() as i64))
+    })
+    .await;
+    let mut parts = vec!["element".to_string()];
+    if let Some(role) = role {
+        parts.push(role.to_string());
+    }
+    if let Some(title) = title {
+        parts.push(format!("\"{title}\""));
+    }
+    found.ok_or_else(|| format!("Timed out after {timeout}s waiting for {}.", parts.join(" ")))
 }

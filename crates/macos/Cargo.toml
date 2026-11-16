@@ -80,3 +80,7 @@ harness = false
 [[test]]
 name = "windows"
 harness = false
+
+[[test]]
+name = "element"
+harness = false
