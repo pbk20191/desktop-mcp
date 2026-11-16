@@ -136,18 +136,29 @@ Tests under `crates/macos/tests` run on the main thread with their own small run
 code under test owns the main run loop. After reviewing a change to `tools/list`, refresh its
 snapshot with `UPDATE_SNAPSHOTS=1 cargo test -p desktop-mcp-core --test mcp snapshot`.
 
-## Starting the Windows port
+## Windows (`crates/windows`)
 
-`core` has no platform code; a port supplies three things:
+In progress (`docs/superpowers/specs/2026-11-16-rust-port-windows-design.md`). It builds and serves:
 
-- `guest::MainLoop` (`crates/core/src/guest.rs`): wakes the guest runtime and arms its ticks. macOS uses the main
-  CFRunLoop (`crates/macos/src/main_loop.rs`); on Windows, the message loop of the thread that owns the UI is the
-  counterpart.
-- `mcp::Desktop` (`crates/core/src/mcp.rs`): one method per system call the tools make (processes, clipboard,
-  windows, accessibility tree, input, screenshots, permissions). The tools' logic and wording stay in `core`;
-  `crates/core/tests/support/mod.rs` has a recording fake of the whole trait.
-- The transports: stdio and the HTTP listener (`crates/macos/src/fd.rs`, `crates/macos/src/nw/`), giving `core`
-  byte streams.
+- `--transport stdio`, and `streamable-http` with the same rules as macOS (refused without a key or OAuth, off
+  unless allowed); HTTPS through SChannel. SChannel cannot use a key that lives only in this process, so the key is
+  stored in the user's key storage under `desktop-mcp-tls-<pid>-<random>` while the server runs and deleted after;
+  a server that crashed leaves it until the next HTTPS start removes it. No `socket` transport and no `connect`.
+- `Shell` (PowerShell 7 when installed, else Windows PowerShell 5.1), `Scrape`, `Clipboard` (Win32, on the thread
+  pool), `Notification` (toasts under Windows PowerShell's app id), `Wait` for a duration. The desktop tools
+  (Snapshot, input, windows) and control come next.
+
+How it runs: one message loop, on the main thread, with a `Windows.System.DispatcherQueue` that drives the guest
+tokio runtime (`crates/windows/src/main_loop.rs`); blocking work, timers, handle waits and child-process pipes
+(overlapped, thread-pool I/O) use the Windows thread pool. The main thread is a single-threaded apartment.
+
+```powershell
+cargo test --workspace --exclude desktop-mcp-macos --exclude desktop-mcp-parity   # on Windows
+scripts/parity.ps1                                                                  # parity against the Windows binary
+cargo check --workspace --exclude desktop-mcp-parity --target aarch64-apple-darwin  # macOS still builds
+```
+
+Checks run by hand (clipboard, toasts, a real console, Claude Desktop): `docs/superpowers/plans/2026-11-16-rust-windows-live-checks.md`.
 
 Still open for both ports: checking which program started the server
 (`docs/superpowers/specs/2026-11-16-rust-port-client-check-design.md`, with the Windows APIs in
