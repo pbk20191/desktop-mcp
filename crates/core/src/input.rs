@@ -32,7 +32,19 @@ pub enum Modifier {
     Option,
     Control,
     Fn,
+    /// The Windows key; offered only by platforms that list `win` among their extra keys.
+    Meta,
 }
+
+/// The chords Type uses to clear a field and to move the caret to its start or end.
+pub struct EditingKeys {
+    pub select_all: &'static [&'static str],
+    pub line_start: &'static [&'static str],
+    pub line_end: &'static [&'static str],
+}
+
+/// macOS's: command+a, command+left, command+right.
+pub const MAC_EDITING: EditingKeys = EditingKeys { select_all: &["command", "a"], line_start: &["command", "left"], line_end: &["command", "right"] };
 
 /// One input event. Coordinates are the platform's input points (top-left origin of the main display).
 #[derive(Clone, Debug, PartialEq)]
@@ -62,7 +74,10 @@ pub const KEYS: &[&str] = &[
     "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12", "home", "end", "pageup", "pagedown", "volumeup", "volumedown", "mute",
 ];
 
-fn modifier(name: &str) -> Option<Modifier> {
+fn modifier(desktop: &dyn Desktop, name: &str) -> Option<Modifier> {
+    if matches!(name, "win" | "windows" | "super" | "meta") {
+        return desktop.extra_keys().contains(&"win").then_some(Modifier::Meta);
+    }
     Some(match name {
         "command" | "cmd" => Modifier::Command,
         "shift" => Modifier::Shift,
@@ -185,9 +200,9 @@ async fn hot_key(desktop: &dyn Desktop, keys: &[String]) -> Result<(), String> {
     let mut modifiers = Vec::new();
     let mut main_key = None;
     for key in keys {
-        if let Some(modifier) = modifier(key) {
+        if let Some(modifier) = modifier(desktop, key) {
             modifiers.push(modifier);
-        } else if KEYS.contains(&key.as_str()) {
+        } else if KEYS.contains(&key.as_str()) || desktop.extra_keys().contains(&key.as_str()) {
             main_key = Some(key.as_str());
         } else {
             return Err(format!("Unknown key: {key}"));
@@ -269,18 +284,18 @@ pub async fn type_at(desktop: &dyn Desktop, x: i64, y: i64, text: &str, caret: C
     pause(desktop, FOCUS_SETTLE).await;
     let secure = desktop.secure_input_at(x, y).await;
     if clear {
-        chord(desktop, &["command", "a"]).await;
+        chord(desktop, desktop.editing_keys().select_all).await;
         pause(desktop, CLEAR_SETTLE).await;
         chord(desktop, &["delete"]).await;
         pause(desktop, CLEAR_SETTLE).await;
     }
     match caret {
         Caret::Start => {
-            chord(desktop, &["command", "left"]).await;
+            chord(desktop, desktop.editing_keys().line_start).await;
             pause(desktop, CARET_SETTLE).await;
         }
         Caret::End => {
-            chord(desktop, &["command", "right"]).await;
+            chord(desktop, desktop.editing_keys().line_end).await;
             pause(desktop, CARET_SETTLE).await;
         }
         Caret::Idle => {}

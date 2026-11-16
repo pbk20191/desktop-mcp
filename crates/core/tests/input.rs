@@ -94,3 +94,23 @@ fn an_abandoned_click_releases_the_button() {
     });
     assert_eq!(*desktop.posted.borrow(), [Event::Move { x: 5.0, y: 6.0 }, down(5.0, 6.0, Button::Left, 1), up(5.0, 6.0, Button::Left, 1)]);
 }
+
+#[test]
+fn type_uses_the_platform_chords() {
+    let desktop = Rc::new(FakeDesktop { windows_keys: true, ..FakeDesktop::default() });
+    call(&desktop, "Type", json!({"loc": [1, 2], "text": "", "clear": true, "caret_position": "start"}));
+    let posted = desktop.posted.borrow();
+    assert!(posted.windows(2).any(|pair| pair == key("a", &[Modifier::Control])), "{posted:?}");
+    assert!(posted.windows(2).any(|pair| pair == key("home", &[Modifier::Control])), "{posted:?}");
+    assert!(!posted.iter().any(|event| matches!(event, Event::KeyDown { modifiers, .. } if modifiers.contains(&Modifier::Command))), "{posted:?}");
+}
+
+#[test]
+fn extra_keys_are_accepted_only_where_offered() {
+    let mac = Rc::new(FakeDesktop::default());
+    assert_eq!(call(&mac, "Shortcut", json!({"shortcut": "win+r"})), ["Error executing tool Shortcut: Unknown key: win"]);
+    let windows = Rc::new(FakeDesktop { windows_keys: true, ..FakeDesktop::default() });
+    assert_eq!(call(&windows, "Shortcut", json!({"shortcut": "win+r"})), ["Pressed win+r."]);
+    assert!(windows.posted.borrow().contains(&Event::KeyDown { key: "r".into(), modifiers: vec![Modifier::Meta] }));
+    assert_eq!(call(&windows, "Shortcut", json!({"shortcut": "shift+insert"})), ["Pressed shift+insert."]);
+}

@@ -35,7 +35,7 @@ fn flags(modifiers: &[Modifier]) -> CGEventFlags {
     modifiers.iter().fold(CGEventFlags::empty(), |flags, modifier| {
         flags
             | match modifier {
-                Modifier::Command => CGEventFlags::MaskCommand,
+                Modifier::Command | Modifier::Meta => CGEventFlags::MaskCommand,
                 Modifier::Shift => CGEventFlags::MaskShift,
                 Modifier::Option => CGEventFlags::MaskAlternate,
                 Modifier::Control => CGEventFlags::MaskControl,

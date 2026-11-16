@@ -98,6 +98,15 @@ pub trait Desktop: 'static {
     /// points, in no particular order. `Err` carries the reason shown to the model.
     fn read_text(&self, request: crate::ocr::Request) -> Pin<Box<dyn Future<Output = Result<Vec<crate::ocr::TextLine>, String>>>>;
     fn find_element(&self, app: Option<&str>, title: Option<&str>, role: Option<&str>, deadline: std::time::Instant) -> Pin<Box<dyn Future<Output = Option<crate::element::FoundElement>>>>;
+    /// The chords Type uses to clear a field and place the caret; macOS's unless the platform says otherwise.
+    fn editing_keys(&self) -> &'static crate::input::EditingKeys {
+        &crate::input::MAC_EDITING
+    }
+    /// Key names this platform accepts besides [`crate::input::KEYS`]; `win` among them also enables the Windows
+    /// key as a modifier.
+    fn extra_keys(&self) -> &'static [&'static str] {
+        &[]
+    }
 }
 
 /// One MCP server. Stateless requests get a fresh one each; a session keeps one.

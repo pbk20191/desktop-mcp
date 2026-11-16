@@ -52,6 +52,8 @@ pub struct FakeDesktop {
     pub terminate_fails: bool,
     /// Every input event posted, in order.
     pub posted: RefCell<Vec<desktop_mcp_core::input::Event>>,
+    /// Answers as Windows does for editing chords and extra key names.
+    pub windows_keys: bool,
     /// Accessibility is refused when set.
     pub untrusted: bool,
     pub cursor: (f64, f64),
@@ -135,6 +137,13 @@ impl Desktop for FakeDesktop {
     }
     fn accessibility_trusted(&self) -> bool {
         !self.untrusted
+    }
+    fn editing_keys(&self) -> &'static desktop_mcp_core::input::EditingKeys {
+        const WINDOWS: desktop_mcp_core::input::EditingKeys = desktop_mcp_core::input::EditingKeys { select_all: &["ctrl", "a"], line_start: &["ctrl", "home"], line_end: &["ctrl", "end"] };
+        if self.windows_keys { &WINDOWS } else { &desktop_mcp_core::input::MAC_EDITING }
+    }
+    fn extra_keys(&self) -> &'static [&'static str] {
+        if self.windows_keys { &["win", "insert"] } else { &[] }
     }
     fn post(&self, event: desktop_mcp_core::input::Event) {
         self.posted.borrow_mut().push(event);
