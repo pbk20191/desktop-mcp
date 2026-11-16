@@ -10,13 +10,14 @@
 # and OpenSSL 3 both read it. The certificate is removed from Cert:\CurrentUser\My afterwards; the .p12 is the copy.
 #
 # Usage: powershell -ExecutionPolicy Bypass -File scripts\new-codesign-cert.ps1 [-OutDir dir]   (asks for the password)
-param([string]$OutDir = '.')
+#        or from PowerShell: & scripts\new-codesign-cert.ps1 -OutDir dir -Password $secureString
+param([string]$OutDir = '.', [SecureString]$Password)
 $ErrorActionPreference = 'Stop'
 $OutDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutDir)
 New-Item -ItemType Directory -Force $OutDir | Out-Null
 $p12 = Join-Path $OutDir 'desktop-mcp-codesign.p12'
 if (Test-Path $p12) { throw "$p12 exists already; move it away first." }
-$password = Read-Host -AsSecureString 'Password for the .p12'
+$password = if ($Password) { $Password } else { Read-Host -AsSecureString 'Password for the .p12' }
 
 $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=desktop-mcp (pbk20191)' `
     -KeyAlgorithm RSA -KeyLength 3072 -HashAlgorithm SHA256 -KeySpec Signature -KeyExportPolicy Exportable `
