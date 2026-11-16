@@ -10,6 +10,19 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+/// Starts the child in a process group of its own on Windows (so Ctrl+Break reaches it alone); nothing elsewhere.
+trait ProcessGroup {
+    fn new_process_group(&mut self) -> &mut Self;
+}
+
+impl ProcessGroup for Command {
+    fn new_process_group(&mut self) -> &mut Self {
+        #[cfg(windows)]
+        std::os::windows::process::CommandExt::creation_flags(self, 0x0000_0200); // CREATE_NEW_PROCESS_GROUP
+        self
+    }
+}
+
 pub struct ServerUnderTest {
     child: Option<Child>,
     pub port: u16,
@@ -79,7 +92,7 @@ pub fn run_stdio_with(arguments: &[&str], input: &[Value], files: &[(&str, &str)
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, contents).unwrap();
     }
-    let mut child = Command::new(&binary).args(arguments).env("HOME", &home).env("DESKTOP_MCP_ALLOW_HTTP", "1").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().expect("start");
+    let mut child = Command::new(&binary).args(arguments).env("HOME", &home).env("USERPROFILE", &home).env("DESKTOP_MCP_ALLOW_HTTP", "1").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().expect("start");
     let mut stdin = child.stdin.take().unwrap();
     for message in input {
         stdin.write_all(format!("{message}\n").as_bytes()).unwrap();
@@ -121,7 +134,7 @@ pub fn socket_path(name: &str) -> PathBuf {
 pub fn run_to_exit(arguments: &[&str]) -> (ExitStatus, String) {
     let binary = std::env::var_os("DESKTOP_MCP_BIN").expect("set DESKTOP_MCP_BIN to the desktop-mcp binary under test");
     let home = scratch_home(None);
-    let mut child = Command::new(&binary).args(arguments).env("HOME", &home).env("DESKTOP_MCP_ALLOW_HTTP", "1").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().expect("start");
+    let mut child = Command::new(&binary).args(arguments).env("HOME", &home).env("USERPROFILE", &home).env("DESKTOP_MCP_ALLOW_HTTP", "1").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().expect("start");
     let deadline = Instant::now() + Duration::from_secs(10);
     let status = loop {
         if let Some(status) = child.try_wait().expect("wait") {
@@ -166,9 +179,10 @@ impl ServerUnderTest {
             let key = (!own_key).then_some(DEFAULT_KEY);
             let child = Command::new(&binary)
                 .args(["serve", "--transport", "streamable-http", "--host", "127.0.0.1", "--port", &port.to_string()])
+                .new_process_group()
                 .args(launch.options)
                 .args(key.map(|key| ["--auth-key", key]).iter().flatten())
-                .env("HOME", &home)
+                .env("HOME", &home).env("USERPROFILE", &home)
                 // The Rust port serves HTTP only on request; the Swift port ignores this.
                 .env("DESKTOP_MCP_ALLOW_HTTP", "1")
                 .envs(launch.env.iter().copied())
@@ -229,6 +243,7 @@ impl ServerUnderTest {
     }
 
     /// How often the kernel has woken the server process from idle (timers and interrupts) since it started.
+    #[cfg(target_os = "macos")]
     pub fn wakeups(&self) -> u64 {
         let mut usage: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
         let status = unsafe { libc::proc_pid_rusage(self.pid() as i32, libc::RUSAGE_INFO_V2, &mut usage as *mut _ as *mut libc::rusage_info_t) };
@@ -237,6 +252,7 @@ impl ServerUnderTest {
     }
 
     /// The number of threads in the server process.
+    #[cfg(target_os = "macos")]
     pub fn threads(&self) -> i32 {
         let mut info: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
         let size = std::mem::size_of::<libc::proc_taskinfo>() as i32;
@@ -245,10 +261,49 @@ impl ServerUnderTest {
         info.pti_threadnum
     }
 
-    /// Sends SIGTERM and waits for the exit status.
+    /// The CPU time (user and kernel) the server process has used since it started.
+    #[cfg(windows)]
+    pub fn cpu_time(&self) -> Duration {
+        use std::os::windows::io::AsRawHandle;
+        use windows::Win32::Foundation::{FILETIME, HANDLE};
+        use windows::Win32::System::Threading::GetProcessTimes;
+        let process = HANDLE(self.child.as_ref().expect("running").as_raw_handle());
+        let (mut created, mut exited, mut kernel, mut user) = (FILETIME::default(), FILETIME::default(), FILETIME::default(), FILETIME::default());
+        unsafe { GetProcessTimes(process, &mut created, &mut exited, &mut kernel, &mut user) }.expect("GetProcessTimes");
+        let ticks = |time: FILETIME| (time.dwHighDateTime as u64) << 32 | time.dwLowDateTime as u64;
+        Duration::from_nanos((ticks(kernel) + ticks(user)) * 100)
+    }
+
+    /// A reading of how much the server has done: wakeups on macOS, CPU time in microseconds on Windows (where the
+    /// thread pool's own threads make wakeups meaningless).
+    pub fn idle_probe(&self) -> u64 {
+        #[cfg(target_os = "macos")]
+        return self.wakeups();
+        #[cfg(windows)]
+        return self.cpu_time().as_micros() as u64;
+    }
+
+    /// Fails unless the server stayed idle since `before` (an [`idle_probe`](Self::idle_probe) reading): at most one
+    /// wakeup on macOS, under 20 ms of CPU on Windows (a forgotten 50 ms tick for 3 s costs far more).
+    pub fn assert_idle_since(&self, before: u64, what: &str) {
+        let since = self.idle_probe() - before;
+        #[cfg(target_os = "macos")]
+        assert!(since <= 1, "{what}: woken {since} times");
+        #[cfg(windows)]
+        assert!(since < 20_000, "{what}: {since} µs of CPU");
+    }
+
+    /// Asks the server to end (SIGTERM; on Windows, Ctrl+Break to its process group) and waits for the exit status.
     pub fn terminate(mut self) -> ExitStatus {
         let mut child = self.child.take().expect("running");
-        unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(child.id() as i32, libc::SIGTERM)
+        };
+        #[cfg(windows)]
+        unsafe {
+            windows::Win32::System::Console::GenerateConsoleCtrlEvent(windows::Win32::System::Console::CTRL_BREAK_EVENT, child.id()).expect("GenerateConsoleCtrlEvent");
+        }
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             if let Some(status) = child.try_wait().expect("wait") {

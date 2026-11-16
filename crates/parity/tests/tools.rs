@@ -1,7 +1,9 @@
 //! The tools that need no display, as a client sees them. Every test holds for both ports.
 use desktop_mcp_parity::{ServerUnderTest, JSON_HEADERS};
 use serde_json::{json, Value};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(target_os = "macos")]
+use std::time::Instant;
 
 fn call(name: &str, arguments: Value) -> Value {
     json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":name,"arguments":arguments}})
@@ -13,7 +15,8 @@ fn text(answer: &Value) -> &str {
 #[test]
 fn shell_combines_both_streams_and_the_status() {
     let server = ServerUnderTest::start();
-    let answer = server.post(&call("Shell", json!({"command": "echo out; echo err >&2; exit 3"}))).json();
+    let command = if cfg!(windows) { "Write-Output out; [Console]::Error.WriteLine('err'); exit 3" } else { "echo out; echo err >&2; exit 3" };
+    let answer = server.post(&call("Shell", json!({"command": command}))).json();
     assert_eq!(answer["result"]["isError"], false);
     assert_eq!(text(&answer), "Shell Response: out\nerr\nStatus Code: 3");
 }
@@ -24,13 +27,14 @@ fn a_client_that_goes_away_stops_its_command() {
     let marker = std::env::temp_dir().join(format!("desktop-mcp-parity-{}", std::process::id()));
     let _ = std::fs::remove_file(&marker);
     let mut connection = server.connect();
-    let command = format!("sleep 1; touch '{}'", marker.display());
+    let command = if cfg!(windows) { format!("Start-Sleep 1; New-Item -ItemType File '{}'", marker.display()) } else { format!("sleep 1; touch '{}'", marker.display()) };
     connection.send("POST", "/mcp", JSON_HEADERS, call("Shell", json!({"command": command})).to_string().as_bytes(), usize::MAX);
     std::thread::sleep(Duration::from_millis(300));
     drop(connection);
     std::thread::sleep(Duration::from_millis(1500));
     assert!(!marker.exists(), "the command kept running after its client left");
-    assert_eq!(server.post(&call("Shell", json!({"command": "true"}))).status, 200, "and the server still serves");
+    let command = if cfg!(windows) { "$true" } else { "true" };
+    assert_eq!(server.post(&call("Shell", json!({"command": command}))).status, 200, "and the server still serves");
 }
 
 #[test]
@@ -50,6 +54,8 @@ fn scrape_refuses_this_machine_and_other_schemes() {
 }
 
 /// Only refusals: anything else would open windows on the desktop.
+// macOS tools (the Windows ones come with the desktop tools).
+#[cfg(target_os = "macos")]
 #[test]
 fn open_refuses_what_it_cannot_open() {
     let server = ServerUnderTest::start();
@@ -66,6 +72,8 @@ fn open_refuses_what_it_cannot_open() {
 }
 
 /// Spotlight only reads the index. Live answers are skipped when indexing is off.
+// macOS tools (the Windows ones come with the desktop tools).
+#[cfg(target_os = "macos")]
 #[test]
 fn spotlight_finds_safari_and_refuses_bad_queries() {
     let server = ServerUnderTest::start();
@@ -84,6 +92,8 @@ fn spotlight_finds_safari_and_refuses_bad_queries() {
 }
 
 /// The app conditions of Wait only look at the running apps.
+// macOS tools (the Windows ones come with the desktop tools).
+#[cfg(target_os = "macos")]
 #[test]
 fn wait_for_apps() {
     let server = ServerUnderTest::start();
@@ -100,6 +110,8 @@ fn wait_for_apps() {
 }
 
 /// Input tools only through refusals that come before any event: nothing is clicked or typed.
+// macOS tools (the Windows ones come with the desktop tools).
+#[cfg(target_os = "macos")]
 #[test]
 fn input_tools_refuse_bad_arguments_before_posting() {
     let server = ServerUnderTest::start();
@@ -119,6 +131,8 @@ fn input_tools_refuse_bad_arguments_before_posting() {
 }
 
 /// Window only through refusals that come before any window is read or changed.
+// macOS tools (the Windows ones come with the desktop tools).
+#[cfg(target_os = "macos")]
 #[test]
 fn window_refusals() {
     let server = ServerUnderTest::start();

@@ -40,8 +40,10 @@ harness = false
 name = "net"
 harness = false
 
-[dev-dependencies]
+[target.'cfg(windows)'.dev-dependencies]
 rcgen.workspace = true
+
+[dev-dependencies]
 tokio.workspace = true
 serde_json.workspace = true
 

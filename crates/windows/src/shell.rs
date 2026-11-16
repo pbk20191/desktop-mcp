@@ -68,9 +68,16 @@ pub async fn run_with(interpreter: &Interpreter, command: &str, timeout: Duratio
     let script = format!("$ProgressPreference = 'SilentlyContinue'; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8\n{command}");
     let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
     let encoded = base64::engine::general_purpose::STANDARD.encode(utf16);
-    let invoke = format!("& ([scriptblock]::Create([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{encoded}'))))");
+    // A syntax error in the command surfaces from Create wrapped in a MethodInvocationException; the parser's own
+    // message is what the caller needs, with exit status 1.
+    let invoke = format!(
+        "try {{ $command = [scriptblock]::Create([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{encoded}'))) }} catch {{ [Console]::Error.WriteLine($_.Exception.InnerException.Message); exit 1 }}; & $command"
+    );
     let args: Vec<OsString> = ["-NoLogo", "-NoProfile", "-NonInteractive", "-OutputFormat", "Text", "-Command", &invoke].iter().map(OsString::from).collect();
     let mut run = process::run(Spawn { program: interpreter.path(), args: &args, env: child_environment() }, timeout).await?;
+    // Line ends as on macOS: PowerShell writes CRLF.
+    run.stdout = run.stdout.replace("\r\n", "\n");
+    run.stderr = run.stderr.replace("\r\n", "\n");
     if matches!(interpreter, Interpreter::WindowsPowerShell(_)) && !FALLBACK_REPORTED.swap(true, Ordering::Relaxed) {
         run.stdout = format!("{FALLBACK_NOTE}\n{}", run.stdout);
     }

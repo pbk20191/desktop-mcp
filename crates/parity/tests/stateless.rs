@@ -133,11 +133,10 @@ fn idle_server_does_not_spin() {
         return;
     }
     std::thread::sleep(Duration::from_millis(500)); // let the connection of the request above close
-    let before = server.wakeups();
+    let before = server.idle_probe();
     std::thread::sleep(Duration::from_secs(3));
-    let woken = server.wakeups() - before;
     // A forgotten fast tick would be 60 wakeups, a forgotten slow tick 3.
-    assert!(woken <= 1, "an idle server was woken {woken} times in 3 s");
+    server.assert_idle_since(before, "an idle server over 3 s");
 }
 
 /// Rust port only (the Swift port was seen truncating some `Connection: close` replies, which is outside this
@@ -175,14 +174,15 @@ fn an_abandoned_wait_leaves_nothing_behind() {
         drop(connection);
     }
     std::thread::sleep(Duration::from_millis(500));
-    let before = server.wakeups();
+    let before = server.idle_probe();
     std::thread::sleep(Duration::from_secs(3)); // both waits would have ended inside this window
-    let woken = server.wakeups() - before;
-    assert!(woken <= 1, "after two abandoned calls the server was woken {woken} times in 3 s");
+    server.assert_idle_since(before, "after two abandoned calls, over 3 s");
     assert_eq!(server.post(&list()).status, 200, "and it still serves");
 }
 
-/// Rust port only: serving requests starts no threads (the main thread plus libdispatch's workers).
+/// Rust port only: serving requests starts no threads (the main thread plus libdispatch's workers). macOS only: on
+/// Windows the thread pool owns its threads by design.
+#[cfg(target_os = "macos")]
 #[test]
 fn serving_starts_no_threads() {
     let server = ServerUnderTest::start();
