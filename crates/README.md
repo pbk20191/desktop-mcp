@@ -90,7 +90,7 @@ Not ported: the `install`/`uninstall` (launchd agent) and `auth` commands. An ag
 the borrowing problem above, and a key stored in `config.toml` can be read by any program of this user; pass the
 HTTP key with `--auth-key` or `DESKTOP_MCP_AUTH_KEY` instead (for example `openssl rand -hex 32`). To use
 desktop-mcp, register `desktop-mcp serve --transport stdio` in the host's MCP settings, or build a Claude Desktop
-extension with `scripts/build-mcpb.sh [binary]` (default `target/release/desktop-mcp`; output `dist/desktop-mcp.mcpb`).
+extension with `scripts/build-mcpb.sh [binary]` (default `target/release/desktop-mcp`; output `dist/desktop-mcp-macos.mcpb`).
 
 Asking for permissions: `Permissions` with `request=true` asks macOS for missing Accessibility and Screen Recording
 (the system prompt, which also lists the binary on the settings page, then that page) and says what it did;
@@ -161,7 +161,10 @@ Working (`docs/superpowers/specs/2026-11-16-rust-port-windows-design.md`). Windo
 Its `tools/list` is pinned in `crates/cli/tests/snapshots/windows-tools.json`, checked against the real binary by
 `crates/cli/tests/windows_stdio.rs` (`UPDATE_SNAPSHOTS=1` rewrites it after review). For Claude Desktop,
 `powershell -ExecutionPolicy Bypass -File scripts\build-mcpb.ps1` packs `target\release\desktop-mcp.exe` into
-`dist\desktop-mcp.mcpb` (install it by opening the file, or from Settings > Extensions).
+`dist\desktop-mcp-windows.mcpb` (install it by opening the file, or from Settings > Extensions); `-Arm64
+path\to\arm64\desktop-mcp.exe` adds the native ARM64 build as `server\desktop-mcp-arm64.exe`. The x64 entry point,
+finding itself emulated on an ARM64 machine, runs that one instead with the same arguments and standard handles, in a
+kill-on-close job, and exits with its status (`DESKTOP_MCP_NO_ARCH_SWITCH=1` keeps it emulated).
 
 How it runs: one message loop, on the main thread, with a `Windows.System.DispatcherQueue` that drives the guest
 tokio runtime (`crates/windows/src/main_loop.rs`); blocking work, timers, handle waits and child-process pipes
@@ -178,3 +181,41 @@ Checks run by hand (clipboard, toasts, a real console, Claude Desktop): `docs/su
 Still open for both ports: checking which program started the server
 (`docs/superpowers/specs/2026-11-16-rust-port-client-check-design.md`, with the Windows APIs in
 `2026-11-16-rust-port-client-validation.md`).
+
+## Releasing
+
+`.github/workflows/release.yml` builds one extension per platform: `desktop-mcp-windows.mcpb` (the x64 entry point and
+the native ARM64 build) and `desktop-mcp-macos.mcpb` (one universal arm64 + x86_64 binary). To cut a release, set
+`version` under `[workspace.package]` in `Cargo.toml` to X.Y.Z, commit, then `git tag vX.Y.Z` and `git push origin
+vX.Y.Z`. The workflow fails if the tag does not name the workspace version, and publishes a GitHub release with both
+bundles and generated notes. Run by hand (workflow_dispatch), it only builds them as an artifact.
+
+Signing uses a self-signed code-signing certificate, CN "desktop-mcp (pbk20191)", made once with
+`scripts/new-codesign-cert.ps1` (RSA 3072, valid 10 years, extended key usage code signing; it writes a
+password-protected `.p12`, its base64 text and the public `.cer`). Repository secrets:
+
+| Secret | Value |
+|---|---|
+| `CODESIGN_P12_BASE64` | the `.p12`, base64 (`desktop-mcp-codesign.p12.txt`) |
+| `CODESIGN_P12_PASSWORD` | its password |
+| `CODESIGN_IDENTITY` | optional: the macOS codesign identity, default the certificate in the `.p12` |
+
+With them, the Windows executables are signed with signtool (SHA-256, timestamped by DigiCert), the macOS binary with
+codesign (hardened runtime with the Apple Events entitlement, `scripts/desktop-mcp.entitlements`; no timestamp) and
+each bundle with `mcpb sign`. Without them everything is still built, unsigned (the macOS binary ad-hoc signed), and
+the job summary says so. Each job records what was signed in its log, its summary and a report beside the bundles
+(`signing-windows.txt`: SHA-256, Authenticode status, signer and thumbprint; `signing-macos.txt`: SHA-256, architectures,
+`codesign --display` and `--verify`; `signing-bundles.txt`: SHA-256 and `mcpb verify`), kept in the
+`desktop-mcp-mcpb` artifact and attached to the release.
+
+What the self-signed certificate gives: a stable identity, so macOS keeps the Accessibility and Screen Recording
+grants across updates (an ad-hoc signature changes with every build, and the grants with it), and integrity (a
+modified file no longer verifies). What it does not: macOS Gatekeeper still does not know it (no notarization), and
+Windows SmartScreen still warns unless the certificate is trusted on that machine. To trust it on Windows for the
+current user, import the public `.cer` into Trusted Publishers and Trusted Root Certification Authorities:
+
+```powershell
+Import-Certificate -FilePath desktop-mcp-codesign.cer -CertStoreLocation Cert:\CurrentUser\TrustedPublisher
+Import-Certificate -FilePath desktop-mcp-codesign.cer -CertStoreLocation Cert:\CurrentUser\Root
+```
+

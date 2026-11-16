@@ -1,0 +1,243 @@
+# Builds the Claude Desktop extensions: dist/desktop-mcp-windows.mcpb (x64 entry point + native arm64) and
+# dist/desktop-mcp-macos.mcpb (one universal binary). A pushed tag vX.Y.Z also publishes them as a GitHub release.
+#
+# Signing uses a self-signed code-signing certificate (scripts/new-codesign-cert.ps1), given as two secrets:
+#   CODESIGN_P12_BASE64    the .p12 (PKCS#12, RSA key), base64
+#   CODESIGN_P12_PASSWORD  its password
+#   CODESIGN_IDENTITY      optional: the macOS codesign identity; default: the certificate in the .p12
+# Without them everything is still built: the Windows executables and the bundles unsigned, the macOS binary ad-hoc
+# signed.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: Check the version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: The tag names the workspace version
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "desktop-mcp-cli") | .version')
+          echo "Workspace version: $version"
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match the workspace version $version (expected v$version)"
+            exit 1
+          fi
+
+  windows:
+    name: Windows bundle
+    needs: version
+    runs-on: windows-latest
+    env:
+      SIGN: ${{ secrets.CODESIGN_P12_BASE64 != '' && secrets.CODESIGN_P12_PASSWORD != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust targets
+        run: rustup target add x86_64-pc-windows-msvc aarch64-pc-windows-msvc
+      - name: Build x64
+        run: cargo build --release --locked -p desktop-mcp-cli --target x86_64-pc-windows-msvc
+      - name: Build arm64
+        run: cargo build --release --locked -p desktop-mcp-cli --target aarch64-pc-windows-msvc
+      - name: Sign the executables
+        if: env.SIGN == 'true'
+        shell: pwsh
+        env:
+          CODESIGN_P12_BASE64: ${{ secrets.CODESIGN_P12_BASE64 }}
+          CODESIGN_P12_PASSWORD: ${{ secrets.CODESIGN_P12_PASSWORD }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'codesign.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:CODESIGN_P12_BASE64))
+          try {
+              $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+                  Sort-Object { [version]$_.Directory.Parent.Name } | Select-Object -Last 1
+              & $signtool.FullName sign /fd sha256 /f $pfx /p $env:CODESIGN_P12_PASSWORD /tr http://timestamp.digicert.com /td sha256 `
+                  target\x86_64-pc-windows-msvc\release\desktop-mcp.exe target\aarch64-pc-windows-msvc\release\desktop-mcp.exe
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } finally {
+              Remove-Item -Force $pfx
+          }
+      - name: Bundle
+        shell: pwsh
+        run: |
+          ./scripts/build-mcpb.ps1 target\x86_64-pc-windows-msvc\release\desktop-mcp.exe -Arm64 target\aarch64-pc-windows-msvc\release\desktop-mcp.exe
+          $state = if ($env:SIGN -eq 'true') { 'signed with the CODESIGN certificate' } else { 'unsigned (no CODESIGN_P12_BASE64 / CODESIGN_P12_PASSWORD secrets)' }
+          "Windows executables: $state" >> $env:GITHUB_STEP_SUMMARY
+      - name: Signing report
+        shell: pwsh
+        run: |
+          # Kept in the log, the job summary and the artifact (dist/signing-windows.txt). A self-signed signature reads
+          # UnknownError here: the runner does not trust the certificate, but the signer and thumbprint are shown.
+          $lines = foreach ($exe in 'target\x86_64-pc-windows-msvc\release\desktop-mcp.exe', 'target\aarch64-pc-windows-msvc\release\desktop-mcp.exe', 'dist\desktop-mcp-windows.mcpb') {
+              $exe
+              "  sha256:    $((Get-FileHash -Algorithm SHA256 $exe).Hash.ToLowerInvariant())"
+              if ($exe.EndsWith('.exe')) {
+                  $signature = Get-AuthenticodeSignature $exe
+                  "  status:    $($signature.Status) ($($signature.StatusMessage))"
+                  "  signer:    $($signature.SignerCertificate.Subject) [$($signature.SignerCertificate.Thumbprint)]"
+                  "  timestamp: $($signature.TimeStamperCertificate.Subject)"
+              }
+          }
+          $lines | Tee-Object -FilePath dist\signing-windows.txt
+          @('```text') + $lines + @('```') >> $env:GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mcpb-windows
+          path: |
+            dist/desktop-mcp-windows.mcpb
+            dist/signing-windows.txt
+          if-no-files-found: error
+
+  macos:
+    name: macOS bundle
+    needs: version
+    runs-on: macos-14
+    env:
+      SIGN: ${{ secrets.CODESIGN_P12_BASE64 != '' && secrets.CODESIGN_P12_PASSWORD != '' }}
+      BINARY: target/universal/desktop-mcp
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Build arm64
+        run: cargo build --release --locked -p desktop-mcp-cli --target aarch64-apple-darwin
+      - name: Build x86_64
+        run: cargo build --release --locked -p desktop-mcp-cli --target x86_64-apple-darwin
+      - name: Universal binary
+        run: |
+          mkdir -p "$(dirname "$BINARY")"
+          lipo -create -output "$BINARY" target/aarch64-apple-darwin/release/desktop-mcp target/x86_64-apple-darwin/release/desktop-mcp
+          lipo -archs "$BINARY"
+      - name: Sign with the certificate
+        if: env.SIGN == 'true'
+        env:
+          CODESIGN_P12_BASE64: ${{ secrets.CODESIGN_P12_BASE64 }}
+          CODESIGN_P12_PASSWORD: ${{ secrets.CODESIGN_P12_PASSWORD }}
+          CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
+        run: |
+          keychain="$RUNNER_TEMP/codesign.keychain-db"
+          p12="$RUNNER_TEMP/codesign.p12"
+          cert="$RUNNER_TEMP/codesign.pem"
+          keychain_password=$(uuidgen)
+          trap 'security delete-keychain "$keychain" || true; rm -f "$p12" "$cert"' EXIT
+          echo "$CODESIGN_P12_BASE64" | base64 --decode > "$p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$p12" -k "$keychain" -P "$CODESIGN_P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          # Trusted for code signing on this runner only, so that the identity counts as valid.
+          security find-certificate -a -p "$keychain" > "$cert"
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain "$cert"
+          identity="${CODESIGN_IDENTITY:-$(security find-identity -v -p codesigning "$keychain" | awk '/^ *1\)/ { print $2; exit }')}"
+          if [[ -z "$identity" ]]; then echo "::error::No code-signing identity in the .p12"; exit 1; fi
+          codesign --force --options runtime --timestamp=none --entitlements scripts/desktop-mcp.entitlements \
+            --keychain "$keychain" -s "$identity" "$BINARY"
+          codesign --verify --strict --verbose=2 "$BINARY"
+          codesign --display --verbose=2 "$BINARY"
+          echo "macOS binary: signed with the CODESIGN certificate" >> "$GITHUB_STEP_SUMMARY"
+      - name: Sign ad hoc
+        if: env.SIGN != 'true'
+        run: |
+          codesign --force -s - "$BINARY"
+          echo "macOS binary: ad-hoc signed (no CODESIGN_P12_BASE64 / CODESIGN_P12_PASSWORD secrets)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Bundle
+        run: scripts/build-mcpb.sh "$BINARY"
+      - name: Signing report
+        run: |
+          # Kept in the log, the job summary and the artifact (dist/signing-macos.txt).
+          {
+            echo "$BINARY ($(lipo -archs "$BINARY"))"
+            echo "  sha256: $(shasum -a 256 "$BINARY" | cut -d' ' -f1)"
+            codesign --display --verbose=4 "$BINARY" 2>&1 | sed 's/^/  /'
+            codesign --verify --strict "$BINARY" 2>&1 && echo "  codesign --verify: ok" || echo "  codesign --verify: failed"
+            echo "dist/desktop-mcp-macos.mcpb"
+            echo "  sha256: $(shasum -a 256 dist/desktop-mcp-macos.mcpb | cut -d' ' -f1)"
+          } | tee dist/signing-macos.txt
+          { echo '```text'; cat dist/signing-macos.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mcpb-macos
+          path: |
+            dist/desktop-mcp-macos.mcpb
+            dist/signing-macos.txt
+          if-no-files-found: error
+
+  bundles:
+    name: Sign the bundles
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    env:
+      SIGN: ${{ secrets.CODESIGN_P12_BASE64 != '' && secrets.CODESIGN_P12_PASSWORD != '' }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mcpb-*
+          merge-multiple: true
+          path: dist
+      - name: Sign and verify
+        if: env.SIGN == 'true'
+        env:
+          CODESIGN_P12_BASE64: ${{ secrets.CODESIGN_P12_BASE64 }}
+          CODESIGN_P12_PASSWORD: ${{ secrets.CODESIGN_P12_PASSWORD }}
+        run: |
+          secrets_dir=$(mktemp -d)
+          trap 'rm -rf "$secrets_dir"' EXIT
+          echo "$CODESIGN_P12_BASE64" | base64 --decode > "$secrets_dir/codesign.p12"
+          openssl pkcs12 -in "$secrets_dir/codesign.p12" -passin env:CODESIGN_P12_PASSWORD -nokeys -clcerts | openssl x509 -out "$secrets_dir/cert.pem"
+          openssl pkcs12 -in "$secrets_dir/codesign.p12" -passin env:CODESIGN_P12_PASSWORD -nocerts -nodes | openssl pkey -out "$secrets_dir/key.pem"
+          # mcpb verify checks the chain against the system store (openssl verify -CApath /etc/ssl/certs): trust the
+          # self-signed certificate on this runner. The flags are those of `mcpb sign --help` 2.1.2; this step has
+          # not been run with the real certificate yet.
+          sudo cp "$secrets_dir/cert.pem" /usr/local/share/ca-certificates/desktop-mcp-codesign.crt
+          sudo update-ca-certificates
+          for bundle in dist/*.mcpb; do
+            npx -y @anthropic-ai/mcpb@2.1.2 sign "$bundle" --cert "$secrets_dir/cert.pem" --key "$secrets_dir/key.pem"
+            npx -y @anthropic-ai/mcpb@2.1.2 verify "$bundle"
+          done
+          echo "Bundles: signed with the CODESIGN certificate (self-signed)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Unsigned
+        if: env.SIGN != 'true'
+        run: echo "Bundles: unsigned (no CODESIGN_P12_BASE64 / CODESIGN_P12_PASSWORD secrets)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Signing report
+        run: |
+          # The signed bundles' report, beside the platform ones (signing-windows.txt, signing-macos.txt) in the
+          # artifact. mcpb verify fails on an unsigned bundle, which is reported, not an error here.
+          for bundle in dist/*.mcpb; do
+            echo "$bundle"
+            echo "  sha256: $(sha256sum "$bundle" | cut -d' ' -f1)"
+            npx -y @anthropic-ai/mcpb@2.1.2 verify "$bundle" 2>&1 | sed 's/^/  /' || true
+          done | tee dist/signing-bundles.txt
+          { echo '```text'; cat dist/signing-bundles.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-mcp-mcpb
+          path: |
+            dist/*.mcpb
+            dist/signing-*.txt
+          if-no-files-found: error
+
+  release:
+    name: GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: bundles
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-mcp-mcpb
+          path: dist
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "$GITHUB_REF_NAME" dist/desktop-mcp-windows.mcpb dist/desktop-mcp-macos.mcpb dist/signing-*.txt --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
