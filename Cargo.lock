@@ -359,8 +359,10 @@ dependencies = [
 name = "desktop-mcp-windows"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "desktop-mcp-core",
  "hyper",
+ "serde_json",
  "tokio",
  "windows",
  "windows-future",
