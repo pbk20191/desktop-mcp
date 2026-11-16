@@ -43,3 +43,22 @@ fn a_deeply_nested_page_parses_without_overflowing() {
     let html = desktop_mcp_windows::html::parse(page.as_bytes(), None).expect("parsed");
     assert_eq!(html.name, "html");
 }
+
+#[test]
+fn dropfiles_and_dib_wrapping() {
+    use desktop_mcp_windows::clipboard::{bmp_file, dropfiles};
+    // DROPFILES: 20-byte header (offset 20, wide), then NUL-separated UTF-16 paths and a final NUL.
+    let payload = dropfiles(&[std::path::PathBuf::from(r"C:\a.txt"), std::path::PathBuf::from(r"C:\한")]);
+    assert_eq!(&payload[..4], &20u32.to_le_bytes());
+    assert_eq!(&payload[16..20], &1u32.to_le_bytes());
+    let wide: Vec<u16> = payload[20..].chunks(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect();
+    assert_eq!(String::from_utf16(&wide).unwrap(), "C:\\a.txt\0C:\\한\0\0");
+    // A 32-bit BI_RGB DIB (40-byte header, no palette): the pixels start right after the 14-byte file header and it.
+    let mut dib = vec![0u8; 40 + 4];
+    dib[..4].copy_from_slice(&40u32.to_le_bytes());
+    dib[14..16].copy_from_slice(&32u16.to_le_bytes());
+    let bmp = bmp_file(&dib).unwrap();
+    assert_eq!(&bmp[..2], b"BM");
+    assert_eq!(&bmp[10..14], &54u32.to_le_bytes());
+    assert_eq!(bmp.len(), 14 + dib.len());
+}
