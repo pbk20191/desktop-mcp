@@ -1,6 +1,7 @@
 //! Bringing a window to the foreground despite the foreground lock, bounded (the C# port's sequence, from upstream
 //! Windows-MCP): skip a window that does not answer, restore it if minimized, `SetForegroundWindow`, and when that
-//! does not take, attach to the foreground and target threads for one more try. Blocking: call on the pool.
+//! does not take, attach to the foreground and target threads for one more try, and when that does not take either,
+//! send an input event of our own and try both once more. Blocking: call on the pool.
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Threading::GetCurrentThreadId;
@@ -39,9 +40,28 @@ pub fn bring(hwnd: isize) -> bool {
     if poll(window, Duration::from_millis(500)) {
         return true;
     }
+    if attached_attempt(window) && poll(window, Duration::from_millis(500)) {
+        return true;
+    }
+    // Windows lets only the process that sent the last input event take the foreground while another (a UWP app
+    // just activated) holds it. A press and release of an unassigned key makes that this process without acting on
+    // any window; not Alt, whose lone tap puts the focused window in menu or access-key mode.
+    if !crate::input::send_mask_tap() {
+        return false;
+    }
+    let _ = unsafe { SetForegroundWindow(window) };
+    if poll(window, Duration::from_millis(250)) {
+        return true;
+    }
+    attached_attempt(window) && poll(window, Duration::from_millis(250))
+}
+
+/// `SetForegroundWindow` with this thread's input attached to the foreground and target threads' (their input
+/// state shared, the foreground lock does not apply); false without trying when the foreground window does not
+/// answer, as it would block the attach.
+fn attached_attempt(window: HWND) -> bool {
     let current = unsafe { GetCurrentThreadId() };
     let foreground = unsafe { GetForegroundWindow() };
-    // A foreground window that does not answer would block the attach; leave it.
     if !foreground.is_invalid() && !crate::tree::answers(foreground.0 as isize) {
         return false;
     }
@@ -61,5 +81,5 @@ pub fn bring(hwnd: isize) -> bool {
     for thread in attached {
         let _ = unsafe { windows::Win32::System::Threading::AttachThreadInput(current, thread, false) };
     }
-    poll(window, Duration::from_secs(1))
+    true
 }

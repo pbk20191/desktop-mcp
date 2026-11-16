@@ -230,16 +230,17 @@ impl Desktop for WindowsDesktop {
     fn activate_app(&self, name: &str) -> Pending<bool> {
         let name = name.to_string();
         Box::pin(pool::offload(move || {
-            let windows = crate::windows_list::top_windows();
+            let windows = crate::windows_list::top_windows_for(&name);
             crate::windows_list::app_windows(&name, &windows).first().is_some_and(|window| crate::foreground::bring(window.hwnd))
         }))
     }
 
-    /// The processes with a window of the Start menu entry `name` names.
+    /// The processes with a window of the Start menu entry `name` names. A UWP frame not yet resolved to its app
+    /// gives ApplicationFrameHost.exe's process, which counts as running but which [`Self::terminate`] never targets.
     fn installed_app_pids(&self, name: &str) -> Pending<Vec<i32>> {
         let name = name.to_string();
         Box::pin(pool::offload(move || {
-            let windows = crate::windows_list::top_windows();
+            let windows = crate::windows_list::top_windows_for(&name);
             let mut pids: Vec<i32> = crate::apps::windows_of(&name, &windows).into_iter().map(|window| window.pid as i32).collect();
             pids.sort_unstable();
             pids.dedup();
@@ -382,9 +383,13 @@ impl Desktop for WindowsDesktop {
     fn find_element(&self, app: Option<&str>, title: Option<&str>, role: Option<&str>, deadline: std::time::Instant) -> Pending<Option<desktop_mcp_core::element::FoundElement>> {
         let (app, title, role) = (app.map(str::to_string), title.map(str::to_string), role.map(str::to_string));
         Box::pin(pool::offload(move || {
-            let windows = crate::windows_list::top_windows();
+            let windows = match &app {
+                Some(app) => crate::windows_list::top_windows_for(app),
+                None => crate::windows_list::top_windows(),
+            };
             let owner = match &app {
-                Some(app) => crate::windows_list::app_windows(app, &windows).first().map(|window| window.pid),
+                // Not by an unresolved UWP frame: its process frames every UWP app.
+                Some(app) => crate::windows_list::app_windows(app, &windows).into_iter().find(|window| !window.is_unresolved_frame()).map(|window| window.pid),
                 None => windows.iter().find(|window| window.focused).map(|window| window.pid),
             }?;
             let mut fallback = None;

@@ -161,6 +161,17 @@ pub fn inputs(event: &Event, screen: (i32, i32, i32, i32)) -> Vec<INPUT> {
 /// MenuMaskKey).
 const MASK_KEY: VIRTUAL_KEY = VIRTUAL_KEY(0xE8);
 
+/// A press and release of [`MASK_KEY`]: input no window acts on.
+fn mask_tap() -> [INPUT; 2] {
+    [key(MASK_KEY, false), key(MASK_KEY, true)]
+}
+
+/// Sends [`mask_tap`], which makes this process the one that sent the last input event; whether the system took it.
+pub fn send_mask_tap() -> bool {
+    let built = mask_tap();
+    (unsafe { SendInput(&built, size_of::<INPUT>() as i32) }) as usize == built.len()
+}
+
 /// Key-ups for the modifiers `held` reports down, and nothing for the others: a key-up for an Alt that is not down
 /// is a lone Alt tap, which puts the focused window in menu or access-key mode and turns the typed letters into
 /// commands. An Alt that is down is released behind the mask key for the same reason.
@@ -168,7 +179,7 @@ pub fn release_modifiers(held: impl Fn(VIRTUAL_KEY) -> bool) -> Vec<INPUT> {
     let mut built = Vec::new();
     for modifier in [VK_LCONTROL, VK_RCONTROL, VK_LSHIFT, VK_RSHIFT, VK_LMENU, VK_RMENU, VK_LWIN, VK_RWIN].into_iter().filter(|modifier| held(*modifier)) {
         if modifier == VK_LMENU || modifier == VK_RMENU {
-            built.extend([key(MASK_KEY, false), key(MASK_KEY, true)]);
+            built.extend(mask_tap());
         }
         built.push(key(modifier, true));
     }

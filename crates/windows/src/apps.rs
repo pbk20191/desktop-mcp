@@ -242,12 +242,12 @@ fn package_family(pid: u32) -> Option<String> {
     (read.is_ok() && length > 0).then(|| String::from_utf16_lossy(&buffer[..length as usize - 1]))
 }
 
-/// Name → what runs the entry it names, with when it was read: polling callers (Wait) read the Apps folder once a
-/// minute, not on every poll.
-static RESOLVED: Mutex<Option<HashMap<String, (Instant, Option<Runs>)>>> = Mutex::new(None);
+/// Name → the Start menu name of the entry it names and what runs it, with when it was read: polling callers (Wait)
+/// read the Apps folder once a minute, not on every poll.
+static RESOLVED: Mutex<Option<HashMap<String, (Instant, Option<(String, Option<Runs>)>)>>> = Mutex::new(None);
 const RESOLVED_FOR: Duration = Duration::from_secs(60);
 
-fn runs_named(name: &str) -> Option<Runs> {
+fn entry_named(name: &str) -> Option<(String, Option<Runs>)> {
     let key = name.trim().to_lowercase();
     if let Some((read, known)) = RESOLVED.lock().unwrap().get_or_insert_with(HashMap::new).get(&key) {
         if read.elapsed() < RESOLVED_FOR {
@@ -255,14 +255,24 @@ fn runs_named(name: &str) -> Option<Runs> {
         }
     }
     let entries = catalog();
-    let resolved = best_match(&entries, name).and_then(runs);
+    let resolved = best_match(&entries, name).map(|entry| (entry.name.clone(), runs(entry)));
     RESOLVED.lock().unwrap().get_or_insert_with(HashMap::new).insert(key, (Instant::now(), resolved.clone()));
     resolved
 }
 
+/// Whether a UWP frame not yet resolved to its app, titled `title`, is the Start menu entry named `entry`: a frame
+/// shows its app's display name ("계산기") until its core window attaches. Ignores case.
+pub fn frame_titled_as(title: &str, entry: &str) -> bool {
+    let title = title.trim();
+    !title.is_empty() && title.to_lowercase() == entry.trim().to_lowercase()
+}
+
 /// The windows of the Apps folder entry `name` names (as [`launch`] picks it), for a name no running app goes by:
-/// a Start menu name such as a localized one. Blocking (COM, on the pool).
+/// a Start menu name such as a localized one; an unresolved UWP frame by its title. Blocking (COM, on the pool).
 pub fn windows_of<'a>(name: &str, windows: &'a [TopWindow]) -> Vec<&'a TopWindow> {
-    let Some(runs) = runs_named(name) else { return Vec::new() };
-    windows.iter().filter(|window| runs.owns(window)).collect()
+    let Some((entry, runs)) = entry_named(name) else { return Vec::new() };
+    windows
+        .iter()
+        .filter(|window| if window.is_unresolved_frame() { frame_titled_as(&window.title, &entry) } else { runs.as_ref().is_some_and(|runs| runs.owns(window)) })
+        .collect()
 }

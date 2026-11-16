@@ -46,6 +46,12 @@ impl TopWindow {
         let stem = self.exe.strip_suffix(".exe").unwrap_or(&self.exe);
         [self.app.as_str(), self.exe.as_str(), stem].iter().any(|name| name.eq_ignore_ascii_case(app))
     }
+
+    /// Whether this is a UWP frame not yet resolved to the app it hosts: right after the app starts, its frame shows
+    /// before its core window attaches, and until then it is ApplicationFrameHost.exe's.
+    pub fn is_unresolved_frame(&self) -> bool {
+        self.exe.eq_ignore_ascii_case(FRAME_HOST)
+    }
 }
 
 unsafe extern "system" fn collect(hwnd: HWND, data: LPARAM) -> BOOL {
@@ -164,8 +170,8 @@ fn names(pid: u32) -> (String, String) {
 }
 
 /// The windows of the app `app` names, as every tool taking an app name matches it: a running app's name or
-/// executable, else (only when none goes by it) the Start menu entry it names, such as a localized name.
-/// Blocking (COM, on the pool).
+/// executable, else (only when none goes by it) the Start menu entry it names, such as a localized name (a UWP frame
+/// not yet resolved to its app by its title). Blocking (COM, on the pool).
 pub fn app_windows<'a>(app: &str, windows: &'a [TopWindow]) -> Vec<&'a TopWindow> {
     let named: Vec<&TopWindow> = windows.iter().filter(|window| window.is_app(app)).collect();
     if !named.is_empty() {
@@ -177,6 +183,24 @@ pub fn app_windows<'a>(app: &str, windows: &'a [TopWindow]) -> Vec<&'a TopWindow
 /// The applications' top-level windows in z-order (front first). Blocking: run it on the pool.
 pub fn top_windows() -> Vec<TopWindow> {
     windows_where(is_app_window)
+}
+
+/// How long [`top_windows_for`] waits for a just-started UWP app's frame to resolve.
+const UNRESOLVED_WAIT: Duration = Duration::from_secs(1);
+
+/// [`top_windows`], for an action on the app `app` names: while none of its windows is found other than an
+/// unresolved UWP frame (see [`TopWindow::is_unresolved_frame`]) and such a frame is listed, lists again every
+/// 100 ms for up to a second, so an app launched a moment ago is not answered as not found. Blocking.
+pub fn top_windows_for(app: &str) -> Vec<TopWindow> {
+    let deadline = Instant::now() + UNRESOLVED_WAIT;
+    loop {
+        let windows = top_windows();
+        let found = app_windows(app, &windows).iter().any(|window| !window.is_unresolved_frame());
+        if found || Instant::now() >= deadline || !windows.iter().any(TopWindow::is_unresolved_frame) {
+            return windows;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 /// Every shown top-level window with an area (dialogs, menus and popups too), in z-order. Blocking.
@@ -212,6 +236,8 @@ fn process_of(hwnd: HWND) -> u32 {
 const UWP_FRAME: &str = "ApplicationFrameWindow";
 /// The UWP app's own window, in the app's process.
 const UWP_CORE: &str = "Windows.UI.Core.CoreWindow";
+/// The process that draws every UWP frame.
+const FRAME_HOST: &str = "ApplicationFrameHost.exe";
 
 /// The process a UWP frame hosts, from the frame's children as (class, process): the one whose core window runs in
 /// another process than the frame's.
@@ -362,10 +388,9 @@ impl WindowSource for Win32Windows {
         Box::pin(async move {
             infos(
                 pool::offload(move || {
-                    let windows = top_windows();
                     match app {
-                        Some(app) => app_windows(&app, &windows).into_iter().cloned().collect(),
-                        None => windows,
+                        Some(app) => app_windows(&app, &top_windows_for(&app)).into_iter().cloned().collect(),
+                        None => top_windows(),
                     }
                 })
                 .await,
@@ -381,7 +406,7 @@ impl WindowSource for Win32Windows {
     }
     fn app_exists(&self, app: &str) -> Pending<bool> {
         let app = app.to_string();
-        Box::pin(pool::offload(move || !app_windows(&app, &top_windows()).is_empty()))
+        Box::pin(pool::offload(move || !app_windows(&app, &top_windows_for(&app)).is_empty()))
     }
     fn focus(&self, window: &WindowInfo) -> Pending<bool> {
         act(window, |hwnd| crate::foreground::bring(hwnd.0 as isize))
