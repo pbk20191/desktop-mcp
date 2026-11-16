@@ -13,9 +13,11 @@ use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_
 use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST};
 use windows::Win32::Storage::FileSystem::{GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW};
 use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
+use windows::Win32::Foundation::WPARAM;
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetClassNameW, GetForegroundWindow, GetWindow, GetWindowLongW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
-    IsWindowVisible, GWL_EXSTYLE, GW_OWNER, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+    IsWindow, IsWindowVisible, IsZoomed, PostMessageW, SetWindowPos, ShowWindow, ShowWindowAsync, GWL_EXSTYLE, GWL_STYLE, GW_OWNER, SWP_NOACTIVATE, SWP_NOZORDER, SW_MINIMIZE,
+    SW_RESTORE, WM_CLOSE, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW, WS_THICKFRAME,
 };
 
 type Pending<T> = Pin<Box<dyn Future<Output = T>>>;
@@ -173,6 +175,58 @@ pub fn top_windows() -> Vec<TopWindow> {
         .collect()
 }
 
+/// The listed window, if it still exists and still belongs to the listed process.
+fn find(window: &WindowInfo) -> Option<isize> {
+    // HWNDs are 32-bit significant and sign-extended.
+    let hwnd = HWND(window.number? as i32 as isize as *mut _);
+    if !unsafe { IsWindow(Some(hwnd)) }.as_bool() {
+        return None;
+    }
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    (pid as i32 == window.pid).then_some(hwnd.0 as isize)
+}
+
+/// Runs `action` on the window on the pool (calls into another process can block); false when it is gone.
+fn act(window: &WindowInfo, action: impl FnOnce(HWND) -> bool + Send + 'static) -> Pending<bool> {
+    let found = find(window);
+    Box::pin(async move {
+        match found {
+            Some(hwnd) => pool::offload(move || action(HWND(hwnd as *mut _))).await,
+            None => false,
+        }
+    })
+}
+
+/// Puts the window's visible frame at `frame`: its invisible resize borders (the window rectangle beyond the DWM
+/// frame) are added back. A window without a sizing border keeps its size.
+fn place(hwnd: HWND, frame: Frame) -> FrameResult {
+    let visible = window_frame(hwnd);
+    let mut outer = RECT::default();
+    let _ = unsafe { GetWindowRect(hwnd, &mut outer) };
+    let same_size = (visible.right - visible.left) as f64 == frame.width && (visible.bottom - visible.top) as f64 == frame.height;
+    let style = unsafe { GetWindowLongW(hwnd, GWL_STYLE) } as u32;
+    if !same_size && style & WS_THICKFRAME.0 == 0 {
+        return FrameResult::NotResizable;
+    }
+    if unsafe { IsZoomed(hwnd) }.as_bool() || unsafe { IsIconic(hwnd) }.as_bool() {
+        let _ = unsafe { ShowWindow(hwnd, SW_RESTORE) };
+    }
+    let (left, top) = (visible.left - outer.left, visible.top - outer.top);
+    let (right, bottom) = (outer.right - visible.right, outer.bottom - visible.bottom);
+    let x = frame.x as i32 - left;
+    let y = frame.y as i32 - top;
+    let width = frame.width as i32 + left + right;
+    let height = frame.height as i32 + top + bottom;
+    // Twice: a window moved to a display of another scale resizes itself on the way (WM_DPICHANGED).
+    for _ in 0..2 {
+        if unsafe { SetWindowPos(hwnd, None, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE) }.is_err() {
+            return FrameResult::Failed;
+        }
+    }
+    FrameResult::Done
+}
+
 /// As the core lists windows: each app's windows numbered in z-order.
 fn infos(windows: Vec<TopWindow>) -> Vec<WindowInfo> {
     let mut seen: HashMap<u32, usize> = HashMap::new();
@@ -207,24 +261,41 @@ impl WindowSource for Win32Windows {
         let app = app.to_string();
         Box::pin(async move { pool::offload(top_windows).await.iter().any(|window| window.is_app(&app)) })
     }
-    fn focus(&self, _window: &WindowInfo) -> Pending<bool> {
-        Box::pin(async { false })
+    fn focus(&self, window: &WindowInfo) -> Pending<bool> {
+        act(window, |hwnd| crate::foreground::bring(hwnd.0 as isize))
     }
-    fn set_minimized(&self, _window: &WindowInfo, _on: bool) -> Pending<bool> {
-        Box::pin(async { false })
+    fn set_minimized(&self, window: &WindowInfo, on: bool) -> Pending<bool> {
+        act(window, move |hwnd| {
+            let _ = unsafe { ShowWindowAsync(hwnd, if on { SW_MINIMIZE } else { SW_RESTORE }) };
+            true
+        })
     }
-    fn move_to(&self, _window: &WindowInfo, _x: f64, _y: f64) -> Pending<bool> {
-        Box::pin(async { false })
+    fn move_to(&self, window: &WindowInfo, x: f64, y: f64) -> Pending<bool> {
+        act(window, move |hwnd| {
+            let current = window_frame(hwnd);
+            let frame = Frame::new(x, y, (current.right - current.left) as f64, (current.bottom - current.top) as f64);
+            place(hwnd, frame) == FrameResult::Done
+        })
     }
-    fn resize(&self, _window: &WindowInfo, _width: f64, _height: f64) -> Pending<bool> {
-        Box::pin(async { false })
+    fn resize(&self, window: &WindowInfo, width: f64, height: f64) -> Pending<bool> {
+        act(window, move |hwnd| {
+            let current = window_frame(hwnd);
+            place(hwnd, Frame::new(current.left as f64, current.top as f64, width, height)) == FrameResult::Done
+        })
     }
-    fn close(&self, _window: &WindowInfo) -> Pending<bool> {
-        Box::pin(async { false })
+    fn close(&self, window: &WindowInfo) -> Pending<bool> {
+        act(window, |hwnd| unsafe { PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)) }.is_ok())
     }
-    fn set_frame(&self, _window: &WindowInfo, _frame: Frame) -> Pending<FrameResult> {
-        Box::pin(async { FrameResult::Failed })
+    fn set_frame(&self, window: &WindowInfo, frame: Frame) -> Pending<FrameResult> {
+        let found = find(window);
+        Box::pin(async move {
+            match found {
+                Some(hwnd) => pool::offload(move || place(HWND(hwnd as *mut _), frame)).await,
+                None => FrameResult::Failed,
+            }
+        })
     }
+    /// Windows has no full screen mode for arbitrary windows.
     fn set_full_screen(&self, _window: &WindowInfo, _on: bool) -> Pending<bool> {
         Box::pin(async { false })
     }

@@ -3,6 +3,7 @@
 pub mod clipboard;
 pub mod desktop;
 pub mod displays;
+pub mod foreground;
 pub mod html;
 pub mod imaging;
 pub mod input;
