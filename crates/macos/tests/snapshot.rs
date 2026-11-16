@@ -10,5 +10,5 @@ fn a_snapshot_lists_apps_and_elements() {
     }
     assert!(!state.tree.interactive.is_empty(), "the Dock and the menu bar always have elements");
     let text = state.tree.interactive_text();
-    assert!(text.starts_with("# id|window|control_type|name|coords|metadata\n0|"), "{text}");
+    assert!(text.starts_with("# id|control_type|name|coords|metadata") && text.contains("\n0|"), "{text}");
 }

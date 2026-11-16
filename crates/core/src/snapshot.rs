@@ -69,9 +69,11 @@ pub fn metadata_text(metadata: &[(String, Meta)]) -> String {
 }
 
 impl TreeNode {
+    /// `id|control_type|name|(x,y)`, then `|{metadata}` when there is any. The window is the `## ` line above.
     fn row(&self, index: usize) -> String {
         let (x, y) = self.bounding_box.center();
-        format!("{index}|{}|{}|{}|({x},{y})|{}", self.window_name, self.control_type, self.name, metadata_text(&self.metadata))
+        let row = format!("{index}|{}|{}|({x},{y})", self.control_type, self.name);
+        if self.metadata.is_empty() { row } else { format!("{row}|{}", metadata_text(&self.metadata)) }
     }
 }
 
@@ -82,23 +84,35 @@ pub struct TreeState {
     pub scrollable: Vec<TreeNode>,
 }
 
-const HEADER: &str = "# id|window|control_type|name|coords|metadata";
+const HEADER: &str = "# id|control_type|name|coords|metadata (when any), under the \"## window\" they are in";
+
+/// The header, then the rows numbered from `base`, with a `## window` line wherever the window changes: a window's
+/// title is printed once, not on every row.
+fn rows(nodes: &[TreeNode], base: usize) -> String {
+    if nodes.is_empty() {
+        return "No elements found".to_string();
+    }
+    let mut lines = vec![HEADER.to_string()];
+    let mut window = None;
+    for (i, node) in nodes.iter().enumerate() {
+        if window != Some(&node.window_name) {
+            window = Some(&node.window_name);
+            lines.push(format!("## {}", node.window_name));
+        }
+        lines.push(node.row(base + i));
+    }
+    lines.join("
+")
+}
 
 impl TreeState {
     pub fn interactive_text(&self) -> String {
-        if self.interactive.is_empty() {
-            return "No elements found".to_string();
-        }
-        std::iter::once(HEADER.to_string()).chain(self.interactive.iter().enumerate().map(|(i, node)| node.row(i))).collect::<Vec<_>>().join("\n")
+        rows(&self.interactive, 0)
     }
 
     /// Scrollable ids continue after the interactive ones, so every id in a snapshot is unique.
     pub fn scrollable_text(&self) -> String {
-        if self.scrollable.is_empty() {
-            return "No elements found".to_string();
-        }
-        let base = self.interactive.len();
-        std::iter::once(HEADER.to_string()).chain(self.scrollable.iter().enumerate().map(|(i, node)| node.row(base + i))).collect::<Vec<_>>().join("\n")
+        rows(&self.scrollable, self.interactive.len())
     }
 }
 
