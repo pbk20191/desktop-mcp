@@ -106,11 +106,12 @@ and wording of the tools that both systems have.
     shape stay the core's.
   - **macOS only (to `crates/macos`):** Desktop (Spaces/Mission Control), Menu, Open, Permissions, RunShortcut,
     Spotlight.
-  - **Windows only (`crates/windows`), from the C# port's set:** Registry, Process, FileSystem, MultiSelect,
+  - **Windows only (`crates/windows`), from the C# port's set:** Registry, Process, MultiSelect,
     MultiEdit, Screenshot, DisplayInventory. Their arguments follow the core's naming
     style; their behaviour follows `spec/windows/tools.json` and the C# implementation.
   - `ControlStatus` (with control, below).
-  - Not carried over: `PowerShell` (it is `Shell`), `WaitFor` (core `Wait` already waits for windows and
+  - Not carried over: `FileSystem` (**owner**: a file-system MCP server already covers it, macOS has none, and
+    `Shell` can do it), `PowerShell` (it is `Shell`), `WaitFor` (core `Wait` already waits for windows and
     elements).
 - Whether a tool is shared is decided by the schema shape, not by the name or the text: a tool is shared when one
   argument and result structure fits both systems, with the platform's text plugged in. The builder may move a tool
@@ -155,8 +156,9 @@ and wording of the tools that both systems have.
   cancellation on drop.
 - **Outbound (Scrape, `Desktop::connect`, `resolve`):** `StreamSocket.ConnectAsync` with `SocketProtectionLevel` TLS
   1.2+ for `tls == true`; `resolve` from `DatagramSocket.GetEndpointPairsAsync` or `GetAddrInfoExW`. The core's
-  SSRF checks on resolved addresses stay in core: the connect must use the address core approved, not resolve
-  again.
+  SSRF checks on resolved addresses stay in core. `Desktop::connect` takes the host name, as on macOS (TLS
+  validates against it), so the connect resolves again; that DNS-rebinding gap is shared with macOS and stays a
+  core-level follow-up, not a Windows one.
 - **HTTPS server:** `schannel` crate server credentials from `--ssl-certfile`/`--ssl-keyfile` (PEM, loaded into
   memory, never into a certificate store; if `schannel` needs a store, an in-memory store). The TLS stream wraps the
   TCP stream adapter. HTTP/1.1 only, as on macOS.
