@@ -138,15 +138,25 @@ snapshot with `UPDATE_SNAPSHOTS=1 cargo test -p desktop-mcp-core --test mcp snap
 
 ## Windows (`crates/windows`)
 
-In progress (`docs/superpowers/specs/2026-11-16-rust-port-windows-design.md`). It builds and serves:
+Working (`docs/superpowers/specs/2026-11-16-rust-port-windows-design.md`). Windows 11 22H2 or later. It serves:
 
 - `--transport stdio`, and `streamable-http` with the same rules as macOS (refused without a key or OAuth, off
   unless allowed); HTTPS through SChannel. SChannel cannot use a key that lives only in this process, so the key is
   stored in the user's key storage under `desktop-mcp-tls-<pid>-<random>` while the server runs and deleted after;
   a server that crashed leaves it until the next HTTPS start removes it. No `socket` transport and no `connect`.
-- `Shell` (PowerShell 7 when installed, else Windows PowerShell 5.1), `Scrape`, `Clipboard` (Win32, on the thread
-  pool), `Notification` (toasts under Windows PowerShell's app id), `Wait` for a duration. The desktop tools
-  (Snapshot, input, windows) and control come next.
+- The core's tools with Windows behind them: `Snapshot` (UI Automation, with `use_vision` an annotated capture),
+  `Click`, `Type`, `Scroll`, `Move`, `Shortcut` (`SendInput`; input toward an elevated window is refused), `App`
+  (Start menu apps), `Window` (with `displays`), `Wait` (durations, apps, windows, elements), `Shell` (PowerShell 7
+  when installed, else Windows PowerShell 5.1), `Scrape`, `Clipboard` (Win32, on the thread pool), `Notification`
+  (toasts under Windows PowerShell's app id), opt-in `OCR` (Windows.Media.Ocr).
+- Windows-only tools: `Screenshot` (Windows.Graphics.Capture, no UI tree), `MultiSelect`, `MultiEdit`.
+- Not ported: desktop control (the user's input is never blocked; stop the agent from the client), `FileSystem`,
+  `Registry` and `Process` (`Shell` does them in one PowerShell line).
+
+Its `tools/list` is pinned in `crates/cli/tests/snapshots/windows-tools.json`, checked against the real binary by
+`crates/cli/tests/windows_stdio.rs` (`UPDATE_SNAPSHOTS=1` rewrites it after review). For Claude Desktop,
+`powershell -ExecutionPolicy Bypass -File scriptsuild-mcpb.ps1` packs `targetelease\desktop-mcp.exe` into
+`dist\desktop-mcp.mcpb` (install it by opening the file, or from Settings > Extensions).
 
 How it runs: one message loop, on the main thread, with a `Windows.System.DispatcherQueue` that drives the guest
 tokio runtime (`crates/windows/src/main_loop.rs`); blocking work, timers, handle waits and child-process pipes

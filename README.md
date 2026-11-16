@@ -11,7 +11,7 @@ Only the command name, the config directory (`~/.desktop-mcp`) and the environme
 |---|---|---|---|
 | [`macos/`](macos/) + root `Package.swift` | [CursorTouch/MacOS-MCP](https://github.com/CursorTouch/MacOS-MCP) | working, 18 tools (plus opt-in `OCR`) | Swift 6 (SwiftPM) |
 | [`crates/`](crates/) + root `Cargo.toml` | the same, sharing its core with the Windows port | all tools (plus opt-in `OCR`); stdio, and HTTP only with authentication; no `install`/`connect` | Rust |
-| `windows/` | [CursorTouch/Windows-MCP](https://github.com/CursorTouch/Windows-MCP) | planned | Rust, on the core crate under `crates/` |
+| [`crates/windows`](crates/README.md#windows-crateswindows) | [CursorTouch/Windows-MCP](https://github.com/CursorTouch/Windows-MCP), with the core's tool arguments | working, 16 tools (plus opt-in `OCR`); stdio, HTTP and HTTPS; a Claude Desktop extension (`scripts/build-mcpb.ps1`) | Rust, on the core crate under `crates/` |
 | `linux/` | none upstream | idea | to be decided (Rust) |
 
 ## Layout
@@ -21,12 +21,12 @@ desktop-mcp/
   Package.swift     # the macOS port's SwiftPM manifest; targets point into macos/, so
   Package.resolved  # `swift build`, `swift test` and Xcode work from the repository root
   Cargo.toml        # the Rust ports' workspace
-  crates/           # core (no platform code), macos, cli, parity (black-box tests for any port's binary)
+  crates/           # core (no platform code), macos, windows, cli, parity (black-box tests for any port's binary)
   scripts/parity.sh # runs the parity suite against the Swift and the Rust binary
+  scripts/parity.ps1, scripts/build-mcpb.ps1  # the same on Windows; the Windows Claude Desktop extension
   spec/
     tools.json      # the tool contract every port must match (names, parameters, descriptions)
   macos/            # the Swift port: Sources, Tests, README, scripts/build-release.sh (output: macos/dist/)
-  windows/          # (planned)
   linux/            # (idea)
 ```
 
