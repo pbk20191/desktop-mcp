@@ -98,7 +98,7 @@ jobs:
   macos:
     name: macOS bundle
     needs: version
-    runs-on: macos-14
+    runs-on: macos-latest
     env:
       SIGN: ${{ secrets.CODESIGN_P12_BASE64 != '' && secrets.CODESIGN_P12_PASSWORD != '' }}
       BINARY: target/universal/desktop-mcp
