@@ -1,4 +1,4 @@
-//! The HTTP app: Streamable HTTP on hyper, as the Swift port serves it (macos/README.md, "Endpoints").
+//! The HTTP app: Streamable HTTP on hyper, as the Swift port serves it (its macos/README.md, "Endpoints", on branch archive/swift).
 //!
 //! `POST /mcp` is stateless by default: one JSON-RPC message, answered with `application/json` by a server
 //! made for that request alone, so ids from different clients never meet and nothing outlives the response.

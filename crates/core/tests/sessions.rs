@@ -1,4 +1,4 @@
-//! Opt-in sessions on `/mcp`, as the Swift port serves them (macos/README.md, "Endpoints").
+//! Opt-in sessions on `/mcp`, as the Swift port serves them (its macos/README.md, "Endpoints", on branch archive/swift).
 mod support;
 use desktop_mcp_core::guest::Tick;
 use desktop_mcp_core::http::handle;

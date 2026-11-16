@@ -1,7 +1,8 @@
 # desktop-mcp in Rust
 
-A port of the macOS server to Rust, built so that the Windows port can use the same core. It is in
-progress: the Swift port under [`macos/`](../macos/) is the one to use.
+The macOS and Windows servers, one core shared by both. They replace the earlier Swift (macOS) and C# (Windows)
+ports, which are kept on the branches `archive/swift` and `archive/csharp`. "The Swift port" below means that
+archived port, which this one was checked against.
 
 ## What works
 
@@ -89,7 +90,7 @@ Not ported: the `install`/`uninstall` (launchd agent) and `auth` commands. An ag
 the borrowing problem above, and a key stored in `config.toml` can be read by any program of this user; pass the
 HTTP key with `--auth-key` or `DESKTOP_MCP_AUTH_KEY` instead (for example `openssl rand -hex 32`). To use
 desktop-mcp, register `desktop-mcp serve --transport stdio` in the host's MCP settings, or build a Claude Desktop
-extension with `macos/scripts/build-mcpb.sh <binary>`.
+extension with `scripts/build-mcpb.sh [binary]` (default `target/release/desktop-mcp`; output `dist/desktop-mcp.mcpb`).
 
 Asking for permissions: `Permissions` with `request=true` asks macOS for missing Accessibility and Screen Recording
 (the system prompt, which also lists the binary on the settings page, then that page) and says what it did;
@@ -132,7 +133,7 @@ started by Claude Desktop must use the tool. A tool refused for a missing permis
 ```bash
 cargo build -p desktop-mcp-cli                           # → target/debug/desktop-mcp
 cargo test --workspace --exclude desktop-mcp-parity      # unit and integration tests
-scripts/parity.sh                                        # the parity suite, against the Swift and the Rust binary
+scripts/parity.sh                                        # the parity suite, against the release binary
 ```
 
 Tests under `crates/macos/tests` run on the main thread with their own small runner, because the

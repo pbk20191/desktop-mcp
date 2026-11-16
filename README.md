@@ -7,41 +7,38 @@ output format) and mirrors its CLI, config file format and HTTP behaviour, shipp
 Only the command name, the config directory (`~/.desktop-mcp`) and the environment variable prefix
 (`DESKTOP_MCP_*`) differ from upstream.
 
-| Port | Port of | Status | Language |
-|---|---|---|---|
-| [`macos/`](macos/) + root `Package.swift` | [CursorTouch/MacOS-MCP](https://github.com/CursorTouch/MacOS-MCP) | working, 18 tools (plus opt-in `OCR`) | Swift 6 (SwiftPM) |
-| [`crates/`](crates/) + root `Cargo.toml` | the same, sharing its core with the Windows port | all tools (plus opt-in `OCR`); stdio, and HTTP only with authentication; no `install`/`connect` | Rust |
-| [`crates/windows`](crates/README.md#windows-crateswindows) | [CursorTouch/Windows-MCP](https://github.com/CursorTouch/Windows-MCP), with the core's tool arguments | working, 16 tools (plus opt-in `OCR`); stdio, HTTP and HTTPS; a Claude Desktop extension (`scripts/build-mcpb.ps1`) | Rust, on the core crate under `crates/` |
-| `linux/` | none upstream | idea | to be decided (Rust) |
+| Platform | Port of | Status |
+|---|---|---|
+| macOS (`crates/macos`) | [CursorTouch/MacOS-MCP](https://github.com/CursorTouch/MacOS-MCP) | all tools (plus opt-in `OCR`); stdio, and HTTP only with authentication; a Claude Desktop extension (`scripts/build-mcpb.sh`) |
+| Windows (`crates/windows`) | [CursorTouch/Windows-MCP](https://github.com/CursorTouch/Windows-MCP), with the core's tool arguments | 16 tools (plus opt-in `OCR`); stdio, HTTP and HTTPS; a Claude Desktop extension (`scripts/build-mcpb.ps1`) |
+| Linux | none upstream | idea |
+
+Both are written in Rust on one shared core; see [`crates/README.md`](crates/README.md). The earlier ports are
+archived, no longer developed: Swift for macOS on branch `archive/swift`, C# for Windows on branch
+`archive/csharp`.
 
 ## Layout
 
 ```
 desktop-mcp/
-  Package.swift     # the macOS port's SwiftPM manifest; targets point into macos/, so
-  Package.resolved  # `swift build`, `swift test` and Xcode work from the repository root
-  Cargo.toml        # the Rust ports' workspace
-  crates/           # core (no platform code), macos, windows, cli, parity (black-box tests for any port's binary)
-  scripts/parity.sh # runs the parity suite against the Swift and the Rust binary
-  scripts/parity.ps1, scripts/build-mcpb.ps1  # the same on Windows; the Windows Claude Desktop extension
+  Cargo.toml        # the workspace
+  crates/           # core (no platform code), macos, windows, cli, parity (black-box tests for the binary)
+  scripts/          # parity.sh / parity.ps1 run the parity suite; build-mcpb.sh / build-mcpb.ps1 build the
+                    # Claude Desktop extension (output: dist/)
   spec/
-    tools.json      # the tool contract every port must match (names, parameters, descriptions)
-  macos/            # the Swift port: Sources, Tests, README, scripts/build-release.sh (output: macos/dist/)
-  linux/            # (idea)
+    tools.json      # the upstream tool contract the ports started from (names, parameters, descriptions)
+  docs/             # designs and plans
 ```
 
-Each port has its own README, build script, tests and release cadence. Release tags are prefixed
-with the port (`macos-v0.1.0`), since the upstream projects version independently.
+Release tags are prefixed with the platform (`macos-v0.1.0`), since the upstream projects version independently.
 
 ## The tool contract
 
-`spec/tools.json` is the single description of the tools: it is what `tools/list` must return,
-byte for byte apart from ordering. The macOS port generates it today and has a test that fails
-when its own `tools/list` drifts from it; every new port gets the same test. The Rust port is the
-exception: its SDK's macros write the tool schemas, so its `tools/list` is not compared with this
-file (it pins its own output with a snapshot test instead). Platform-specific
-behaviour (what a key name means, which windows can be switched to) belongs in each port's
-README, not in the contract.
+`spec/tools.json` describes the tools as the archived Swift port served them, from the upstream contract. The Rust
+ports' SDK macros write their own schemas, so `tools/list` is pinned by snapshot tests instead
+(`crates/core/tests/snapshots/tools.json`, `crates/cli/tests/snapshots/windows-tools.json`), and a platform may
+reword a shared tool for its system. Platform-specific behaviour (what a key name means, which windows can be
+switched to) is described in `crates/README.md`, not in the contract.
 
 Tools split into two groups, which matters for headless use:
 
@@ -57,9 +54,10 @@ Tools split into two groups, which matters for headless use:
 - No runtime dependencies. Build-time packages compiled into the binary are fine.
 - One root task per process; servers and signal handling are its children, and the
   process exits by returning, never by calling `exit()`.
-- System frameworks over hand-rolled parsers where the platform has them, and the official MCP SDK of
-  the port's language for the MCP protocol itself.
-- No thread pool of the server's own: threads belong to the system (libdispatch on macOS).
+- System frameworks over hand-rolled parsers where the platform has them, and the official Rust MCP SDK (rmcp) for
+  the MCP protocol itself.
+- No thread pool of the server's own: threads belong to the system (libdispatch on macOS, the thread pool on
+  Windows).
 - Telemetry is disabled: the upstream sends usage events to its own PostHog project, and this port sends nothing.
 
 ## License
