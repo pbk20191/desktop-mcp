@@ -2,4 +2,5 @@
 #![cfg(windows)]
 pub mod main_loop;
 pub mod pool;
+pub mod stdio;
 pub mod tuning;

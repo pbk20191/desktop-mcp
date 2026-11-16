@@ -20,3 +20,7 @@ harness = false
 [[test]]
 name = "pool"
 harness = false
+
+[[test]]
+name = "stdio"
+harness = false
