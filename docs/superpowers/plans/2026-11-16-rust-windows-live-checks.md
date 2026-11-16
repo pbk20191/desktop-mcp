@@ -34,3 +34,18 @@ the dev PC. Build: `cargo build -p desktop-mcp-cli` → `target\debug\desktop-mc
 - [ ] OAuth: `--oauth-client-id`/`--oauth-client-secret`, sign-in through the browser from the client.
 - [ ] `--host 0.0.0.0` (or a LAN address): the Windows Firewall prompt appears once; a LAN client with the key works.
 - [ ] Shell syntax error (`if (`): the result shows PowerShell's parser message and status 1.
+
+## W3
+
+- [ ] Snapshot over Notepad, Explorer, Edge (a long page), Settings, and an elevated window (Task Manager run as
+      admin): elements listed for the first four; the elevated one listed with no elements and no error.
+- [ ] Snapshot `use_vision`: the image's numbered boxes sit on the elements on a 100 % and a 150 % display; no
+      yellow capture border (or note that Windows shows one here).
+- [ ] Virtual desktops: windows on another desktop are absent; the "Virtual desktop: … (n of m)" line names the
+      current one, including a renamed desktop.
+- [ ] Window `list` and `displays` with two monitors at different scales: frames line up with what Snapshot reports.
+- [ ] Wait `until=window` (open Notepad after calling it) and `until=element` with `role=Button` and a title.
+- [ ] OCR (`--include-tools OCR`) on Korean and English text, with and without `region`; a language without an OCR
+      pack falls back to the user's languages.
+- [ ] Screenshot of each display, and of a region; the scale note is right when the image is downscaled.
+- [ ] A hung window (a debugger paused on an app): Snapshot still answers within a few seconds.
