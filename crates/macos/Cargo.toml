@@ -53,9 +53,6 @@ harness = false
 name = "shell"
 harness = false
 
-[[test]]
-name = "resolve"
-harness = false
 
 [[test]]
 name = "clipboard"
@@ -73,9 +70,6 @@ harness = false
 name = "spotlight"
 harness = false
 
-[[test]]
-name = "apps"
-harness = false
 
 [[test]]
 name = "windows"

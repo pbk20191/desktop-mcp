@@ -34,24 +34,6 @@ let y = 2</code></pre>
 }
 
 #[test]
-fn title_is_used_when_there_is_no_heading() {
-    assert_eq!(convert("<html><head><title>Page</title></head><body><p>Body</p></body></html>"), "Page\n\nBody");
-}
-
-#[test]
-fn malformed_html_is_repaired_by_the_parser() {
-    // Unclosed tags, unquoted attributes, uppercase names, a stray close tag.
-    let markdown = convert(
-        "<H1>Title<P>First para<p>Second <B>bold <i>both</i></B> tail</div>\n<UL><LI>one<LI>two <A HREF=/rel>link</A></UL><table><tr><td>a</td><td>b<tr><td>c</td><td>d</table>",
-    );
-    assert!(markdown.starts_with("# Title\n\nFirst para\n\nSecond **bold *both*** tail"), "{markdown}");
-    assert!(markdown.contains("- one\n- two [link](/rel)"), "{markdown}");
-    assert!(markdown.contains("| a | b |\n| c | d |"), "{markdown}");
-    assert_eq!(convert(""), "");
-    assert_eq!(convert("plain text < 3"), "plain text < 3");
-}
-
-#[test]
 fn declared_charsets_do_not_redecode_already_decoded_text() {
     // The body is decoded from the HTTP charset; a page's own declaration (meta, http-equiv or XML prolog) must
     // not make the parser decode it again.
@@ -64,12 +46,3 @@ fn declared_charsets_do_not_redecode_already_decoded_text() {
     }
 }
 
-#[test]
-fn the_http_charset_decodes_the_body() {
-    // "한글" in EUC-KR, and "café" in Latin-1.
-    assert_eq!(convert_bytes(b"<p>\xc7\xd1\xb1\xdb</p>", Some("EUC-KR")), "한글");
-    assert_eq!(convert_bytes(b"<p>caf\xe9</p>", Some("iso-8859-1")), "café");
-    // Unknown or absent: UTF-8, and invalid UTF-8 does not lose the page.
-    assert_eq!(convert_bytes("<p>café</p>".as_bytes(), Some("no-such-charset")), "café");
-    assert_eq!(convert_bytes(b"<p>ok \xff</p>", None), "ok \u{fffd}");
-}

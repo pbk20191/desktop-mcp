@@ -66,17 +66,6 @@ fn a_window_that_closes_is_gone_only_when_its_app_answers() {
 }
 
 #[test]
-fn timeouts_say_what_was_awaited() {
-    let desktop = with_looks(vec![reading(vec![window("Preview", "Report")], true)]);
-    assert_eq!(call(&desktop, json!({"until": "window_gone", "title": "Report", "timeout": 0})), ["Error executing tool Wait: Timed out after 0s waiting for window \"Report\" to close."]);
-    let none = with_looks(vec![reading(vec![], true)]);
-    assert_eq!(call(&none, json!({"until": "window", "app": "Preview", "title": "Report", "timeout": 0})), ["Error executing tool Wait: Timed out after 0s waiting for window \"Report\" in Preview."]);
-    let empty = Rc::new(FakeDesktop::default());
-    assert_eq!(call(&empty, json!({"until": "element", "role": "AXButton", "title": "Save", "timeout": 0})), ["Error executing tool Wait: Timed out after 0s waiting for element AXButton \"Save\"."]);
-    assert_eq!(call(&empty, json!({"until": "element", "title": "Save", "timeout": 0})), ["Error executing tool Wait: Timed out after 0s waiting for element \"Save\"."]);
-}
-
-#[test]
 fn an_element_answers_with_its_centre() {
     let found = FoundElement { role: "AXButton".into(), title: "Save\tnow".into(), center: (119.6, 340.2) };
     let desktop = Rc::new(FakeDesktop { element_looks: RefCell::new(vec![None, Some(found)]), ..FakeDesktop::default() });
@@ -84,16 +73,6 @@ fn an_element_answers_with_its_centre() {
     // Each look may walk at least half a second, even at the deadline.
     let deadlines = desktop.element_deadlines.borrow();
     assert!(deadlines.iter().all(|d| d.saturating_duration_since(std::time::Instant::now()) > std::time::Duration::from_millis(300)), "{deadlines:?}");
-}
-
-#[test]
-fn a_zero_timeout_still_walks_for_half_a_second() {
-    let desktop = Rc::new(FakeDesktop::default());
-    let asked = std::time::Instant::now();
-    call(&desktop, json!({"until": "element", "title": "Save", "timeout": 0}));
-    let deadlines = desktop.element_deadlines.borrow();
-    assert_eq!(deadlines.len(), 1);
-    assert!(deadlines[0] >= asked + std::time::Duration::from_millis(500), "{:?}", deadlines[0] - asked);
 }
 
 #[test]

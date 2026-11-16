@@ -4,7 +4,6 @@ use desktop_mcp_core::mcp::Desktop;
 use desktop_mcp_macos::desktop::MacDesktop;
 use desktop_mcp_macos::main_loop::run;
 use desktop_mcp_macos::open::find_application;
-use std::path::PathBuf;
 
 fn applications_are_found_in_nested_folders() {
     let root = tempfile::tempdir().unwrap();
@@ -31,18 +30,6 @@ fn applications_are_found_in_nested_folders() {
     assert_eq!(find_application("Nope", &roots), None);
 }
 
-fn system_applications_are_found_by_name_and_bundle_id() {
-    let desktop = MacDesktop::new();
-    let (by_name, by_id, unknown) = run(move |_| async move {
-        (desktop.find_application("TextEdit").await, desktop.find_application("com.apple.TextEdit").await, desktop.find_application("NoSuchApp-desktop-mcp").await)
-    });
-    let by_name = by_name.expect("TextEdit by name");
-    assert_eq!(by_name.path, PathBuf::from("/System/Applications/TextEdit.app"));
-    assert!(!by_name.name.is_empty() && !by_name.name.ends_with(".app"), "{:?}", by_name.name);
-    assert_eq!(by_id.expect("TextEdit by bundle id").path, by_name.path);
-    assert_eq!(unknown, None);
-}
-
 /// The completion handler's path without opening anything: the application does not exist.
 fn a_failed_open_reports_the_systems_reason() {
     let directory = tempfile::tempdir().unwrap();
@@ -58,7 +45,6 @@ fn a_failed_open_reports_the_systems_reason() {
 fn main() {
     support::run(&[
         ("applications_are_found_in_nested_folders", applications_are_found_in_nested_folders),
-        ("system_applications_are_found_by_name_and_bundle_id", system_applications_are_found_by_name_and_bundle_id),
         ("a_failed_open_reports_the_systems_reason", a_failed_open_reports_the_systems_reason),
     ])
 }

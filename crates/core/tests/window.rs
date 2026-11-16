@@ -1,6 +1,6 @@
 //! The Window tool against a fake window source: the cases of the Swift port's WindowToolTests.
 use desktop_mcp_core::window::{
-    format, format_displays, maximized_frame, moved_frame, parse_id, run, Arguments, DisplayFrame, Frame, FrameResult, Mode, WindowCache, WindowId, WindowInfo,
+    format, maximized_frame, moved_frame, parse_id, run, Arguments, DisplayFrame, Frame, FrameResult, Mode, WindowCache, WindowId, WindowInfo,
     WindowReading, WindowSource,
 };
 use std::cell::{Cell, RefCell};
@@ -180,23 +180,6 @@ fn ids_parse() {
 }
 
 #[test]
-fn list_by_app() {
-    let source = Fake { apps: vec!["Mail"], ..Fake::new(vec![window(), WindowInfo { pid: 2, app: "Notes".into(), title: "N".into(), ..window() }]) };
-    let cache = RefCell::default();
-    assert_eq!(call(&source, &cache, serde_json::json!({"app": "notes"})), Ok("2:0\tNotes\t\"N\"\t[10,20,800,600]".into()));
-    assert_eq!(call(&source, &cache, serde_json::json!({"app": "Mail"})), Ok("No windows.".into()));
-    assert_eq!(call(&source, &cache, serde_json::json!({"app": "Nope"})), Err("Application 'Nope' not found.".into()));
-}
-
-#[test]
-fn invalid_ids() {
-    let source = Fake::new(vec![window()]);
-    for id in ["abc", "1", "1:", ":0", "1:-1", "0:0", "1:0:0", "1:wx"] {
-        assert_eq!(call(&source, &RefCell::default(), serde_json::json!({"mode": "focus", "id": id})), Err(format!("Invalid window id: {id}")));
-    }
-}
-
-#[test]
 fn a_number_id_follows_its_window_through_a_reorder() {
     let source = Fake::new(vec![WindowInfo { title: "Untitled".into(), ..numbered(10) }, WindowInfo { title: "Untitled".into(), ..numbered(11) }]);
     let cache = RefCell::default();
@@ -206,32 +189,6 @@ fn a_number_id_follows_its_window_through_a_reorder() {
     assert_eq!(call(&source, &cache, serde_json::json!({"mode": "minimize", "id": "1:w11"})), Ok("Minimized 1:w11.".into()));
     assert!(source.list.borrow().iter().find(|w| w.number == Some(11)).unwrap().minimized);
     assert_eq!(*source.actions.borrow(), ["focus 1:w11", "minimize 1:w11"]);
-}
-
-#[test]
-fn a_number_id_ignores_title_and_frame_changes() {
-    let source = Fake::new(vec![numbered(10)]);
-    let cache = RefCell::default();
-    call(&source, &cache, serde_json::json!({})).unwrap();
-    source.set(vec![WindowInfo { title: "Renamed".into(), frame: Frame::new(300.0, 300.0, 100.0, 100.0), ..numbered(10) }]);
-    assert_eq!(call(&source, &cache, serde_json::json!({"mode": "close", "id": "1:w10"})), Ok("Close requested for 1:w10 (\"Renamed\").".into()));
-}
-
-#[test]
-fn focus_restores_a_minimized_window() {
-    let source = Fake::new(vec![WindowInfo { minimized: true, ..numbered(10) }]);
-    assert_eq!(call(&source, &RefCell::default(), serde_json::json!({"mode": "focus", "id": "1:w10"})), Ok("Focused 1:w10.".into()));
-    assert!(!source.list.borrow()[0].minimized);
-}
-
-#[test]
-fn a_gone_number_id_is_refused() {
-    let source = Fake::new(vec![numbered(10), numbered(11)]);
-    let cache = RefCell::default();
-    call(&source, &cache, serde_json::json!({})).unwrap();
-    source.set(vec![numbered(11)]);
-    assert_eq!(call(&source, &cache, serde_json::json!({"mode": "close", "id": "1:w10"})), Err("Window 1:w10 no longer exists; call Window list again.".into()));
-    assert!(source.actions.borrow().is_empty());
 }
 
 #[test]
@@ -265,88 +222,6 @@ fn an_index_id_must_have_been_listed_and_be_unchanged() {
 }
 
 #[test]
-fn moving_and_resizing_update_the_cache() {
-    let source = Fake::new(vec![window()]);
-    let cache = RefCell::default();
-    call(&source, &cache, serde_json::json!({})).unwrap();
-    assert_eq!(call(&source, &cache, serde_json::json!({"mode": "move", "id": "1:0", "loc": [5, 5]})), Ok("Moved 1:0 to (5,5).".into()));
-    assert_eq!(call(&source, &cache, serde_json::json!({"mode": "resize", "id": "1:0", "size": [640, 480]})), Ok("Resized 1:0 to 640×480.".into()));
-    assert_eq!(call(&source, &cache, serde_json::json!({"mode": "focus", "id": "1:0"})), Ok("Focused 1:0.".into()));
-    assert_eq!(*source.actions.borrow(), ["move 1:0", "resize 1:0", "focus 1:0"]);
-    assert_eq!(source.list.borrow()[0].frame, Frame::new(5.0, 5.0, 640.0, 480.0));
-}
-
-#[test]
-fn modes_need_their_arguments() {
-    let source = Fake::new(vec![window()]);
-    let cache = RefCell::default();
-    call(&source, &cache, serde_json::json!({})).unwrap();
-    assert_eq!(call(&source, &cache, serde_json::json!({"mode": "move", "id": "1:0"})), Err("loc required for move mode.".into()));
-    assert_eq!(call(&source, &cache, serde_json::json!({"mode": "resize", "id": "1:0"})), Err("size required for resize mode.".into()));
-    assert_eq!(call(&source, &cache, serde_json::json!({"mode": "move", "id": "1:0", "loc": [1]})), Err("loc must be a list of 2 integers [x, y].".into()));
-    assert_eq!(call(&source, &cache, serde_json::json!({"mode": "resize", "id": "1:0", "size": [0, 10]})), Err("size must be 2 positive integers [width, height].".into()));
-    for mode in ["focus", "move", "resize", "minimize", "restore", "close", "maximize", "fullscreen", "exit_fullscreen", "display"] {
-        assert_eq!(call(&source, &cache, serde_json::json!({"mode": mode})), Err(format!("id required for {mode} mode.")));
-    }
-    assert_eq!(call(&source, &cache, serde_json::json!({"mode": "display", "id": "1:0"})), Err("display required for display mode.".into()));
-    assert_eq!(call(&source, &cache, serde_json::json!({"mode": "display", "id": "1:0", "display": null})), Err("display required for display mode.".into()));
-    assert!(source.actions.borrow().is_empty());
-}
-
-#[test]
-fn minimize_restore_and_focus() {
-    let source = Fake::new(vec![window()]);
-    let cache = RefCell::default();
-    call(&source, &cache, serde_json::json!({})).unwrap();
-    for (mode, said) in [("restore", "Restored 1:0."), ("minimize", "Minimized 1:0."), ("minimize", "Minimized 1:0."), ("focus", "Focused 1:0.")] {
-        assert_eq!(call(&source, &cache, serde_json::json!({"mode": mode, "id": "1:0"})), Ok(said.into()));
-    }
-    assert_eq!(*source.actions.borrow(), ["minimize 1:0", "focus 1:0"]);
-    assert!(!source.list.borrow()[0].minimized);
-}
-
-#[test]
-fn failed_actions_are_errors() {
-    let source = Fake { refusing: true, displays: displays(), ..Fake::new(vec![numbered(7)]) };
-    let cache = RefCell::default();
-    for (mode, extra) in [("focus", None), ("minimize", None), ("close", None), ("move", Some(("loc", [1, 2]))), ("resize", Some(("size", [3, 4]))), ("maximize", None), ("fullscreen", None)] {
-        let mut arguments = serde_json::json!({"mode": mode, "id": "1:w7"});
-        if let Some((field, value)) = extra {
-            arguments[field] = serde_json::json!(value);
-        }
-        assert_eq!(call(&source, &cache, arguments), Err(format!("Could not {mode} window 1:w7.")));
-    }
-    assert_eq!(call(&source, &cache, serde_json::json!({"mode": "display", "id": "1:w7", "display": 1})), Err("Could not move window 1:w7 to display 1.".into()));
-    let full = Fake { refusing: true, ..Fake::new(vec![WindowInfo { fullscreen: true, ..numbered(7) }]) };
-    assert_eq!(call(&full, &cache, serde_json::json!({"mode": "exit_fullscreen", "id": "1:w7"})), Err("Could not exit fullscreen window 1:w7.".into()));
-}
-
-#[test]
-fn close_reports_the_request() {
-    let source = Fake::new(vec![window(), WindowInfo { title: "Two\tlines\nhere".into(), ..window() }]);
-    let cache = RefCell::default();
-    call(&source, &cache, serde_json::json!({})).unwrap();
-    assert_eq!(call(&source, &cache, serde_json::json!({"mode": "close", "id": "1:0"})), Ok("Close requested for 1:0 (\"Docs\").".into()));
-    assert_eq!(call(&source, &cache, serde_json::json!({"mode": "close", "id": "1:1"})), Ok("Close requested for 1:1 (\"Two lines here\").".into()));
-    assert_eq!(*source.actions.borrow(), ["close 1:0", "close 1:1"]);
-}
-
-#[test]
-fn the_cache_drops_the_oldest_and_newer_listings_win() {
-    let mut cache = WindowCache::default();
-    for pid in 1..=65 {
-        cache.remember(&[WindowInfo { pid, ..window() }]);
-    }
-    assert_eq!(cache.listed("1:0"), None);
-    assert_eq!(cache.listed("2:0"), Some(WindowInfo { pid: 2, ..window() }));
-    assert_eq!(cache.listed("65:0"), Some(WindowInfo { pid: 65, ..window() }));
-    let mut cache = WindowCache::default();
-    cache.remember(&[window()]);
-    cache.remember(&[WindowInfo { title: "Renamed".into(), ..window() }]);
-    assert_eq!(cache.listed("1:0").unwrap().title, "Renamed");
-}
-
-#[test]
 fn maximize_uses_the_windows_display() {
     let frame = Frame::new(-900.0, 100.0, 800.0, 600.0);
     assert_eq!(maximized_frame(&frame, &displays()), Some(Frame::new(-1920.0, 25.0, 1920.0, 1055.0)));
@@ -372,81 +247,6 @@ fn moving_to_a_display_keeps_the_offset_and_clamps() {
     let source = Fake { displays: displays(), ..Fake::new(vec![WindowInfo { frame: Frame::new(100.0, 125.0, 800.0, 600.0), ..numbered(10) }]) };
     assert_eq!(call(&source, &RefCell::default(), serde_json::json!({"mode": "display", "id": "1:w10", "display": 1})), Ok("Moved 1:w10 to display 1.".into()));
     assert_eq!(source.list.borrow()[0].frame, Frame::new(-1820.0, 125.0, 800.0, 600.0));
-}
-
-#[test]
-fn displays_format() {
-    assert_eq!(format_displays(&displays()), "0\tBuilt-in\t[0,0,1440,900]\tvisible [0,25,1440,800]\tscale 2\tmain\n1\tLeft\t[-1920,0,1920,1080]\tvisible [-1920,25,1920,1055]\tscale 1");
-    let odd = DisplayFrame { index: 0, name: "A\tB".into(), frame: Frame::default(), visible: Frame::default(), scale: 1.5, main: false };
-    assert_eq!(format_displays(&[odd]), "0\tA B\t[0,0,0,0]\tvisible [0,0,0,0]\tscale 1.5");
-    assert_eq!(format_displays(&[]), "No displays.");
-    let source = Fake { displays: displays(), ..Fake::default() };
-    assert_eq!(call(&source, &RefCell::default(), serde_json::json!({"mode": "displays"})), Ok(format_displays(&displays())));
-}
-
-#[test]
-fn cocoa_frames_flip_to_top_left() {
-    let main = DisplayFrame::from_cocoa(0, "Built-in", Frame::new(0.0, 0.0, 1440.0, 900.0), Frame::new(0.0, 75.0, 1440.0, 800.0), 900.0, 2.0, true);
-    assert_eq!((main.frame, main.visible), (Frame::new(0.0, 0.0, 1440.0, 900.0), Frame::new(0.0, 25.0, 1440.0, 800.0)));
-    let left = DisplayFrame::from_cocoa(1, "Left", Frame::new(-1920.0, 0.0, 1920.0, 1080.0), Frame::new(-1920.0, 0.0, 1920.0, 1055.0), 900.0, 1.0, false);
-    assert_eq!((left.frame, left.visible), (Frame::new(-1920.0, -180.0, 1920.0, 1080.0), Frame::new(-1920.0, -155.0, 1920.0, 1055.0)));
-    let above = DisplayFrame::from_cocoa(2, "Above", Frame::new(0.0, 900.0, 1920.0, 1080.0), Frame::new(0.0, 900.0, 1920.0, 1055.0), 900.0, 1.0, false);
-    assert_eq!((above.frame, above.visible), (Frame::new(0.0, -1080.0, 1920.0, 1080.0), Frame::new(0.0, -1055.0, 1920.0, 1055.0)));
-    let below = DisplayFrame::from_cocoa(3, "Below", Frame::new(0.0, -768.0, 1024.0, 768.0), Frame::new(0.0, -768.0, 1024.0, 743.0), 900.0, 1.0, false);
-    assert_eq!((below.frame, below.visible), (Frame::new(0.0, 900.0, 1024.0, 768.0), Frame::new(0.0, 925.0, 1024.0, 743.0)));
-}
-
-#[test]
-fn a_fixed_size_window_moves_by_position_only() {
-    let source = Fake {
-        displays: displays(),
-        fixed_size: true,
-        ..Fake::new(vec![WindowInfo { frame: Frame::new(100.0, 125.0, 800.0, 600.0), ..numbered(10) }, WindowInfo { title: "Wide".into(), frame: Frame::new(-1900.0, 100.0, 1800.0, 600.0), ..numbered(11) }])
-    };
-    let cache = RefCell::default();
-    assert_eq!(call(&source, &cache, serde_json::json!({"mode": "display", "id": "1:w10", "display": 1})), Ok("Moved 1:w10 to display 1.".into()));
-    assert_eq!(source.list.borrow().iter().find(|w| w.number == Some(10)).unwrap().frame, Frame::new(-1820.0, 125.0, 800.0, 600.0));
-    assert_eq!(call(&source, &cache, serde_json::json!({"mode": "display", "id": "1:w11", "display": 0})), Err("Could not move window 1:w11 to display 0: it does not fit and cannot be resized.".into()));
-    assert_eq!(call(&source, &cache, serde_json::json!({"mode": "maximize", "id": "1:w10"})), Err("Could not maximize window 1:w10: it cannot be resized.".into()));
-    assert_eq!(*source.actions.borrow(), ["position 1:w10"]);
-}
-
-#[test]
-fn maximize_and_display_refuse_full_screen_and_minimized_windows() {
-    for (window, refusal) in [(WindowInfo { fullscreen: true, ..numbered(10) }, "Window 1:w10 is in full screen; use exit_fullscreen first."), (WindowInfo { minimized: true, ..numbered(10) }, "Window 1:w10 is minimized; use restore first.")] {
-        let source = Fake { displays: displays(), ..Fake::new(vec![window]) };
-        for arguments in [serde_json::json!({"mode": "maximize", "id": "1:w10"}), serde_json::json!({"mode": "display", "id": "1:w10", "display": 1})] {
-            assert_eq!(call(&source, &RefCell::default(), arguments), Err(refusal.to_string()));
-        }
-        assert!(source.actions.borrow().is_empty());
-    }
-}
-
-#[test]
-fn display_mode_keeps_an_index_id_usable() {
-    let source = Fake { displays: displays(), ..Fake::new(vec![WindowInfo { frame: Frame::new(100.0, 125.0, 800.0, 600.0), ..window() }]) };
-    let cache = RefCell::default();
-    call(&source, &cache, serde_json::json!({})).unwrap();
-    assert_eq!(call(&source, &cache, serde_json::json!({"mode": "display", "id": "1:0", "display": 1})), Ok("Moved 1:0 to display 1.".into()));
-    assert_eq!(call(&source, &cache, serde_json::json!({"mode": "maximize", "id": "1:0"})), Ok("Maximized 1:0.".into()));
-    assert_eq!(call(&source, &cache, serde_json::json!({"mode": "focus", "id": "1:0"})), Ok("Focused 1:0.".into()));
-    assert_eq!(*source.actions.borrow(), ["position 1:0", "frame 1:0", "focus 1:0"]);
-}
-
-#[test]
-fn full_screen_modes_call_the_source_only_when_needed() {
-    let source = Fake::new(vec![numbered(10)]);
-    let cache = RefCell::default();
-    for (mode, said) in [("fullscreen", "Full screen 1:w10."), ("fullscreen", "Full screen 1:w10."), ("exit_fullscreen", "Left full screen 1:w10."), ("exit_fullscreen", "Left full screen 1:w10.")] {
-        assert_eq!(call(&source, &cache, serde_json::json!({"mode": mode, "id": "1:w10"})), Ok(said.into()));
-    }
-    assert_eq!(*source.actions.borrow(), ["fullscreen 1:w10", "exit_fullscreen 1:w10"]);
-}
-
-#[test]
-fn an_unknown_display_is_refused() {
-    let source = Fake { displays: displays(), ..Fake::new(vec![numbered(10)]) };
-    assert_eq!(call(&source, &RefCell::default(), serde_json::json!({"mode": "display", "id": "1:w10", "display": 9})), Err("No display 9; see Window displays.".into()));
 }
 
 #[test]

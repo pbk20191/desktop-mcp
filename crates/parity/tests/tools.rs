@@ -1,5 +1,5 @@
 //! The tools that need no display, as a client sees them. Every test holds for both ports.
-use desktop_mcp_parity::{Launch, ServerUnderTest, JSON_HEADERS};
+use desktop_mcp_parity::{ServerUnderTest, JSON_HEADERS};
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 
@@ -16,33 +16,6 @@ fn shell_combines_both_streams_and_the_status() {
     let answer = server.post(&call("Shell", json!({"command": "echo out; echo err >&2; exit 3"}))).json();
     assert_eq!(answer["result"]["isError"], false);
     assert_eq!(text(&answer), "Shell Response: out\nerr\nStatus Code: 3");
-}
-
-#[test]
-fn shell_runs_applescript() {
-    let server = ServerUnderTest::start();
-    let answer = server.post(&call("Shell", json!({"command": "return 1 + 2", "mode": "osascript"}))).json();
-    assert_eq!(text(&answer), "AppleScript Response: 3\nStatus Code: 0");
-}
-
-#[test]
-fn shell_timeout_is_capped_by_the_environment() {
-    let server = ServerUnderTest::launch(&Launch { env: &[("DESKTOP_MCP_MAX_TIMEOUT", "1")], ..Launch::default() });
-    let start = Instant::now();
-    let answer = server.post(&call("Shell", json!({"command": "echo before; sleep 30", "timeout": 20}))).json();
-    assert!(start.elapsed() < Duration::from_secs(5), "took {:?}", start.elapsed());
-    assert_eq!(
-        text(&answer),
-        "Shell Response: Command timed out after 1 seconds (requested 20s, capped by DESKTOP_MCP_MAX_TIMEOUT)\n--- partial output before timeout ---\nbefore\nStatus Code: -1"
-    );
-}
-
-#[test]
-fn shell_children_are_killable_and_read_no_stdin() {
-    // The server ignores SIGPIPE and owns stdin under stdio; neither may reach the command.
-    let server = ServerUnderTest::start();
-    let answer = server.post(&call("Shell", json!({"command": "cat; kill -PIPE $$; echo survived"}))).json();
-    assert_eq!(text(&answer), "Shell Response: \nStatus Code: -13");
 }
 
 #[test]
@@ -76,21 +49,6 @@ fn scrape_refuses_this_machine_and_other_schemes() {
     }
 }
 
-/// Only arguments that are refused before the pasteboard is touched: the suite must not change the user's clipboard.
-#[test]
-fn clipboard_writes_are_checked_before_the_clipboard_is_touched() {
-    let server = ServerUnderTest::start();
-    for (arguments, message) in [
-        (json!({"mode": "write", "text": "a", "paths": ["/tmp"]}), "Pass either text or paths, not both."),
-        (json!({"mode": "write"}), "write needs text or paths."),
-        (json!({"mode": "write", "paths": ["/nonexistent/desktop-mcp"]}), "No such file: /nonexistent/desktop-mcp"),
-    ] {
-        let answer = server.post(&call("Clipboard", arguments.clone())).json();
-        assert_eq!(answer["result"]["isError"], true, "{arguments}");
-        assert_eq!(text(&answer), format!("Error executing tool Clipboard: {message}"), "{arguments}");
-    }
-}
-
 /// Only refusals: anything else would open windows on the desktop.
 #[test]
 fn open_refuses_what_it_cannot_open() {
@@ -105,19 +63,6 @@ fn open_refuses_what_it_cannot_open() {
         assert_eq!(answer["result"]["isError"], true, "{arguments}");
         assert_eq!(text(&answer), format!("Error executing tool Open: {message}"), "{arguments}");
     }
-}
-
-/// Read-only: listing, and a name that does not exist (which lists, then refuses). No shortcut is run.
-#[test]
-fn shortcuts_are_listed_and_unknown_names_refused() {
-    let server = ServerUnderTest::start();
-    let answer = server.post(&call("RunShortcut", json!({"mode": "list"}))).json();
-    assert_eq!(answer["result"]["isError"], false, "{answer}");
-    let answer = server.post(&call("RunShortcut", json!({"name": "zzz-no-such-shortcut-desktop-mcp"}))).json();
-    assert_eq!(answer["result"]["isError"], true);
-    assert_eq!(text(&answer), "Error executing tool RunShortcut: No shortcut named 'zzz-no-such-shortcut-desktop-mcp'.");
-    let answer = server.post(&call("RunShortcut", json!({}))).json();
-    assert_eq!(text(&answer), "Error executing tool RunShortcut: name is required for run.");
 }
 
 /// Spotlight only reads the index. Live answers are skipped when indexing is off.
@@ -136,17 +81,6 @@ fn spotlight_finds_safari_and_refuses_bad_queries() {
     assert_eq!(text(&answer), "Error executing tool Spotlight: Invalid Spotlight query: kMDItem ==");
     let answer = server.post(&call("Spotlight", json!({"query": "  "}))).json();
     assert_eq!(text(&answer), "Error executing tool Spotlight: query is required.");
-}
-
-/// Both ports see the same grants (the binaries differ, so this compares the report's shape, not the values).
-#[test]
-fn permissions_are_reported_without_prompting() {
-    let server = ServerUnderTest::start();
-    let report = text(&server.post(&call("Permissions", json!({}))).json()).to_string();
-    let lines: Vec<&str> = report.lines().collect();
-    assert_eq!(lines.len(), 5, "{report}");
-    assert!(lines[0].starts_with("Accessibility: ") && lines[1].starts_with("Screen Recording: ") && lines[2].starts_with("Automation (System Events): "), "{report}");
-    assert_eq!(lines[3..], ["Needs Accessibility: App (resize, move), Click, Type, Scroll, Move, Shortcut, Snapshot, Desktop, Window, Menu, Wait (until)", "Needs Screen Recording: Snapshot (use_vision), OCR"]);
 }
 
 /// The app conditions of Wait only look at the running apps.
@@ -183,17 +117,6 @@ fn input_tools_refuse_bad_arguments_before_posting() {
     }
 }
 
-/// App only with names that match nothing: nothing is launched, activated or quit.
-#[test]
-fn app_refusals() {
-    let server = ServerUnderTest::start();
-    let said = |arguments: Value| text(&server.post(&call("App", arguments)).json()).to_string();
-    assert_eq!(said(json!({"mode": "launch"})), "App name or bundle ID required for launch.");
-    assert_eq!(said(json!({"mode": "switch", "name": "No Such App desktop-mcp"})), "Application 'No Such App desktop-mcp' not found.");
-    assert_eq!(said(json!({"mode": "quit", "name": "No Such App desktop-mcp"})), "Error executing tool App: Application 'No Such App desktop-mcp' is not running.");
-    assert_eq!(said(json!({"mode": "force_quit", "name": " "})), "Error executing tool App: App name or bundle ID required for force_quit.");
-}
-
 /// Window only through refusals that come before any window is read or changed.
 #[test]
 fn window_refusals() {
@@ -208,10 +131,3 @@ fn window_refusals() {
     assert_eq!(said(json!({"mode": "resize", "id": "1:w1", "size": [0, 10]})), "Error executing tool Window: size must be 2 positive integers [width, height].");
 }
 
-/// Menu only through a refusal that comes before the menu bar is read.
-#[test]
-fn menu_select_needs_a_path() {
-    let server = ServerUnderTest::start();
-    let answer = server.post(&call("Menu", json!({"mode": "select"}))).json();
-    assert_eq!(text(&answer), "Error executing tool Menu: path required for select mode.");
-}

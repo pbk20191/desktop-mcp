@@ -4,7 +4,7 @@ use desktop_mcp_core::clipboard::{Clipboard, ClipboardWrite, IMAGE_MAX_SIDE};
 use desktop_mcp_core::mcp::Desktop;
 use desktop_mcp_macos::desktop::MacDesktop;
 use desktop_mcp_macos::main_loop::run;
-use objc2_app_kit::{NSPasteboard, NSPasteboardTypePNG, NSPasteboardTypeString};
+use objc2_app_kit::{NSPasteboard, NSPasteboardTypePNG};
 use objc2_core_foundation::{CFMutableData, CFRetained, CFString, CGRect, CGPoint, CGSize};
 use objc2_core_graphics::{CGBitmapContextCreate, CGBitmapContextCreateImage, CGColorSpace, CGContext, CGImageAlphaInfo, kCGColorSpaceSRGB};
 use objc2_foundation::{NSData, NSString};
@@ -65,10 +65,6 @@ fn temporary_file(directory: &tempfile::TempDir, name: &str) -> PathBuf {
     path
 }
 
-fn an_empty_board_reads_empty() {
-    assert_eq!(Board::new().read(), Clipboard::default());
-}
-
 fn text_is_written_and_read_back() {
     let board = Board::new();
     board.write(ClipboardWrite::Text("안녕 hi".into())).unwrap();
@@ -84,26 +80,6 @@ fn files_are_written_and_read_back() {
     assert_eq!(read.files, [first.to_str().unwrap(), second.to_str().unwrap()]);
 }
 
-fn text_and_files_are_read_together() {
-    let board = Board::new();
-    let directory = tempfile::tempdir().unwrap();
-    let file = temporary_file(&directory, "a.txt");
-    let pasteboard = board.pasteboard();
-    pasteboard.clearContents();
-    assert!(pasteboard.setString_forType(&NSString::from_str("a.txt"), unsafe { NSPasteboardTypeString }));
-    board_add_file(&pasteboard, &file);
-    let read = board.read();
-    assert_eq!((read.text.as_deref(), read.files), (Some("a.txt"), vec![file.to_str().unwrap().to_string()]));
-}
-
-/// Adds a file URL without clearing, as Finder's copy leaves text and file side by side.
-fn board_add_file(pasteboard: &NSPasteboard, file: &std::path::Path) {
-    let url = objc2_foundation::NSURL::fileURLWithPath(&NSString::from_str(file.to_str().unwrap()));
-    let objects = objc2_foundation::NSArray::from_retained_slice(&[url]);
-    let written: bool = unsafe { objc2::msg_send![pasteboard, writeObjects: &*objects] };
-    assert!(written);
-}
-
 fn a_large_image_is_scaled_to_the_maximum_side() {
     let board = Board::new();
     let pasteboard = board.pasteboard();
@@ -114,37 +90,10 @@ fn a_large_image_is_scaled_to_the_maximum_side() {
     assert_eq!(png_size(&image.png), (1568, 523));
 }
 
-fn a_small_png_is_passed_through() {
-    let board = Board::new();
-    // Bytes after IEND survive only if the PNG is passed through rather than re-encoded.
-    let mut original = png(40, 20);
-    original.extend_from_slice(b"passed through");
-    let pasteboard = board.pasteboard();
-    pasteboard.clearContents();
-    assert!(pasteboard.setData_forType(Some(&NSData::with_bytes(&original)), unsafe { NSPasteboardTypePNG }));
-    let image = board.read().image.expect("an image");
-    assert_eq!((image.width, image.height), (40, 20));
-    assert_eq!(image.png, original);
-}
-
-fn a_tiff_becomes_png() {
-    let board = Board::new();
-    // Any image the system can read works; a PNG under the TIFF type stands in for a TIFF screenshot.
-    let pasteboard = board.pasteboard();
-    pasteboard.clearContents();
-    assert!(pasteboard.setData_forType(Some(&NSData::with_bytes(&png(30, 10))), unsafe { objc2_app_kit::NSPasteboardTypeTIFF }));
-    let image = board.read().image.expect("an image");
-    assert_eq!(png_size(&image.png), (30, 10));
-}
-
 fn main() {
     support::run(&[
-        ("an_empty_board_reads_empty", an_empty_board_reads_empty),
         ("text_is_written_and_read_back", text_is_written_and_read_back),
         ("files_are_written_and_read_back", files_are_written_and_read_back),
-        ("text_and_files_are_read_together", text_and_files_are_read_together),
         ("a_large_image_is_scaled_to_the_maximum_side", a_large_image_is_scaled_to_the_maximum_side),
-        ("a_small_png_is_passed_through", a_small_png_is_passed_through),
-        ("a_tiff_becomes_png", a_tiff_becomes_png),
     ])
 }

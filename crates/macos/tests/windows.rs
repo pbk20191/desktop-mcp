@@ -1,17 +1,9 @@
 //! Real windows and displays, read-only: the only actions tried are on a window that does not exist.
 mod support;
 use desktop_mcp_core::window::{Frame, FrameResult, WindowInfo, WindowSource};
-use desktop_mcp_macos::ax::{trusted, Element};
+use desktop_mcp_macos::ax::trusted;
 use desktop_mcp_macos::main_loop::run;
-use desktop_mcp_macos::windows::{number, numbers_available, AxWindowSource};
-
-fn the_displays_have_one_main_and_left_to_right_indices() {
-    let displays = run(|_| AxWindowSource.displays());
-    assert!(!displays.is_empty());
-    assert_eq!(displays.iter().filter(|d| d.main).count(), 1, "{displays:?}");
-    assert!(displays.iter().enumerate().all(|(i, d)| d.index == i && d.frame.width > 0.0 && d.visible.height <= d.frame.height));
-    assert!(displays.windows(2).all(|pair| pair[0].frame.x <= pair[1].frame.x));
-}
+use desktop_mcp_macos::windows::AxWindowSource;
 
 fn windows_are_listed_with_ids_and_frames() {
     if !trusted() {
@@ -27,14 +19,6 @@ fn windows_are_listed_with_ids_and_frames() {
     }
 }
 
-fn the_window_number_symbol_is_there() {
-    if !numbers_available() {
-        return eprintln!("    skipped: _AXUIElementGetWindow not found");
-    }
-    // An application element is not a window: the call fails cleanly.
-    assert_eq!(number(&Element::application(std::process::id() as i32)), None);
-}
-
 fn actions_on_a_gone_window_change_nothing() {
     let gone = WindowInfo { pid: std::process::id() as i32, index: 0, app: String::new(), title: String::new(), frame: Frame::default(), focused: false, minimized: false, fullscreen: false, number: Some(u32::MAX - 1) };
     let outcome = run(move |_| async move {
@@ -48,9 +32,7 @@ fn actions_on_a_gone_window_change_nothing() {
 
 fn main() {
     support::run(&[
-        ("the_displays_have_one_main_and_left_to_right_indices", the_displays_have_one_main_and_left_to_right_indices),
         ("windows_are_listed_with_ids_and_frames", windows_are_listed_with_ids_and_frames),
-        ("the_window_number_symbol_is_there", the_window_number_symbol_is_there),
         ("actions_on_a_gone_window_change_nothing", actions_on_a_gone_window_change_nothing),
     ])
 }

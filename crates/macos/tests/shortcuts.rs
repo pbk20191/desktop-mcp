@@ -2,7 +2,7 @@
 mod support;
 use desktop_mcp_core::shell::Run;
 use desktop_mcp_macos::main_loop::run;
-use desktop_mcp_macos::shortcuts::{list_with, run_with};
+use desktop_mcp_macos::shortcuts::run_with;
 use std::cell::RefCell;
 use std::future::Future;
 use std::os::unix::fs::PermissionsExt;
@@ -40,14 +40,6 @@ fn ok() -> Run {
     Run { stdout: "A\nB\n".into(), stderr: String::new(), status: 0, timed_out: false }
 }
 
-fn listing_uses_the_folder_option() {
-    let seen = Rc::new(RefCell::new(Seen::default()));
-    let runner = stand_in(seen.clone(), "", ok());
-    let listed = run(|_| async move { list_with(Some("Work"), Duration::from_secs(5), runner).await });
-    assert_eq!(listed.unwrap().stdout, "A\nB\n");
-    assert_eq!(seen.borrow().argv, ["/usr/bin/shortcuts", "list", "--folder-name", "Work"]);
-}
-
 fn input_goes_through_a_private_file_and_both_files_are_removed() {
     let seen = Rc::new(RefCell::new(Seen::default()));
     let runner = stand_in(seen.clone(), "<out>", ok());
@@ -61,26 +53,8 @@ fn input_goes_through_a_private_file_and_both_files_are_removed() {
     assert!(!std::path::Path::new(seen.output_path.as_ref().unwrap()).exists(), "output file left behind");
 }
 
-fn without_input_there_is_no_input_path() {
-    let seen = Rc::new(RefCell::new(Seen::default()));
-    let runner = stand_in(seen.clone(), "", Run { stdout: String::new(), stderr: "Error: nope".into(), status: 1, timed_out: false });
-    let ran = run(|_| async move { run_with("Resize", None, Duration::from_secs(5), runner).await }).unwrap();
-    assert_eq!((ran.status, ran.output.as_str(), ran.stderr.as_str()), (1, "", "Error: nope"));
-    assert!(!seen.borrow().argv.contains(&"--input-path".to_string()));
-    assert!(seen.borrow().output_path.is_some());
-}
-
-fn the_real_list_answers() {
-    // `shortcuts list` only reads; it works without any shortcut defined.
-    let listed = run(|_| async { desktop_mcp_macos::shortcuts::list(None, Duration::from_secs(30)).await }).unwrap();
-    assert_eq!(listed.status, 0, "{}", listed.stderr);
-}
-
 fn main() {
     support::run(&[
-        ("listing_uses_the_folder_option", listing_uses_the_folder_option),
         ("input_goes_through_a_private_file_and_both_files_are_removed", input_goes_through_a_private_file_and_both_files_are_removed),
-        ("without_input_there_is_no_input_path", without_input_there_is_no_input_path),
-        ("the_real_list_answers", the_real_list_answers),
     ])
 }

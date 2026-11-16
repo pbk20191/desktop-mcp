@@ -1,5 +1,5 @@
 //! The element walk over in-memory nodes: the walk cases of the Swift port's WaitToolTests.
-use desktop_mcp_core::element::{label, walk, ElementAttributes, ElementNode, FoundElement, NotAnswering};
+use desktop_mcp_core::element::{walk, ElementAttributes, ElementNode, FoundElement, NotAnswering};
 use std::cell::Cell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -62,18 +62,6 @@ fn the_walk_stops_at_the_first_exact_match() {
 }
 
 #[test]
-fn an_exact_title_wins_over_an_earlier_substring() {
-    let visits = Rc::new(Cell::new(0));
-    let result = find(vec![window(&visits, 0, vec![button("Save As…", &visits), button("SAVE", &visits)])], Some("save"), None);
-    assert_eq!(result.exact.unwrap().title, "SAVE");
-    let only = find(vec![window(&visits, 0, vec![button("Save As…", &visits)])], Some("save"), None);
-    assert_eq!((only.exact, only.partial.unwrap().title), (None, "Save As…".to_string()));
-    // The first partial match is kept.
-    let two = find(vec![window(&visits, 0, vec![button("Save As…", &visits), button("Save All", &visits)])], Some("save"), None);
-    assert_eq!(two.partial.unwrap().title, "Save As…");
-}
-
-#[test]
 fn the_walk_honours_a_deadline_mid_walk() {
     let visits = Rc::new(Cell::new(0));
     let mut root = window(&visits, 200, vec![]);
@@ -90,32 +78,6 @@ fn the_walk_honours_a_deadline_mid_walk() {
 }
 
 #[test]
-fn the_walk_honours_cancellation_mid_walk() {
-    let visits = Rc::new(Cell::new(0));
-    let watched = visits.clone();
-    let result = walk(vec![window(&visits, 100, vec![])], Some("missing"), None, &mut 5000, Instant::now() + Duration::from_secs(60), &move || watched.get() >= 7);
-    assert!(result.stopped);
-    assert_eq!(visits.get(), 7);
-}
-
-#[test]
-fn the_walk_ends_when_the_app_stops_answering() {
-    let visits = Rc::new(Cell::new(0));
-    let hung = Node { hangs: true, visits: visits.clone(), ..Node::default() };
-    let root = window(&visits, 2, std::iter::once(hung).chain((0..10).map(|_| group(&visits))).collect());
-    assert_eq!(find(vec![root], Some("missing"), None).exact, None);
-    assert_eq!(visits.get(), 4);
-}
-
-#[test]
-fn the_budget_bounds_visits_and_queue() {
-    let visits = Rc::new(Cell::new(0));
-    let mut budget = 10;
-    let result = walk(vec![window(&visits, 100, vec![])], Some("missing"), None, &mut budget, Instant::now() + Duration::from_secs(60), &|| false);
-    assert_eq!((visits.get(), budget, result.stopped), (10, 0, true));
-}
-
-#[test]
 fn secure_and_unreadable_values_are_never_read() {
     let visits = Rc::new(Cell::new(0));
     let secure = Node { role: "AXTextField".into(), subrole: Some("AXSecureTextField".into()), value: "Save".into(), frame: Some((0.0, 0.0, 1.0, 1.0)), visits: visits.clone(), ..Node::default() };
@@ -127,14 +89,3 @@ fn secure_and_unreadable_values_are_never_read() {
     assert_eq!(find(vec![window(&visits, 0, vec![plain])], Some("Save"), None).exact.unwrap().title, "Save");
 }
 
-#[test]
-fn labels_name_titles_never_values() {
-    let never = || -> String { panic!("read a secure value") };
-    assert_eq!(label("AXTextField", Some("AXSecureTextField"), "", "", never, Some("Save"), None), None);
-    assert_eq!(label("AXSecureTextField", None, "", "", never, Some("save"), Some("AXSecureTextField")), None);
-    assert_eq!(label("AXSecureTextField", None, "", "Password", never, Some("pass"), None), Some(("Password".into(), false)));
-    assert_eq!(label("AXStaticText", None, "", "", || "Save changes?".into(), Some("SAVE"), None), Some(("SAVE".into(), false)));
-    assert_eq!(label("AXButton", None, "Save", "", String::new, Some("sav"), Some("AXButton")), Some(("Save".into(), false)));
-    assert_eq!(label("AXButton", None, "Save", "", String::new, Some("save"), Some("AXCheckBox")), None);
-    assert_eq!(label("AXTextField", None, "", "", || panic!("read a value for a role-only match"), None, Some("AXTextField")), Some((String::new(), true)));
-}

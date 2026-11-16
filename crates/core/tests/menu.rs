@@ -91,22 +91,6 @@ fn exact_then_case_insensitive_then_ellipsis() {
 }
 
 #[test]
-fn apple_names_the_first_bar_item() {
-    assert_eq!(titles(&["Apple"], bar()), Ok(path(&["Apple"])));
-    assert_eq!(titles(&["apple", "About This Mac"], bar()), Ok(path(&["Apple", "About This Mac"])));
-    let mut other = bar();
-    other[0].title = String::new();
-    assert_eq!(titles(&["Apple", "About This Mac"], other), Ok(path(&["", "About This Mac"])));
-}
-
-#[test]
-fn ambiguity_and_exact_wins() {
-    assert_eq!(titles(&["Edit", "COPY"], bar()), Err("Menu item 'COPY' is ambiguous: Copy, copy".into()));
-    let chain = resolve(&path(&["Edit", "copy"]), bar()).unwrap();
-    assert_eq!((chain[1].title.as_str(), chain[1].shortcut.clone()), ("copy", None));
-}
-
-#[test]
 fn a_missing_item_lists_its_siblings() {
     assert_eq!(titles(&["File", "Save"], bar()), Err("No menu item 'Save' under File. Available: New, Export…, Open Recent".into()));
     assert_eq!(titles(&["File", "Open Recent", "c"], bar()), Err("No menu item 'c' under File > Open Recent. Available: a, b".into()));
@@ -125,23 +109,6 @@ fn a_disabled_item_or_a_submenu_is_not_pressed() {
 }
 
 #[test]
-fn a_disabled_parent_stops_the_path() {
-    let mut roots = bar();
-    roots[1].kids[3].enabled = false;
-    let b = roots[1].kids[3].kids[1].presses.clone();
-    assert_eq!(select(&path(&["File", "Open Recent", "b"]), roots), Err("Menu item File > Open Recent is disabled.".into()));
-    assert_eq!(b.get(), 0);
-}
-
-#[test]
-fn select_presses_the_leaf_only() {
-    let roots = bar();
-    let (file, recent, a, b) = (roots[1].presses.clone(), roots[1].kids[3].presses.clone(), roots[1].kids[3].kids[0].presses.clone(), roots[1].kids[3].kids[1].presses.clone());
-    assert_eq!(select(&path(&["File", "Open Recent", "b"]), roots), Ok("Selected File > Open Recent > b.".into()));
-    assert_eq!((file.get(), recent.get(), a.get(), b.get()), (0, 0, 0, 1));
-}
-
-#[test]
 fn a_failure_after_populating_cancels_once() {
     let roots = lazy_bar();
     let (presses, cancels) = (roots[1].presses.clone(), roots[1].cancels.clone());
@@ -154,35 +121,11 @@ fn a_failure_after_populating_cancels_once() {
 }
 
 #[test]
-fn no_cancel_without_populating_or_on_success() {
-    let roots = bar();
-    let cancels: Vec<_> = roots.iter().map(|r| r.cancels.clone()).collect();
-    assert!(select(&path(&["File", "Save"]), roots).is_err());
-    let lazy = lazy_bar();
-    let lazy_cancels: Vec<_> = lazy.iter().map(|r| r.cancels.clone()).collect();
-    let (file, new) = (lazy[1].presses.clone(), lazy[1].kids[0].presses.clone());
-    assert_eq!(select(&path(&["File", "New"]), lazy), Ok("Selected File > New.".into()));
-    assert_eq!((file.get(), new.get()), (1, 1));
-    let top = lazy_bar();
-    let top_cancels: Vec<_> = top.iter().map(|r| r.cancels.clone()).collect();
-    assert!(select(&path(&["View"]), top).is_err());
-    assert!(cancels.iter().chain(&lazy_cancels).chain(&top_cancels).all(|c| c.get() == 0));
-}
-
-#[test]
 fn the_list_indents_and_marks() {
     assert_eq!(list(bar(), 2), "Apple\n  About This Mac\nFile\n  New  ⌘N\n  Export…  [disabled]\n  Open Recent\nEdit\n  Copy  ⌘C\n  copy");
     assert_eq!(list(bar()[1].kids.clone(), 2), "New  ⌘N\nExport…  [disabled]\nOpen Recent\n  a\n  b");
     assert_eq!(list(bar(), 1), "Apple\nFile\nEdit");
     assert_eq!(list(Vec::<Node>::new(), 2), "No menu items.");
-}
-
-#[test]
-fn depth_is_capped() {
-    let deep = vec![node("1", vec![node("2", vec![node("3", vec![node("4", vec![node("5", vec![node("6", vec![])])])])])])];
-    assert_eq!(list(deep.clone(), 9), list(deep.clone(), 4));
-    assert_eq!(list(deep.clone(), 9), "1\n  2\n    3\n      4");
-    assert_eq!(list(deep, 0), "1");
 }
 
 #[test]

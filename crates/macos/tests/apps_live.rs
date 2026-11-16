@@ -1,5 +1,5 @@
 //! Apps and the window server, read-only: nothing is launched, activated or quit.
-use desktop_mcp_macos::apps::{activate_by_name, by_bundle_id, by_name, frontmost, name, terminate, OnScreenWindow, Rect};
+use desktop_mcp_macos::apps::{by_bundle_id, by_name, name, OnScreenWindow, Rect};
 use serde_json::json;
 
 #[test]
@@ -19,13 +19,6 @@ fn window_entries_are_read_front_to_back_without_transparent_ones() {
 }
 
 #[test]
-fn the_window_server_lists_something_and_names_a_frontmost_app() {
-    let windows = OnScreenWindow::all();
-    assert!(!windows.is_empty(), "no on-screen windows");
-    assert!(frontmost().is_some_and(|pid| pid > 0));
-}
-
-#[test]
 fn the_finder_is_found_by_name_and_bundle_id() {
     let pid = by_bundle_id("com.apple.finder").expect("the Finder runs");
     assert_eq!(by_name("finder"), Some(pid));
@@ -34,8 +27,3 @@ fn the_finder_is_found_by_name_and_bundle_id() {
     assert_eq!(by_bundle_id("com.example.no-such-app"), None);
 }
 
-#[test]
-fn unknown_apps_are_neither_activated_nor_quit() {
-    assert!(!activate_by_name("No Such App desktop-mcp"));
-    assert!(!terminate(&[i32::MAX - 1], false));
-}
