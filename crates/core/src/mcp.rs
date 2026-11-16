@@ -35,8 +35,11 @@ pub trait Desktop: 'static {
     /// A connection to `host`:`port`; with `tls`, over TLS that trusts what the system trusts.
     fn connect(&self, host: &str, port: u16, tls: bool) -> Pin<Box<dyn Future<Output = Result<Box<dyn Stream>, String>>>>;
     /// An HTML page's `html` element, parsed the way a browser would after decoding `body` from `charset` (UTF-8
-    /// when absent or unknown). `None` when nothing could be parsed.
-    fn parse_html(&self, body: &[u8], charset: Option<&str>) -> Option<Element>;
+    /// when absent or unknown), off the event loop. `None` when nothing could be parsed.
+    fn parse_html(&self, body: Vec<u8>, charset: Option<String>) -> Pin<Box<dyn Future<Output = Option<Element>>>>;
+    /// Runs `work` on a background worker, keeping CPU-heavy work off the event loop (whose thread the platform's
+    /// frameworks may need).
+    fn background(&self, work: Box<dyn FnOnce() + Send>) -> Pin<Box<dyn Future<Output = ()>>>;
     /// The clipboard's text, file paths and image (as PNG scaled to at most `image_max_side`).
     fn read_clipboard(&self, image_max_side: u32) -> Pin<Box<dyn Future<Output = Clipboard>>>;
     /// Replaces the clipboard's contents.
@@ -675,4 +678,15 @@ pub async fn answer_stateless(server: Server, message: ClientJsonRpcMessage) -> 
     // the tool watches that token (`run_tool`) and stops.
     let _service = rmcp::service::serve_directly(server, transport, None);
     answers.recv().await
+}
+
+/// `work`'s result, computed by [`Desktop::background`].
+pub async fn off_loop<T: Send + 'static>(desktop: &dyn Desktop, work: impl FnOnce() -> T + Send + 'static) -> T {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    desktop
+        .background(Box::new(move || {
+            let _ = sender.send(work());
+        }))
+        .await;
+    receiver.await.expect("the background work ran")
 }

@@ -207,7 +207,8 @@ async fn page(desktop: &dyn Desktop, url: &str, response: Response<hyper::body::
     if status.as_u16() >= 400 {
         return Err(http_error(status, url));
     }
-    Ok(desktop.parse_html(&data, charset.as_deref()).map(|root| html::to_markdown(&root)).unwrap_or_default())
+    let Some(root) = desktop.parse_html(data, charset).await else { return Ok(String::new()) };
+    Ok(crate::mcp::off_loop(desktop, move || html::to_markdown(&root)).await)
 }
 
 fn http_error(status: StatusCode, url: &str) -> String {

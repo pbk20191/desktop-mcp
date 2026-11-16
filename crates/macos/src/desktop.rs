@@ -78,8 +78,12 @@ impl Desktop for MacDesktop {
         Box::pin(async move { NwIo::connect(&host, port, tls).await.map(|io| Box::new(io) as Box<dyn Stream>) })
     }
 
-    fn parse_html(&self, body: &[u8], charset: Option<&str>) -> Option<Element> {
-        crate::html::parse(body, charset)
+    fn parse_html(&self, body: Vec<u8>, charset: Option<String>) -> Pin<Box<dyn Future<Output = Option<Element>>>> {
+        Box::pin(crate::main_loop::offload(move || crate::html::parse(&body, charset.as_deref())))
+    }
+
+    fn background(&self, work: Box<dyn FnOnce() + Send>) -> Pin<Box<dyn Future<Output = ()>>> {
+        Box::pin(crate::main_loop::offload(work))
     }
 
     fn read_clipboard(&self, image_max_side: u32) -> Pin<Box<dyn Future<Output = Clipboard>>> {

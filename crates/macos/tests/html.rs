@@ -1,13 +1,11 @@
 //! HTML parsing by NSXMLDocument, rendered by the core: the cases of the Swift port's ScrapeTests.
 use desktop_mcp_core::html::to_markdown;
-use desktop_mcp_core::mcp::Desktop;
-use desktop_mcp_macos::desktop::MacDesktop;
 
 fn convert(html: &str) -> String {
     convert_bytes(html.as_bytes(), None)
 }
 fn convert_bytes(body: &[u8], charset: Option<&str>) -> String {
-    MacDesktop::new().parse_html(body, charset).map(|root| to_markdown(&root)).unwrap_or_default()
+    desktop_mcp_macos::html::parse(body, charset).map(|root| to_markdown(&root)).unwrap_or_default()
 }
 
 #[test]

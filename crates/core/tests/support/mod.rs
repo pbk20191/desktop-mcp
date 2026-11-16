@@ -197,8 +197,12 @@ impl Desktop for FakeDesktop {
     fn connect(&self, _host: &str, _port: u16, _tls: bool) -> Pin<Box<dyn Future<Output = Result<Box<dyn desktop_mcp_core::io::Stream>, String>>>> {
         Box::pin(async { Err("no network in these tests".to_string()) })
     }
-    fn parse_html(&self, _body: &[u8], _charset: Option<&str>) -> Option<desktop_mcp_core::html::Element> {
-        None
+    fn background(&self, work: Box<dyn FnOnce() + Send>) -> Pin<Box<dyn Future<Output = ()>>> {
+        work();
+        Box::pin(async {})
+    }
+    fn parse_html(&self, _body: Vec<u8>, _charset: Option<String>) -> Pin<Box<dyn Future<Output = Option<desktop_mcp_core::html::Element>>>> {
+        Box::pin(async { None })
     }
     fn sleep(&self, duration: Duration) -> Pin<Box<dyn Future<Output = ()>>> {
         self.slept.borrow_mut().push(duration);

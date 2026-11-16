@@ -160,10 +160,16 @@ impl Desktop for FakeWeb {
         });
         Box::pin(async move { Ok(Box::new(client) as Box<dyn Stream>) })
     }
-    fn parse_html(&self, body: &[u8], charset: Option<&str>) -> Option<Element> {
-        self.charsets.borrow_mut().push(charset.map(str::to_string));
+    fn parse_html(&self, body: Vec<u8>, charset: Option<String>) -> Pin<Box<dyn Future<Output = Option<Element>>>> {
+        self.charsets.borrow_mut().push(charset);
         self.parsed_bytes.set(body.len());
-        Some(Element { name: "html".into(), attributes: vec![], children: vec![Node::Text(String::from_utf8_lossy(body).into_owned())] })
+        let root = Element { name: "html".into(), attributes: vec![], children: vec![Node::Text(String::from_utf8_lossy(&body).into_owned())] };
+        Box::pin(async move { Some(root) })
+    }
+    fn background(&self, work: Box<dyn FnOnce() + Send>) -> Pin<Box<dyn Future<Output = ()>>> {
+        // On a real thread, as the platform would: the work must not need this thread.
+        let worker = std::thread::spawn(work);
+        Box::pin(async move { worker.join().unwrap() })
     }
 }
 
