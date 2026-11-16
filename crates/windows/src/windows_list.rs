@@ -7,6 +7,7 @@ use std::ffi::c_void;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use windows::core::{BOOL, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS};
@@ -228,6 +229,19 @@ fn act(window: &WindowInfo, action: impl FnOnce(HWND) -> bool + Send + 'static) 
     })
 }
 
+/// Waits, checking every 20 ms for up to a second, until `applied` holds for the window: its app applies a state
+/// change asynchronously, and the next action or listing must see it. Whether it did.
+fn settle(hwnd: HWND, applied: impl Fn(HWND) -> bool) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while !applied(hwnd) {
+        if Instant::now() > deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    true
+}
+
 /// Puts the window's visible frame at `frame`: its invisible resize borders (the window rectangle beyond the DWM
 /// frame) are added back. A window without a sizing border keeps its size.
 /// A minimized or maximized window back to its normal state, so its frame and borders can be measured.
@@ -302,7 +316,7 @@ impl WindowSource for Win32Windows {
     fn set_minimized(&self, window: &WindowInfo, on: bool) -> Pending<bool> {
         act(window, move |hwnd| {
             let _ = unsafe { ShowWindowAsync(hwnd, if on { SW_MINIMIZE } else { SW_RESTORE }) };
-            true
+            settle(hwnd, |hwnd| unsafe { IsIconic(hwnd) }.as_bool() == on)
         })
     }
     fn move_to(&self, window: &WindowInfo, x: f64, y: f64) -> Pending<bool> {
@@ -321,7 +335,21 @@ impl WindowSource for Win32Windows {
         })
     }
     fn close(&self, window: &WindowInfo) -> Pending<bool> {
-        act(window, |hwnd| unsafe { PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)) }.is_ok())
+        act(window, |hwnd| {
+            let posted = unsafe { PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)) }.is_ok();
+            // Gone or hidden, unless the app asks first (to save): the request still stands.
+            let _ = posted && settle(hwnd, |hwnd| !unsafe { IsWindow(Some(hwnd)) }.as_bool() || !unsafe { IsWindowVisible(hwnd) }.as_bool());
+            posted
+        })
+    }
+    fn responds(&self, window: &WindowInfo) -> Pending<bool> {
+        let found = find(window);
+        Box::pin(async move {
+            match found {
+                Some(hwnd) => pool::offload(move || crate::tree::answers(hwnd)).await,
+                None => true,
+            }
+        })
     }
     fn set_frame(&self, window: &WindowInfo, frame: Frame) -> Pending<FrameResult> {
         let found = find(window);

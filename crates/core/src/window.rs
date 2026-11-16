@@ -143,6 +143,11 @@ pub trait WindowSource {
     fn set_full_screen(&self, window: &WindowInfo, on: bool) -> Pending<bool>;
     /// The displays, left to right.
     fn displays(&self) -> Pending<Vec<DisplayFrame>>;
+    /// Whether the window's app answers, asked after an action failed (Windows skips a window that does not); a
+    /// window that is gone counts as answering.
+    fn responds(&self, _window: &WindowInfo) -> Pending<bool> {
+        Box::pin(async { true })
+    }
 }
 
 /// The windows seen by the last 64 listings, newest first on lookup.
@@ -384,6 +389,17 @@ pub async fn run(source: &dyn WindowSource, cache: &RefCell<WindowCache>, truste
     }
     require_accessibility()?;
     let window = resolve(&id, source, cache).await?;
+    let acted = act(source, cache, &window, &id, mode, loc, size, display_index).await;
+    if acted.is_err() && !source.responds(&window).await {
+        return Err(format!("Window {id} is not responding; try again when it answers."));
+    }
+    acted
+}
+
+/// Applies `mode` to the resolved window.
+#[allow(clippy::too_many_arguments)]
+async fn act(source: &dyn WindowSource, cache: &RefCell<WindowCache>, window: &WindowInfo, id: &str, mode: Mode, loc: (i64, i64), size: (i64, i64), display_index: i64) -> Result<String, String> {
+    let name = mode.name();
     let failed = |mode: &str| format!("Could not {mode} window {id}.");
     let in_full_screen = format!("Window {id} is in full screen; use exit_fullscreen first.");
     let minimized = format!("Window {id} is minimized; use restore first.");

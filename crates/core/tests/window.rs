@@ -23,6 +23,8 @@ struct Fake {
     fixed_size: bool,
     /// Every action fails.
     refusing: bool,
+    /// The app does not answer: every action fails.
+    hung: bool,
     busy: Cell<bool>,
 }
 
@@ -46,7 +48,7 @@ impl Fake {
         *self.list.borrow_mut() = reindexed(list);
     }
     fn act(&self, name: &str, w: &WindowInfo, change: impl FnOnce(&mut WindowInfo)) -> bool {
-        if self.refusing {
+        if self.refusing || self.hung {
             return false;
         }
         let mut list = self.list.borrow_mut();
@@ -127,6 +129,9 @@ impl WindowSource for Fake {
     }
     fn displays(&self) -> Pending<Vec<DisplayFrame>> {
         Self::ready(self.displays.clone())
+    }
+    fn responds(&self, _w: &WindowInfo) -> Pending<bool> {
+        Self::ready(!self.hung)
     }
 }
 
@@ -247,6 +252,14 @@ fn moving_to_a_display_keeps_the_offset_and_clamps() {
     let source = Fake { displays: displays(), ..Fake::new(vec![WindowInfo { frame: Frame::new(100.0, 125.0, 800.0, 600.0), ..numbered(10) }]) };
     assert_eq!(call(&source, &RefCell::default(), serde_json::json!({"mode": "display", "id": "1:w10", "display": 1})), Ok("Moved 1:w10 to display 1.".into()));
     assert_eq!(source.list.borrow()[0].frame, Frame::new(-1820.0, 125.0, 800.0, 600.0));
+}
+
+#[test]
+fn a_failed_action_says_when_the_window_does_not_answer() {
+    let hung = Fake { hung: true, ..Fake::new(vec![numbered(10)]) };
+    assert_eq!(call(&hung, &RefCell::default(), serde_json::json!({"mode": "focus", "id": "1:w10"})), Err("Window 1:w10 is not responding; try again when it answers.".into()));
+    let refusing = Fake { refusing: true, ..Fake::new(vec![numbered(10)]) };
+    assert_eq!(call(&refusing, &RefCell::default(), serde_json::json!({"mode": "focus", "id": "1:w10"})), Err("Could not focus window 1:w10.".into()));
 }
 
 #[test]
