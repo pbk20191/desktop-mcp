@@ -106,12 +106,14 @@ and wording of the tools that both systems have.
     shape stay the core's.
   - **macOS only (to `crates/macos`):** Desktop (Spaces/Mission Control), Menu, Open, Permissions, RunShortcut,
     Spotlight.
-  - **Windows only (`crates/windows`), from the C# port's set:** Registry, Process, MultiSelect,
+  - **Windows only (`crates/windows`), from the C# port's set:** MultiSelect,
     MultiEdit, Screenshot, DisplayInventory. Their arguments follow the core's naming
     style; their behaviour follows `spec/windows/tools.json` and the C# implementation.
   - Not carried over: `FileSystem` (**owner**: a file-system MCP server already covers it, macOS has none, and
     `Shell` can do it), `PowerShell` (it is `Shell`), `WaitFor` (core `Wait` already waits for windows and
-    elements).
+    elements), `Registry` and `Process` (**owner, 2026-11-16**: `Shell` does both in one PowerShell line,
+    `Get-ItemProperty`/`Set-ItemProperty` and `Get-Process`/`Stop-Process`; they came from Windows-MCP compatibility,
+    which is not a goal, and a dedicated tool adds no safety over `Shell`).
 - Whether a tool is shared is decided by the schema shape, not by the name or the text: a tool is shared when one
   argument and result structure fits both systems, with the platform's text plugged in. The builder may move a tool
   between the lists above when that test fails, and records it.
