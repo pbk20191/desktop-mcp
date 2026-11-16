@@ -82,6 +82,9 @@ and posts control+up, which fails on macOS 27.
 
 `OCR` (Vision) is listed only when included (`--include-tools OCR`, `[tools] include`, `DESKTOP_MCP_INCLUDE_TOOLS`).
 
+`Batch` (both platforms) runs up to 20 calls of the other enabled tools in order, through the server's own router,
+with a pause between steps (default 0.5 s); it is a Rust-port addition, not in `spec/tools.json` or the Swift port.
+
 Not ported: the `install`/`uninstall` (launchd agent) and `auth` commands. An agent holds its own grants, which is
 the borrowing problem above, and a key stored in `config.toml` can be read by any program of this user; pass the
 HTTP key with `--auth-key` or `DESKTOP_MCP_AUTH_KEY` instead (for example `openssl rand -hex 32`). To use
@@ -148,7 +151,8 @@ Working (`docs/superpowers/specs/2026-11-16-rust-port-windows-design.md`). Windo
   `Click`, `Type`, `Scroll`, `Move`, `Shortcut` (`SendInput`; input toward an elevated window is refused), `App`
   (Start menu apps), `Window` (with `displays`), `Wait` (durations, apps, windows, elements), `Shell` (PowerShell 7
   when installed, else Windows PowerShell 5.1), `Scrape`, `Clipboard` (Win32, on the thread pool), `Notification`
-  (toasts under Windows PowerShell's app id), opt-in `OCR` (Windows.Media.Ocr).
+  (toasts under Windows PowerShell's app id), opt-in `OCR` (Windows.Media.Ocr), `Batch` (several of these and the
+  Windows-only tools' calls in one).
 - Windows-only tools: `Screenshot` (Windows.Graphics.Capture, no UI tree), `MultiSelect`, `MultiEdit`.
 - Not ported: desktop control (the user's input is never blocked; stop the agent from the client), `FileSystem`,
   `Registry` and `Process` (`Shell` does them in one PowerShell line).

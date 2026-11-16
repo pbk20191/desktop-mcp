@@ -26,7 +26,7 @@ fn windows_text_is_listed_and_windows_sounds_are_accepted() {
     let listed = ask(json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}));
     let tools = listed["result"]["tools"].as_array().unwrap();
     let names: Vec<&str> = tools.iter().map(|tool| tool["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["App", "Click", "Clipboard", "Move", "MultiEdit", "MultiSelect", "Notification", "Scrape", "Screenshot", "Scroll", "Shell", "Shortcut", "Snapshot", "Type", "Wait", "Window"]);
+    assert_eq!(names, ["App", "Batch", "Click", "Clipboard", "Move", "MultiEdit", "MultiSelect", "Notification", "Scrape", "Screenshot", "Scroll", "Shell", "Shortcut", "Snapshot", "Type", "Wait", "Window"]);
     let shell = tools.iter().find(|tool| tool["name"] == "Shell").unwrap();
     assert!(shell["description"].as_str().unwrap().starts_with("Execute commands on Windows in PowerShell"));
     assert_eq!(shell["inputSchema"]["properties"]["mode"]["enum"], json!(["powershell"]));

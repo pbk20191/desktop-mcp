@@ -17,7 +17,7 @@ use std::time::Duration;
 fn ask(desktop: &Rc<FakeDesktop>, message: Value) -> Option<Value> {
     let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
     let local = tokio::task::LocalSet::new();
-    let server = Server::new(desktop.clone(), &["Wait", "Shell", "Scrape", "Clipboard", "Open", "Notification", "RunShortcut", "Spotlight", "Permissions", "Click", "Type", "Scroll", "Move", "Shortcut", "App", "Window", "Menu"]);
+    let server = Server::new(desktop.clone(), &["Batch", "Wait", "Shell", "Scrape", "Clipboard", "Open", "Notification", "RunShortcut", "Spotlight", "Permissions", "Click", "Type", "Scroll", "Move", "Shortcut", "App", "Window", "Menu"]);
     local.block_on(&runtime, async move {
         let answer = answer_stateless(server, serde_json::from_value(message).unwrap()).await;
         answer.map(|message| serde_json::to_value(message).unwrap())
@@ -35,7 +35,7 @@ fn listed_tools(desktop: &Rc<FakeDesktop>) -> Vec<Value> {
 fn only_the_requested_tools_are_listed() {
     let desktop = Rc::new(FakeDesktop::default());
     let names: Vec<String> = listed_tools(&desktop).iter().map(|tool| tool["name"].as_str().unwrap().to_string()).collect();
-    assert_eq!(names, ["App", "Click", "Clipboard", "Menu", "Move", "Notification", "Open", "Permissions", "RunShortcut", "Scrape", "Scroll", "Shell", "Shortcut", "Spotlight", "Type", "Wait", "Window"]);
+    assert_eq!(names, ["App", "Batch", "Click", "Clipboard", "Menu", "Move", "Notification", "Open", "Permissions", "RunShortcut", "Scrape", "Scroll", "Shell", "Shortcut", "Spotlight", "Type", "Wait", "Window"]);
     let desktop = Rc::new(FakeDesktop::default());
     let server = Server::new(desktop.clone(), &["Wait"]);
     let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
@@ -71,6 +71,26 @@ fn wait_sleeps_and_reports() {
     assert_eq!(answer["result"]["content"][0]["text"], "Waited for 3 seconds.");
     assert_eq!(answer["result"]["isError"], false);
     assert_eq!(*desktop.slept.borrow(), [Duration::from_secs(3)]);
+}
+
+#[test]
+fn batch_runs_its_steps_in_order_with_the_delay_between() {
+    let desktop = Rc::new(FakeDesktop::default());
+    let steps = json!([{"tool": "Wait", "arguments": {"duration": 1}}, {"tool": "Wait", "arguments": {"duration": 2}}]);
+    let answer = call(&desktop, "Batch", json!({"steps": steps}));
+    assert_eq!(answer["result"]["isError"], false);
+    assert_eq!(texts(&answer), ["[1] Wait: Waited for 1 seconds.\n[2] Wait: Waited for 2 seconds."]);
+    assert_eq!(*desktop.slept.borrow(), [Duration::from_secs(1), Duration::from_millis(500), Duration::from_secs(2)]);
+}
+
+#[test]
+fn batch_with_an_unknown_tool_runs_nothing() {
+    let desktop = Rc::new(FakeDesktop::default());
+    let steps = json!([{"tool": "Wait", "arguments": {"duration": 1}}, {"tool": "Nope", "arguments": {}}]);
+    let answer = call(&desktop, "Batch", json!({"steps": steps}));
+    assert_eq!(answer["result"]["isError"], true);
+    assert_eq!(texts(&answer), ["Error executing tool Batch: step 2: no tool named 'Nope' is enabled; nothing ran."]);
+    assert!(desktop.slept.borrow().is_empty());
 }
 
 fn preview() -> RunningApp {

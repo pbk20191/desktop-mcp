@@ -297,7 +297,7 @@ fn plan(args: &ServeArgs) -> Result<ServePlan, String> {
 /// The tools this build lists unless excluded; the opt-in ones ([`desktop_mcp_core::ocr::OPT_IN`]) come only when
 /// included.
 #[cfg(not(windows))]
-const TOOLS: &[&str] = &["App", "Click", "Clipboard", "Desktop", "Menu", "Move", "Notification", "Open", "Permissions", "RunShortcut", "Scrape", "Scroll", "Shell", "Shortcut", "Snapshot", "Spotlight", "Type", "Wait", "Window"];
+const TOOLS: &[&str] = &["App", "Batch", "Click", "Clipboard", "Desktop", "Menu", "Move", "Notification", "Open", "Permissions", "RunShortcut", "Scrape", "Scroll", "Shell", "Shortcut", "Snapshot", "Spotlight", "Type", "Wait", "Window"];
 
 #[cfg(windows)]
 const TOOLS: &[&str] = desktop_mcp_windows::platform::TOOLS;

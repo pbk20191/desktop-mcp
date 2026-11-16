@@ -1,7 +1,9 @@
 //! The MCP server: the tools, declared with rmcp's macros, over a platform's [`Desktop`].
 use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, ClientJsonRpcMessage, ContentBlock, Implementation, JsonRpcMessage, ServerCapabilities, ServerConfig, ServerJsonRpcMessage};
+use rmcp::service::RequestContext;
+use rmcp::model::{CallToolRequestParams, CallToolResponse, CallToolResult, ClientJsonRpcMessage, ContentBlock, Implementation, JsonRpcMessage, ServerCapabilities, ServerConfig, ServerJsonRpcMessage};
 use rmcp::transport::OneshotTransport;
 use crate::clipboard::{Clipboard, ClipboardWrite};
 use crate::html::Element;
@@ -521,6 +523,35 @@ enum SpacesMode {
     Create,
 }
 
+/// The most steps one Batch runs.
+const BATCH_STEPS: usize = 20;
+/// The longest pause Batch takes between steps, in seconds.
+const BATCH_MAX_DELAY: f64 = 10.0;
+
+fn half_second() -> f64 {
+    0.5
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct BatchStep {
+    /// The tool to run, e.g. "Click"
+    tool: String,
+    /// That tool's arguments, as it takes them on its own
+    #[serde(default)]
+    arguments: serde_json::Map<String, serde_json::Value>,
+}
+
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct BatchArgs {
+    #[schemars(length(min = 1, max = 20))]
+    steps: Vec<BatchStep>,
+    #[serde(default = "half_second")]
+    #[schemars(range(min = 0, max = 10))]
+    delay: f64,
+    #[serde(default = "yes")]
+    stop_on_error: bool,
+}
+
 #[tool_router]
 impl Server {
     #[tool(
@@ -840,6 +871,20 @@ impl Server {
     async fn wait(&self, Parameters(args): Parameters<WaitArgs>, cancellation: CancellationToken) -> CallToolResult {
         run_tool("Wait", cancellation, self.wait_for(args)).await
     }
+
+    #[tool(
+        name = "Batch",
+        description = "Runs several tool calls in order as one call, e.g. a Click, then a Type, then a Shortcut. 'steps' (1-20) is a list of {\"tool\": \"<name>\", \"arguments\": {...}}; each step runs exactly as a call of that tool on its own would, with the same checks. 'delay' seconds (default 0.5, 0-10) pass between steps, so the UI can settle and two clicks at one point are not taken as a double-click. With 'stop_on_error' (default true) the first failing step ends the batch. Every step's tool is checked before any step runs: a tool that does not exist or is not enabled, or Batch itself, refuses the whole batch. Returns one line per step that ran, '[n] <Tool>: <its result>', and only the last image a step produced (e.g. Snapshot with use_vision), saying which step it came from.",
+        annotations(title = "Batch", read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = false)
+    )]
+    async fn batch(&self, Parameters(args): Parameters<BatchArgs>, context: RequestContext<RoleServer>) -> CallToolResult {
+        let cancellation = context.ct.clone();
+        // Cancellation drops the batch between steps, in the delay, or inside a step (which also sees the token).
+        tokio::select! {
+            result = self.run_batch(args, context) => result,
+            _ = cancellation.cancelled() => CallToolResult::error(vec![ContentBlock::text("Cancelled.")]),
+        }
+    }
 }
 
 impl Server {
@@ -857,6 +902,61 @@ impl Server {
         let duration = args.duration.ok_or_else(|| ToolError("Missing required argument 'duration'".to_string()))?;
         self.desktop.sleep(Duration::from_secs(duration.max(0) as u64)).await;
         Ok(format!("Waited for {duration} seconds."))
+    }
+
+    /// Runs Batch's steps through this server's own router, as separate `tools/call`s would be. Batch refuses
+    /// itself as a step, so a step never reaches this again.
+    async fn run_batch(&self, args: BatchArgs, context: RequestContext<RoleServer>) -> CallToolResult {
+        let refused = |message: String| CallToolResult::error(vec![ContentBlock::text(format!("Error executing tool Batch: {message}"))]);
+        if args.steps.is_empty() || args.steps.len() > BATCH_STEPS {
+            return refused(format!("steps must hold 1 to {BATCH_STEPS} steps."));
+        }
+        for (index, step) in args.steps.iter().enumerate() {
+            if step.tool == "Batch" {
+                return refused(format!("step {} is Batch, which cannot run inside a batch; nothing ran.", index + 1));
+            }
+            if !self.tool_router.has_route(&step.tool) {
+                return refused(format!("step {}: no tool named '{}' is enabled; nothing ran.", index + 1, step.tool));
+            }
+        }
+        let delay = Duration::from_secs_f64(args.delay.clamp(0.0, BATCH_MAX_DELAY));
+        let count = args.steps.len();
+        let (mut lines, mut image, mut failed) = (Vec::new(), None, false);
+        for (index, step) in args.steps.into_iter().enumerate() {
+            if index > 0 && !delay.is_zero() {
+                self.desktop.sleep(delay).await;
+            }
+            let number = index + 1;
+            let params = CallToolRequestParams::new(step.tool.clone()).with_arguments(step.arguments);
+            let (text, error) = match self.tool_router.call(ToolCallContext::new(self, params, context.clone())).await {
+                Ok(CallToolResponse::Complete(result)) => {
+                    if let Some(last) = result.content.iter().rev().find(|block| block.as_image().is_some()) {
+                        image = Some((number, step.tool.clone(), last.clone()));
+                    }
+                    let text: Vec<&str> = result.content.iter().filter_map(|block| block.as_text()).map(|text| text.text.as_str()).collect();
+                    (text.join("\n"), result.is_error == Some(true))
+                }
+                Ok(_) => ("the tool asked for more input, which a batch cannot give.".to_string(), true),
+                Err(error) => (error.message.to_string(), true),
+            };
+            lines.push(format!("[{number}] {}: {text}", step.tool));
+            failed |= error;
+            if error && args.stop_on_error && number < count {
+                lines.push(format!("Stopped at step {number} ({}), which failed; steps {} to {count} did not run.", step.tool, number + 1));
+                break;
+            }
+        }
+        let mut content = Vec::new();
+        if let Some((number, tool, block)) = image {
+            lines.push(format!("The image is from step {number} ({tool})."));
+            content.push(block);
+        }
+        content.insert(0, ContentBlock::text(lines.join("\n")));
+        if failed {
+            CallToolResult::error(content)
+        } else {
+            CallToolResult::success(content)
+        }
     }
 }
 

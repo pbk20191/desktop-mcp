@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 /// The tools offered on Windows. `OCR` comes when included.
 pub const TOOLS: &[&str] = &[
-    "App", "Click", "Clipboard", "Move", "MultiEdit", "MultiSelect", "Notification", "Scrape", "Screenshot", "Scroll", "Shell", "Shortcut", "Snapshot", "Type", "Wait", "Window",
+    "App", "Batch", "Click", "Clipboard", "Move", "MultiEdit", "MultiSelect", "Notification", "Scrape", "Screenshot", "Scroll", "Shell", "Shortcut", "Snapshot", "Type", "Wait", "Window",
 ];
 
 const SHORTCUT: &str = "Executes keyboard shortcuts using key combinations separated by +. Examples: \"ctrl+c\" (copy), \"ctrl+v\" (paste), \"alt+tab\" (switch windows), \"win+r\" (Run), \"ctrl+shift+esc\" (Task Manager). Modifiers: ctrl, shift, alt, win.";
