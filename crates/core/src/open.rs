@@ -71,7 +71,15 @@ fn file_url_path(rest: &str) -> String {
             }
         }
     }
-    String::from_utf8_lossy(&decoded).into_owned()
+    let path = String::from_utf8_lossy(&decoded).into_owned();
+    // A Windows file URL carries "/C:/dir/file"; the path is "C:\dir\file".
+    if cfg!(windows) {
+        let bytes = path.as_bytes();
+        if bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b':' {
+            return path[1..].replace('/', "\\");
+        }
+    }
+    path
 }
 
 /// Opens `target`, or with `reveal` shows it in the file manager.

@@ -26,8 +26,9 @@ fn load_validates_and_resolves_relative_tls_paths() {
     assert_eq!(config.server.transport, "streamable-http");
     assert_eq!(config.server.port, 9000);
     assert_eq!(config.server.host, "localhost");
-    assert_eq!(config.server.ssl_certfile.as_deref(), Some(directory.path().join("certs/cert.pem").to_str().unwrap()));
-    assert_eq!(config.server.ssl_keyfile.as_deref(), Some("/abs/key.pem"));
+    assert_eq!(config.server.ssl_certfile.as_deref(), Some(directory.path().join("certs").join("cert.pem").to_str().unwrap()));
+    // Rooted but driveless on Windows: it takes the config file's drive.
+    assert_eq!(config.server.ssl_keyfile.as_deref().map(std::path::Path::new), Some(directory.path().join("/abs/key.pem").as_path()));
     assert_eq!(config.tools.exclude, ["Shell"]);
 }
 

@@ -46,6 +46,8 @@ fn ipv6_hosts_are_bracketed() {
     assert_eq!(HttpTarget::installed(&args("streamable-http", "::1", 8000, None), &Config::default()).unwrap().url, "http://[::1]:8000/mcp");
 }
 
+// The Launch Agent is macOS-only; its paths are POSIX.
+#[cfg(unix)]
 #[test]
 fn the_plist_has_the_originals_keys_and_escapes_its_text() {
     let xml = plist_xml(&args("streamable-http", "127.0.0.1", 8000, Some("/s.sock")), Path::new("/logs & more"), Some("/s.sock"));
