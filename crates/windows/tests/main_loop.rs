@@ -31,6 +31,13 @@ fn main() {
         let queued = queued_polls() - before;
         assert!(queued <= 2, "{queued} polls queued for 1000 wakes");
     });
+    // The main thread is a single-threaded apartment, as the WinRT clipboard needs.
+    run(|_| async {
+        use windows::Win32::System::Com::{CoGetApartmentType, APTTYPE, APTTYPEQUALIFIER, APTTYPE_MAINSTA, APTTYPE_STA};
+        let (mut kind, mut qualifier) = (APTTYPE::default(), APTTYPEQUALIFIER::default());
+        unsafe { CoGetApartmentType(&mut kind, &mut qualifier) }.unwrap();
+        assert!(kind == APTTYPE_STA || kind == APTTYPE_MAINSTA, "{kind:?}");
+    });
     println!("main_loop: ok");
 }
 

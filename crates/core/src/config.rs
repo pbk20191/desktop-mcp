@@ -47,11 +47,20 @@ pub struct Config {
     pub warnings: Vec<String>,
 }
 
+/// The user's home folder: the profile folder on Windows (where `HOME` is usually unset, or set by a Unix-like
+/// shell to something else), `HOME` elsewhere.
+pub fn home_directory() -> Option<PathBuf> {
+    let variable = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var_os(variable).filter(|home| !home.is_empty()).map(PathBuf::from)
+}
+
 impl Config {
-    /// The explicit path (`~` expanded against `home`), else `~/.desktop-mcp/config.toml` when it exists.
+    /// The explicit path (`~` expanded against `home`), else `~/.desktop-mcp/config.toml` when it exists. With no
+    /// home folder (`home` empty) nothing is looked for, rather than a path relative to the working directory.
     pub fn discover(explicit: Option<&str>, home: &Path) -> Option<PathBuf> {
         match explicit {
             Some(path) => Some(expand_tilde(path, home)),
+            None if home.as_os_str().is_empty() => None,
             None => Some(home.join(".desktop-mcp/config.toml")).filter(|path| path.exists()),
         }
     }
@@ -68,7 +77,7 @@ impl Config {
         let section = |name: &str| table.get(name).and_then(toml::Value::as_table).cloned().unwrap_or_default();
         let (server, security, tools) = (section("server"), section("security"), section("tools"));
         let base = path.parent().unwrap_or(Path::new("/"));
-        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+        let home = home_directory().unwrap_or_default();
 
         if let Some(value) = server.get("transport") {
             let mut transport = text_of(value);

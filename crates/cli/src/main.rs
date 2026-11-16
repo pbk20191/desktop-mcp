@@ -164,7 +164,7 @@ fn main() -> ExitCode {
 }
 
 fn home() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
+    desktop_mcp_core::config::home_directory().unwrap_or_default()
 }
 
 /// Where `connect` goes.

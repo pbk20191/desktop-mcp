@@ -193,3 +193,11 @@ fn the_socket_transport_is_disabled() {
     assert_eq!(resolve(&CommandLine { transport: Some("socket".into()), socket_path: Some("/tmp/a.sock".into()), ..CommandLine::default() }).unwrap_err(), SOCKET_DISABLED);
     assert_eq!(resolve(&CommandLine { socket_path: Some("/tmp/a.sock".into()), ..CommandLine::default() }).unwrap_err(), SOCKET_DISABLED);
 }
+
+#[test]
+fn the_home_folder_is_the_profile_on_windows_and_never_the_working_directory() {
+    #[cfg(windows)]
+    assert_eq!(desktop_mcp_core::config::home_directory(), std::env::var_os("USERPROFILE").map(std::path::PathBuf::from));
+    // Without a home folder, nothing is looked up relative to the working directory.
+    assert_eq!(Config::discover(None, std::path::Path::new("")), None);
+}

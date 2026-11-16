@@ -2,9 +2,10 @@
 //!
 //! Our end of each pipe is opened `FILE_FLAG_OVERLAPPED` and bound to a `TP_IO`; the child's end is an ordinary
 //! inheritable handle, and only the three stdio handles are inherited (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`). The
-//! child runs in a job: a timeout or a dropped call terminates the job, so whatever the command started ends too.
-//! A normal exit leaves what the command started running (an app it opened, for example); its output is read until
-//! the pipes close, or for a short grace after the exit when something it started still holds them.
+//! child runs in a kill-on-close job: a timeout or a dropped call terminates the job, so whatever the command started
+//! ends too. A normal exit leaves what the command started running (an app it opened, for example) until the server
+//! ends, however it ends; its output is read until the pipes close, or for a short grace after the exit when
+//! something it started still holds them.
 use crate::pool;
 use desktop_mcp_core::shell::Run;
 use std::cell::RefCell;
@@ -20,7 +21,10 @@ use windows::core::{PCWSTR, PWSTR};
 use windows::Win32::Foundation::{ERROR_IO_PENDING, GENERIC_READ, GENERIC_WRITE, HANDLE};
 use windows::Win32::Security::SECURITY_ATTRIBUTES;
 use windows::Win32::Storage::FileSystem::{CreateFileW, ReadFile, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, PIPE_ACCESS_INBOUND, FILE_FLAGS_AND_ATTRIBUTES};
-use windows::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW, TerminateJobObject};
+use windows::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+    TerminateJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+};
 use windows::Win32::System::Pipes::{CreateNamedPipeW, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT};
 use windows::Win32::System::Threading::{
     CancelThreadpoolIo, CloseThreadpoolIo, CreateProcessW, CreateThreadpoolIo, DeleteProcThreadAttributeList, GetExitCodeProcess, InitializeProcThreadAttributeList, ResumeThread,
@@ -196,6 +200,33 @@ impl Drop for PipeReader {
     }
 }
 
+thread_local! {
+    /// Jobs whose command has returned while something it started still runs. Held open so that it keeps running;
+    /// they are kill-on-close, so whatever is left ends with the server, however the server ends.
+    static LINGERING: RefCell<Vec<OwnedHandle>> = const { RefCell::new(Vec::new()) };
+}
+
+fn active_processes(job: &OwnedHandle) -> u32 {
+    let mut accounting = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+    let queried = unsafe {
+        QueryInformationJobObject(Some(HANDLE(job.as_raw_handle())), JobObjectBasicAccountingInformation, &mut accounting as *mut _ as *mut c_void, size_of_val(&accounting) as u32, None)
+    };
+    if queried.is_ok() { accounting.ActiveProcesses } else { 0 }
+}
+
+/// Keeps a copy of `job` while it has processes, and lets go of the ones that have emptied.
+fn keep_while_running(job: &OwnedHandle) {
+    LINGERING.with(|lingering| {
+        let mut lingering = lingering.borrow_mut();
+        lingering.retain(|job| active_processes(job) > 0);
+        if active_processes(job) > 0 {
+            if let Ok(copy) = job.try_clone() {
+                lingering.push(copy);
+            }
+        }
+    });
+}
+
 /// A started process and its job; terminates the job when dropped before the process has finished.
 struct Child {
     process: OwnedHandle,
@@ -222,6 +253,10 @@ impl Drop for Child {
 fn start(spawn: &Spawn<'_>, input: &OwnedHandle, output: &OwnedHandle, error: &OwnedHandle) -> Result<Child, String> {
     let job = unsafe { CreateJobObjectW(None, PCWSTR::null()) }.map_err(|error| format!("CreateJobObject: {error}"))?;
     let job = unsafe { OwnedHandle::from_raw_handle(job.0) };
+    let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    unsafe { SetInformationJobObject(HANDLE(job.as_raw_handle()), JobObjectExtendedLimitInformation, &limits as *const _ as *const c_void, size_of_val(&limits) as u32) }
+        .map_err(|error| format!("SetInformationJobObject: {error}"))?;
     let handles = [HANDLE(input.as_raw_handle()), HANDLE(output.as_raw_handle()), HANDLE(error.as_raw_handle())];
     let mut size = 0usize;
     unsafe {
@@ -314,6 +349,7 @@ pub async fn run(spawn: Spawn<'_>, timeout: Duration) -> Result<Run, String> {
         child.terminate();
     }
     child.finished = true;
+    keep_while_running(&child.job);
     // Drain: until both pipes close, or the grace passes (something the command started holds them).
     if !read_all {
         tokio::select! {

@@ -58,12 +58,18 @@ static FALLBACK_REPORTED: AtomicBool = AtomicBool::new(false);
 
 /// Runs `command` in PowerShell with UTF-8 output; the first run that falls back to 5.1 says so on stdout.
 pub async fn run(command: &str, timeout: Duration) -> Result<Run, String> {
-    let interpreter = interpreter();
-    // -EncodedCommand (UTF-16LE, base64) passes the command through without any quoting rules.
-    let script = format!("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8\n{command}");
+    run_with(&interpreter(), command, timeout).await
+}
+
+/// [`run`] with a given interpreter.
+pub async fn run_with(interpreter: &Interpreter, command: &str, timeout: Duration) -> Result<Run, String> {
+    // The command travels base64-encoded, so no quoting rule can change it, but under -Command rather than
+    // -EncodedCommand: with -EncodedCommand Windows PowerShell 5.1 writes errors and progress as CLIXML.
+    let script = format!("$ProgressPreference = 'SilentlyContinue'; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8\n{command}");
     let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
     let encoded = base64::engine::general_purpose::STANDARD.encode(utf16);
-    let args: Vec<OsString> = ["-NoLogo", "-NoProfile", "-NonInteractive", "-OutputFormat", "Text", "-EncodedCommand", &encoded].iter().map(OsString::from).collect();
+    let invoke = format!("& ([scriptblock]::Create([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('{encoded}'))))");
+    let args: Vec<OsString> = ["-NoLogo", "-NoProfile", "-NonInteractive", "-OutputFormat", "Text", "-Command", &invoke].iter().map(OsString::from).collect();
     let mut run = process::run(Spawn { program: interpreter.path(), args: &args, env: child_environment() }, timeout).await?;
     if matches!(interpreter, Interpreter::WindowsPowerShell(_)) && !FALLBACK_REPORTED.swap(true, Ordering::Relaxed) {
         run.stdout = format!("{FALLBACK_NOTE}\n{}", run.stdout);

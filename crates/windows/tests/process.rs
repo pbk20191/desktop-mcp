@@ -26,6 +26,12 @@ fn main() {
         // PowerShell output is UTF-8, whatever the console code page.
         let run = desktop_mcp_windows::shell::run("Write-Output '한글 ü'", Duration::from_secs(30)).await.unwrap();
         assert_eq!(run.stdout.trim_end(), "한글 ü", "stderr: {}", run.stderr);
+
+        // Windows PowerShell 5.1 reports errors as text, not CLIXML.
+        let system_root = PathBuf::from(std::env::var_os("SystemRoot").unwrap());
+        let windows_powershell = Interpreter::WindowsPowerShell(system_root.join("System32").join("WindowsPowerShell").join("v1.0").join("powershell.exe"));
+        let run = desktop_mcp_windows::shell::run_with(&windows_powershell, "Get-Item C:/no-such-path", Duration::from_secs(60)).await.unwrap();
+        assert!(!run.stderr.contains("CLIXML") && run.stderr.contains("Cannot find path"), "stderr: {}", run.stderr);
     });
 
     // PowerShell 7 on PATH first, then under Program Files, else Windows PowerShell.

@@ -36,3 +36,10 @@ fn windows_text_is_listed_and_windows_sounds_are_accepted() {
     let called = ask(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"Shell","arguments":{"command":"x","mode":"osascript"}}}));
     assert!(called["result"]["content"][0]["text"].as_str().unwrap().contains("osascript is not available on Windows"), "{called}");
 }
+
+#[test]
+fn a_deeply_nested_page_parses_without_overflowing() {
+    let page = "<div>".repeat(20_000) + "deep";
+    let html = desktop_mcp_windows::html::parse(page.as_bytes(), None).expect("parsed");
+    assert_eq!(html.name, "html");
+}

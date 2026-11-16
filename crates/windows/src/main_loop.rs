@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll, Wake, Waker};
 use windows::Foundation::{TimeSpan, TypedEventHandler};
 use windows::System::{DispatcherQueue, DispatcherQueueController, DispatcherQueueHandler, DispatcherQueueTimer};
+use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::System::WinRT::{CreateDispatcherQueueController, DispatcherQueueOptions, DQTAT_COM_NONE, DQTYPE_THREAD_CURRENT};
 use windows::Win32::UI::WindowsAndMessaging::{DispatchMessageW, GetMessageW, PostThreadMessageW, TranslateMessage, MSG, WM_QUIT};
@@ -51,17 +52,19 @@ fn driver() -> Option<Rc<Driver>> {
     DRIVER.with(|driver| driver.borrow().clone())
 }
 
-/// Polls the root future.
-fn poll_root() {
-    let Some(driver) = driver() else { return };
+/// Polls the root future. False when it is being polled already (a nested message loop, such as a COM call's
+/// modal wait, ran this from inside a poll), so the caller asks again.
+fn poll_root() -> bool {
+    let Some(driver) = driver() else { return true };
     if driver.done.get() {
-        return;
+        return true;
     }
-    let Ok(mut poll) = driver.poll.try_borrow_mut() else { return };
+    let Ok(mut poll) = driver.poll.try_borrow_mut() else { return false };
     // Polls run inside the message loop's dispatch, which checks `done` right after.
     if poll() {
         driver.done.set(true);
     }
+    true
 }
 
 /// One guest-runtime turn, unless one is running or the root is being polled.
@@ -97,7 +100,9 @@ impl Wake for QueueWaker {
         let this = self.clone();
         let handler = DispatcherQueueHandler::new(move || {
             this.pending.store(false, Ordering::Release);
-            poll_root();
+            if !poll_root() {
+                this.wake_by_ref();
+            }
             Ok(())
         });
         // False only while the queue shuts down, when nothing is left to poll.
@@ -142,6 +147,9 @@ impl MainLoop for Ticks {
 /// Runs the future `build` makes on this thread until it completes, serving the thread's DispatcherQueue and
 /// message loop meanwhile. One at a time per thread.
 pub fn run<F: Future + 'static>(build: impl FnOnce(Rc<dyn MainLoop>) -> F) -> F::Output {
+    // A single-threaded apartment, as a UI thread has: the WinRT clipboard needs one, and this thread pumps
+    // messages. (The queue's own apartment option applies only to threads it creates.)
+    let apartment = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
     let options = DispatcherQueueOptions { dwSize: size_of::<DispatcherQueueOptions>() as u32, threadType: DQTYPE_THREAD_CURRENT, apartmentType: DQTAT_COM_NONE };
     let controller: DispatcherQueueController = unsafe { CreateDispatcherQueueController(options) }.expect("CreateDispatcherQueueController failed");
     let queue = controller.DispatcherQueue().expect("the controller has a queue");
@@ -220,6 +228,9 @@ pub fn run<F: Future + 'static>(build: impl FnOnce(Rc<dyn MainLoop>) -> F) -> F:
         }
     }
     drop(driver);
+    if apartment.is_ok() {
+        unsafe { CoUninitialize() };
+    }
     let result = output.borrow_mut().take().expect("the root completed");
     match result {
         Ok(value) => value,
