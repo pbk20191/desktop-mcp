@@ -118,7 +118,7 @@ pub trait Desktop: 'static {
         None
     }
     /// The title and application name of the top-level window at `at` (or of the focused window), which input aimed
-    /// there reaches. `None` when the platform does not tell (macOS).
+    /// there reaches. `None` when the platform does not tell.
     fn window_at(&self, _at: Option<(i64, i64)>) -> Option<(String, String)> {
         None
     }

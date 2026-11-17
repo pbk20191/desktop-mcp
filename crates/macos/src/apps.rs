@@ -75,6 +75,15 @@ impl OnScreenWindow {
     pub fn frontmost_pid(screen: &[OnScreenWindow]) -> Option<i32> {
         screen.iter().find(|window| window.layer == NORMAL_LEVEL && window.pid != 0).map(|window| window.pid)
     }
+
+    /// The window input at `point` reaches: the frontmost application window containing it, else the frontmost
+    /// other one (the menu bar, the Dock). Application windows go first because the Dock keeps a click-through
+    /// window over the whole screen. Without a point, the front window at the normal level, the one keys go to.
+    pub fn at(screen: &[OnScreenWindow], point: Option<(f64, f64)>) -> Option<&OnScreenWindow> {
+        let Some((x, y)) = point else { return screen.iter().find(|w| w.layer == NORMAL_LEVEL && w.pid != 0) };
+        let under = |w: &&OnScreenWindow| w.pid != 0 && (w.bounds.left..w.bounds.right).contains(&x) && (w.bounds.top..w.bounds.bottom).contains(&y);
+        screen.iter().filter(|w| w.is_application()).find(under).or_else(|| screen.iter().find(under))
+    }
 }
 
 fn running() -> Vec<objc2::rc::Retained<NSRunningApplication>> {

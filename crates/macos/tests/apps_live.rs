@@ -19,6 +19,22 @@ fn window_entries_are_read_front_to_back_without_transparent_ones() {
 }
 
 #[test]
+fn input_reaches_the_frontmost_window_under_the_point() {
+    let entries = [
+        json!({"kCGWindowNumber": 1, "kCGWindowOwnerPID": 50, "kCGWindowOwnerName": "Dock", "kCGWindowLayer": 20, "kCGWindowBounds": {"X": 0, "Y": 0, "Width": 1000, "Height": 1100}}),
+        json!({"kCGWindowNumber": 2, "kCGWindowOwnerPID": 51, "kCGWindowOwnerName": "Claude", "kCGWindowLayer": 0, "kCGWindowBounds": {"X": 0, "Y": 0, "Width": 500, "Height": 500}}),
+        json!({"kCGWindowNumber": 3, "kCGWindowOwnerPID": 52, "kCGWindowOwnerName": "TextEdit", "kCGWindowLayer": 0, "kCGWindowBounds": {"X": 0, "Y": 0, "Width": 1000, "Height": 1000}}),
+    ];
+    let windows = OnScreenWindow::parse(&entries);
+    let owner = |point| OnScreenWindow::at(&windows, point).map(|w| w.owner_name.as_str());
+    assert_eq!(owner(Some((100.0, 100.0))), Some("Claude"), "the window in front, not the one meant");
+    assert_eq!(owner(Some((700.0, 100.0))), Some("TextEdit"));
+    assert_eq!(owner(Some((700.0, 1050.0))), Some("Dock"), "the Dock's screen-wide window only where no app's is");
+    assert_eq!(owner(Some((2000.0, 0.0))), None);
+    assert_eq!(owner(None), Some("Claude"), "keys go to the front window");
+}
+
+#[test]
 fn the_finder_is_found_by_name_and_bundle_id() {
     let pid = by_bundle_id("com.apple.finder").expect("the Finder runs");
     assert_eq!(by_name("finder"), Some(pid));

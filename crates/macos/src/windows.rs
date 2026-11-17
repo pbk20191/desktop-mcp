@@ -32,6 +32,23 @@ pub fn numbers_available() -> bool {
     get_window().is_some()
 }
 
+/// The title and owner of the window input at `point` (or keys) reaches, from the window server. Its title needs
+/// Screen Recording; without it the title is read through Accessibility, by window number, within the messaging
+/// timeout.
+pub fn window_at(point: Option<(f64, f64)>) -> Option<(String, String)> {
+    let screen = crate::apps::OnScreenWindow::all();
+    let window = crate::apps::OnScreenWindow::at(&screen, point)?;
+    let mut title = window.title.clone();
+    if title.is_empty() && window.is_application() {
+        let number = u32::try_from(window.window_id).ok();
+        let elements = application(window.pid).elements("AXWindows").unwrap_or_default();
+        if let Some(found) = elements.iter().find(|element| number.is_some() && self::number(element) == number) {
+            title = found.attribute("AXTitle").map(|value| value.text().to_string()).unwrap_or_default();
+        }
+    }
+    Some((title, window.owner_name.clone()))
+}
+
 /// Regular apps matching `app` (all of them without one): pid and localized name (else bundle id).
 fn regular_apps(app: Option<&str>) -> Vec<(i32, String)> {
     NSWorkspace::sharedWorkspace()

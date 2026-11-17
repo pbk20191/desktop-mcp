@@ -139,6 +139,10 @@ impl Desktop for MacDesktop {
         crate::ax::trusted()
     }
 
+    fn window_at(&self, at: Option<(i64, i64)>) -> Option<(String, String)> {
+        crate::windows::window_at(at.map(|(x, y)| (x as f64, y as f64)))
+    }
+
     fn post(&self, event: InputEvent) {
         crate::input::post(&event);
     }
