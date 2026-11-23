@@ -2,10 +2,10 @@
 //! settle) when the platform reports that what the wait reads may have changed.
 use crate::mcp::Desktop;
 use std::any::Any;
-use std::cell::{Cell, RefCell};
 use std::future::{poll_fn, Future};
 use std::pin::pin;
-use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::task::{Poll, Waker};
 use std::time::{Duration, Instant};
 
@@ -20,46 +20,52 @@ pub enum Watch<'a> {
     Elements(Option<&'a str>),
 }
 
-/// Raised by the platform when something a wait watches may have changed.
+/// Raised by the platform when something a wait watches may have changed: from the main thread (macOS) or from
+/// the threads UI Automation calls its handlers on (Windows).
 #[derive(Default)]
 pub struct Signal {
-    raised: Cell<bool>,
-    waker: RefCell<Option<Waker>>,
+    raised: AtomicBool,
+    waker: Mutex<Option<Waker>>,
 }
 
 impl Signal {
     pub fn raise(&self) {
-        self.raised.set(true);
-        if let Some(waker) = self.waker.take() {
+        self.raised.store(true, Ordering::Release);
+        if let Some(waker) = self.waker.lock().expect("the signal lock is never poisoned").take() {
             waker.wake();
         }
+    }
+
+    fn take(&self) -> bool {
+        self.raised.swap(false, Ordering::AcqRel)
     }
 }
 
 /// A wait's watching: raises `signal` while `watching` (the platform's observers) lives. [`Changes::none`] when the
 /// platform does not watch; the wait then only polls.
 pub struct Changes {
-    signal: Rc<Signal>,
+    signal: Arc<Signal>,
     _watching: Option<Box<dyn Any>>,
 }
 
 impl Changes {
     pub fn none() -> Changes {
-        Changes { signal: Rc::default(), _watching: None }
+        Changes { signal: Arc::default(), _watching: None }
     }
 
-    pub fn new(signal: Rc<Signal>, watching: Box<dyn Any>) -> Changes {
+    pub fn new(signal: Arc<Signal>, watching: Box<dyn Any>) -> Changes {
         Changes { signal, _watching: Some(watching) }
     }
 
     /// Completes when the signal is raised (at once if it already was), lowering it.
     fn changed(&self) -> impl Future<Output = ()> + '_ {
         poll_fn(|cx| {
-            if self.signal.raised.replace(false) {
+            if self.signal.take() {
                 return Poll::Ready(());
             }
-            *self.signal.waker.borrow_mut() = Some(cx.waker().clone());
-            Poll::Pending
+            *self.signal.waker.lock().expect("the signal lock is never poisoned") = Some(cx.waker().clone());
+            // A raise between the first look and storing the waker found no waker to wake.
+            if self.signal.take() { Poll::Ready(()) } else { Poll::Pending }
         })
     }
 }
@@ -105,7 +111,7 @@ async fn poll<T>(desktop: &dyn Desktop, deadline: Instant, watch: Watch<'_>, mut
     let mut delay = crate::tuning::wait::FIRST_DELAY;
     loop {
         // What changed before this check is covered by it.
-        changes.signal.raised.set(false);
+        changes.signal.take();
         if let Some(value) = check().await {
             return Some(value);
         }

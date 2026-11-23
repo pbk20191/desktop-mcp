@@ -76,7 +76,7 @@ pub struct FakeDesktop {
     pub slept: RefCell<Vec<Duration>>,
     /// What waits asked to watch, and the signal of the latest; with `change_while_sleeping`, every sleep raises it.
     pub watched: RefCell<Vec<String>>,
-    pub watch_signal: RefCell<Option<Rc<desktop_mcp_core::wait::Signal>>>,
+    pub watch_signal: RefCell<Option<std::sync::Arc<desktop_mcp_core::wait::Signal>>>,
     pub change_while_sleeping: bool,
     pub shells: RefCell<Vec<(String, ShellMode, Duration)>>,
     pub shell_answer: RefCell<Option<Result<Run, String>>>,
@@ -117,7 +117,7 @@ impl Desktop for FakeDesktop {
     }
     fn watch(&self, what: desktop_mcp_core::wait::Watch<'_>) -> desktop_mcp_core::wait::Changes {
         self.watched.borrow_mut().push(format!("{what:?}"));
-        let signal = Rc::new(desktop_mcp_core::wait::Signal::default());
+        let signal = std::sync::Arc::new(desktop_mcp_core::wait::Signal::default());
         *self.watch_signal.borrow_mut() = Some(signal.clone());
         desktop_mcp_core::wait::Changes::new(signal, Box::new(()))
     }

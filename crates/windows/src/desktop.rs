@@ -383,21 +383,16 @@ impl Desktop for WindowsDesktop {
         })
     }
 
+    fn watch(&self, what: desktop_mcp_core::wait::Watch<'_>) -> desktop_mcp_core::wait::Changes {
+        crate::observer::watch(what)
+    }
+
     /// An element of `app`'s windows (else the focused window's app) by UIA control type and name, on the pool.
     fn find_element(&self, app: Option<&str>, title: Option<&str>, role: Option<&str>, deadline: std::time::Instant) -> Pending<Option<desktop_mcp_core::element::FoundElement>> {
         let (app, title, role) = (app.map(str::to_string), title.map(str::to_string), role.map(str::to_string));
         Box::pin(pool::offload(move || {
-            let windows = match &app {
-                Some(app) => crate::windows_list::top_windows_for(app),
-                None => crate::windows_list::top_windows(),
-            };
-            let owner = match &app {
-                // Not by an unresolved UWP frame: its process frames every UWP app.
-                Some(app) => crate::windows_list::app_windows(app, &windows).into_iter().find(|window| !window.is_unresolved_frame()).map(|window| window.pid),
-                None => windows.iter().find(|window| window.focused).map(|window| window.pid),
-            }?;
             let mut fallback = None;
-            for window in windows.iter().filter(|window| window.pid == owner && !window.minimized) {
+            for window in crate::windows_list::element_windows(app.as_deref()) {
                 if !crate::tree::answers(window.hwnd) {
                     continue;
                 }

@@ -181,6 +181,21 @@ pub fn app_windows<'a>(app: &str, windows: &'a [TopWindow]) -> Vec<&'a TopWindow
 }
 
 /// The applications' top-level windows in z-order (front first). Blocking: run it on the pool.
+/// The windows an element search walks: those of `app`'s process (else of the focused window's), not minimized.
+/// Blocks on other apps: call it on the pool.
+pub fn element_windows(app: Option<&str>) -> Vec<TopWindow> {
+    let windows = match app {
+        Some(app) => top_windows_for(app),
+        None => top_windows(),
+    };
+    let owner = match app {
+        // Not by an unresolved UWP frame: its process frames every UWP app.
+        Some(app) => app_windows(app, &windows).into_iter().find(|window| !window.is_unresolved_frame()).map(|window| window.pid),
+        None => windows.iter().find(|window| window.focused).map(|window| window.pid),
+    };
+    windows.into_iter().filter(|window| Some(window.pid) == owner && !window.minimized).collect()
+}
+
 pub fn top_windows() -> Vec<TopWindow> {
     windows_where(is_app_window)
 }

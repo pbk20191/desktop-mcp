@@ -45,6 +45,19 @@ soon as something changed, and the polling stays as the fallback for apps that r
 - `crates/macos/src/observer.rs`: the AXObservers (run loop sources on the main run loop) and the NSWorkspace
   observers (blocks run on the main thread); everything is removed when the wait ends.
 
-## Left open
+## Windows (added 2026-11-23)
 
-- Windows can supply the same signal from UI Automation events later; until then it polls as before.
+UI Automation events only (the owner ruled out `SetWinEventHook`), in `crates/windows/src/observer.rs`:
+
+- Every wait: WindowOpened and WindowClosed on the desktop root's subtree. Windows lists the apps that have a
+  window, so these also cover app waits.
+- Window waits add Name and WindowVisualState changes of the root's children (the top-level windows).
+- Element waits add StructureChanged and Name changes on the subtrees of the windows the search walks
+  (`windows_list::element_windows`, shared with `find_element`). A window opened later is seen by the opened event
+  (a check), not observed itself.
+- Window events are not filtered by app: few, and a check costs a window list.
+- Handlers are added and removed on the pool (multithreaded apartment), each watch with its own automation object
+  so `RemoveAllEventHandlers` removes exactly its handlers; UI Automation calls them on its own threads, so the
+  core `Signal` is thread-safe (`AtomicBool` and a locked waker). The first moments of a wait, before the handlers
+  are in, are covered by the polling.
+- Type-checked from macOS (`cargo check --target x86_64-pc-windows-msvc`); not yet run on Windows.

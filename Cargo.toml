@@ -13,6 +13,8 @@ desktop-mcp-core = { path = "crates/core" }
 desktop-mcp-macos = { path = "crates/macos" }
 desktop-mcp-windows = { path = "crates/windows" }
 windows-future = "0.3"
+# `#[implement]` (COM objects such as UI Automation event handlers) names this crate.
+windows-core = "0.62"
 schannel = "0.1"
 rcgen = "0.14"
 html5ever = "0.35"

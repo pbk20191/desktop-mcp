@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::rc::{Rc, Weak};
+use std::sync::Arc;
 
 /// What window waits listen for. The element of a closed window answers nothing, so a destroyed element only
 /// says "look again".
@@ -37,7 +38,7 @@ struct Observed {
 }
 
 struct Watching {
-    signal: Rc<Signal>,
+    signal: Arc<Signal>,
     apps: Apps,
     notifications: &'static [&'static str],
     observed: RefCell<HashMap<i32, Observed>>,
@@ -93,7 +94,7 @@ impl Watching {
         let app = unsafe { AXUIElement::new_application(pid) };
         // Registering messages the app: a hung one costs this much once, not the system's 6 s per notification.
         unsafe { app.set_messaging_timeout(crate::tuning::AX_MESSAGING_TIMEOUT) };
-        let refcon = Rc::as_ptr(&self.signal) as *mut c_void;
+        let refcon = Arc::as_ptr(&self.signal) as *mut c_void;
         let mut any = false;
         for notification in self.notifications {
             match unsafe { observer.add_notification(&app, &CFString::from_static_str(notification), refcon) } {
@@ -157,7 +158,7 @@ pub fn watch(what: Watch<'_>) -> Changes {
         Watch::Elements(Some(app)) => (Apps::Named(app.to_string()), ELEMENT_NOTIFICATIONS),
     };
     let menu_bar = matches!(apps, Apps::MenuBarOwner);
-    let signal = Rc::new(Signal::default());
+    let signal = Arc::new(Signal::default());
     let watching = Rc::new(Watching { signal: signal.clone(), apps, notifications, observed: RefCell::default(), workspace: RefCell::default() });
     if crate::ax::trusted() {
         watching.update();

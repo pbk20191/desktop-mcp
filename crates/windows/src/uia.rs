@@ -65,7 +65,7 @@ const CONNECTION_TIMEOUT_MS: u32 = 1000;
 const TRANSACTION_TIMEOUT_MS: u32 = 2000;
 
 /// A UI Automation client whose calls give up on a provider after the timeouts above.
-fn automation() -> Option<IUIAutomation> {
+pub fn automation() -> Option<IUIAutomation> {
     ensure_mta();
     let automation: IUIAutomation = unsafe { CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER) }.ok()?;
     if let Ok(bounded) = automation.cast::<IUIAutomation2>() {
