@@ -612,7 +612,7 @@ impl Server {
 
     #[tool(
         name = "Menu",
-        description = "Reads and chooses commands from an app's menu bar ('app': name or bundle id; default the frontmost app). 'list' (default) returns an indented tree of item titles with keyboard shortcuts and [disabled], 'depth' levels deep (default 2, max 4), below the optional 'path' prefix. 'select' presses the item 'path' names from the bar item down, e.g. [\"File\", \"Export…\"]: titles match exactly, then ignoring case, then also treating '...' as '…'; the Apple menu is \"Apple\". A disabled item is not pressed.",
+        description = "Reads and chooses commands from an app's menu bar ('app': its name as shown or in English, or its bundle id; default the frontmost app). 'list' (default) returns an indented tree of item titles with keyboard shortcuts and [disabled], 'depth' levels deep (default 2, max 4), below the optional 'path' prefix. 'select' presses the item 'path' names from the bar item down, e.g. [\"File\", \"Export…\"]: titles match exactly, then ignoring case, then also treating '...' as '…'; the Apple menu is \"Apple\". A disabled item is not pressed.",
         annotations(title = "Menu", read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = false)
     )]
     async fn menu(&self, Parameters(args): Parameters<MenuArgs>, cancellation: CancellationToken) -> CallToolResult {
@@ -636,7 +636,7 @@ impl Server {
 
     #[tool(
         name = "App",
-        description = "Manages macOS applications with six modes: 'launch' (opens the application), 'resize' (adjusts active window size), 'move' (repositions active window), 'switch' (brings specific app into focus), 'quit' (asks every process with that name or bundle id to quit; the app may ask to save), 'force_quit' (terminates them without asking). Quit never targets desktop-mcp itself or loginwindow.",
+        description = "Manages macOS applications ('name': as shown or in English, or a bundle id) with six modes: 'launch' (opens the application), 'resize' (adjusts active window size), 'move' (repositions active window), 'switch' (brings specific app into focus), 'quit' (asks every process with that name or bundle id to quit; the app may ask to save), 'force_quit' (terminates them without asking). Quit never targets desktop-mcp itself or loginwindow.",
         annotations(title = "App", read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = false)
     )]
     async fn app(&self, Parameters(args): Parameters<AppArgs>, cancellation: CancellationToken) -> CallToolResult {

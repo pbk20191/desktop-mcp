@@ -1,6 +1,6 @@
 //! The App tool: launch, switch to, resize, move and quit applications.
 use crate::mcp::Desktop;
-use crate::wait::{matches, RunningApp};
+use crate::wait::RunningApp;
 use rmcp::schemars;
 
 const LOGINWINDOW: &str = "com.apple.loginwindow";
@@ -25,11 +25,12 @@ pub enum FrameChange {
     Position(f64, f64),
 }
 
-/// Every process matching `name` (a bundle id exactly, or a name ignoring case), except this one and loginwindow.
+/// Every process matching `name` (a bundle id exactly, or a shown or English name ignoring case), except this one
+/// and loginwindow.
 pub fn quit_targets(name: &str, running: &[RunningApp], own_pid: i32) -> Result<Vec<i32>, String> {
     let found: Vec<i32> = running
         .iter()
-        .filter(|app| app.pid != own_pid && app.bundle_id.as_deref() != Some(LOGINWINDOW) && matches(app.name.as_deref(), app.bundle_id.as_deref(), name))
+        .filter(|app| app.pid != own_pid && app.bundle_id.as_deref() != Some(LOGINWINDOW) && app.is(name))
         .map(|app| app.pid)
         .collect();
     if found.is_empty() { Err(format!("Application '{name}' is not running.")) } else { Ok(found) }

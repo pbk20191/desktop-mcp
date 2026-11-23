@@ -124,7 +124,7 @@ pub fn menu_bar_owner() -> Option<i32> {
     workspace.menuBarOwningApplication().or_else(|| workspace.frontmostApplication()).map(|app| app.processIdentifier())
 }
 
-/// The regular app named `app` (localized name ignoring case, or exact bundle id).
+/// The regular app named `app` (localized or English name ignoring case, or exact bundle id).
 fn target(app: &str) -> Option<i32> {
     let wanted = app.trim().to_lowercase();
     NSWorkspace::sharedWorkspace()
@@ -133,7 +133,9 @@ fn target(app: &str) -> Option<i32> {
         .find(|running| {
             !running.isTerminated()
                 && running.activationPolicy() == NSApplicationActivationPolicy::Regular
-                && (running.bundleIdentifier().is_some_and(|id| id.to_string() == app) || running.localizedName().is_some_and(|name| name.to_string().to_lowercase() == wanted))
+                && (running.bundleIdentifier().is_some_and(|id| id.to_string() == app)
+                    || running.localizedName().is_some_and(|name| name.to_string().to_lowercase() == wanted)
+                    || crate::open::english_name(running).is_some_and(|english| english.to_lowercase() == wanted))
         })
         .map(|running| running.processIdentifier())
 }

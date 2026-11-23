@@ -111,7 +111,8 @@ pub fn by_bundle_id(bundle_id: &str) -> Option<i32> {
     matches.first().map(|(pid, _)| *pid)
 }
 
-/// The process whose localized name, then whose AX title, is `name`, ignoring case.
+/// The process whose localized name, then whose AX title, then whose English name (its bundle's file name) is
+/// `name`, ignoring case.
 pub fn by_name(name: &str) -> Option<i32> {
     let wanted = name.trim().to_lowercase();
     let running = running();
@@ -119,7 +120,10 @@ pub fn by_name(name: &str) -> Option<i32> {
     if let Some(app) = running.iter().find(|app| localized(app).is_some_and(|name| name.to_lowercase() == wanted)) {
         return Some(app.processIdentifier());
     }
-    running.iter().find(|app| self::name(app.processIdentifier(), localized(app).as_deref()).to_lowercase() == wanted).map(|app| app.processIdentifier())
+    if let Some(app) = running.iter().find(|app| self::name(app.processIdentifier(), localized(app).as_deref()).to_lowercase() == wanted) {
+        return Some(app.processIdentifier());
+    }
+    running.iter().find(|app| crate::open::english_name(app).is_some_and(|english| english.to_lowercase() == wanted)).map(|app| app.processIdentifier())
 }
 
 /// The app whose window is frontmost, per the window server (reliable without AppKit events).

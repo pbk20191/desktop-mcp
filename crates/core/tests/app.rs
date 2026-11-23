@@ -52,6 +52,8 @@ fn quit_asks_every_matching_process() {
 fn quit_never_targets_this_process_or_loginwindow() {
     let running = vec![app(99, "Preview", None), app(10, "Preview", None), app(5, "loginwindow", Some("com.apple.loginwindow"))];
     assert_eq!(quit_targets("Preview", &running, 99), Ok(vec![10]));
+    let textedit = RunningApp { pid: 7, name: Some("텍스트 편집기".into()), bundle_id: Some("com.apple.TextEdit".into()), english_name: Some("TextEdit".into()) };
+    assert_eq!(quit_targets("textedit", &[textedit], 99), Ok(vec![7]));
     assert_eq!(quit_targets("loginwindow", &running, 99), Err("Application 'loginwindow' is not running.".to_string()));
     assert_eq!(quit_targets("com.apple.loginwindow", &running, 99), Err("Application 'com.apple.loginwindow' is not running.".to_string()));
     assert!(quit_targets("COM.APPLE.LOGINWINDOW", &running, 99).is_err());
