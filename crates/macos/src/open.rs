@@ -105,6 +105,13 @@ fn search(folder: &Path, wanted: &str, level: usize) -> Option<PathBuf> {
     None
 }
 
+/// The app bundle's file name without `.app`: the English name of an app whose shown name is translated
+/// (TextEdit.app shows as 텍스트 편집기) or shortened (Visual Studio Code.app as Code).
+pub fn english_name(app: &NSRunningApplication) -> Option<String> {
+    let file = app.bundleURL()?.lastPathComponent()?.to_string();
+    file.strip_suffix(".app").map(str::to_string)
+}
+
 /// Apps with a Dock icon or a menu-bar presence; background-only processes are left out. NSWorkspace updates
 /// this list on the main run loop: call it on the main thread.
 pub fn running_apps() -> Vec<RunningApp> {
@@ -116,6 +123,7 @@ pub fn running_apps() -> Vec<RunningApp> {
             pid: app.processIdentifier(),
             name: app.localizedName().map(|name| name.to_string()),
             bundle_id: app.bundleIdentifier().map(|id| id.to_string()),
+            english_name: english_name(&app),
         })
         .collect()
 }

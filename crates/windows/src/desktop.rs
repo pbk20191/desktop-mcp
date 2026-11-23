@@ -128,7 +128,7 @@ impl Desktop for WindowsDesktop {
             let mut apps: Vec<RunningApp> = Vec::new();
             for window in pool::offload(crate::windows_list::top_windows).await {
                 if !apps.iter().any(|app| app.pid == window.pid as i32) {
-                    apps.push(RunningApp { pid: window.pid as i32, name: Some(window.app), bundle_id: Some(window.exe) });
+                    apps.push(RunningApp { pid: window.pid as i32, name: Some(window.app), bundle_id: Some(window.exe), english_name: None });
                 }
             }
             apps

@@ -37,7 +37,7 @@ impl ElementNode for AxNode {
 /// The processes to search: the regular apps matching `app`, else the menu bar owner.
 pub fn pids(app: Option<&str>, owner: Option<i32>) -> Vec<i32> {
     match app {
-        Some(app) => crate::open::running_apps().into_iter().filter(|running| desktop_mcp_core::wait::matches(running.name.as_deref(), running.bundle_id.as_deref(), app)).map(|running| running.pid).collect(),
+        Some(app) => crate::open::running_apps().into_iter().filter(|running| running.is(app)).map(|running| running.pid).collect(),
         None => owner.into_iter().collect(),
     }
 }

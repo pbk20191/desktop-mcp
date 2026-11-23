@@ -11,7 +11,7 @@ fn call(desktop: &Rc<FakeDesktop>, arguments: Value) -> Vec<String> {
     texts(&call_tool(desktop, &["App"], "App", arguments))
 }
 fn app(pid: i32, name: &str, bundle_id: Option<&str>) -> RunningApp {
-    RunningApp { pid, name: Some(name.into()), bundle_id: bundle_id.map(Into::into) }
+    RunningApp { pid, name: Some(name.into()), bundle_id: bundle_id.map(Into::into), english_name: None }
 }
 
 #[test]

@@ -58,7 +58,7 @@ fn regular_apps(app: Option<&str>) -> Vec<(i32, String)> {
         .filter(|running| {
             let name = running.localizedName().map(|n| n.to_string());
             let bundle_id = running.bundleIdentifier().map(|b| b.to_string());
-            app.is_none_or(|app| matches(name.as_deref(), bundle_id.as_deref(), app))
+            app.is_none_or(|app| matches(name.as_deref(), bundle_id.as_deref(), app) || matches(crate::open::english_name(running).as_deref(), None, app))
         })
         .map(|running| (running.processIdentifier(), running.localizedName().map(|n| n.to_string()).or_else(|| running.bundleIdentifier().map(|b| b.to_string())).unwrap_or_default()))
         .collect()

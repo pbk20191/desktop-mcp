@@ -94,7 +94,7 @@ fn batch_with_an_unknown_tool_runs_nothing() {
 }
 
 fn preview() -> RunningApp {
-    RunningApp { pid: 42, name: Some("Preview".into()), bundle_id: Some("com.apple.Preview".into()) }
+    RunningApp { pid: 42, name: Some("Preview".into()), bundle_id: Some("com.apple.Preview".into()), english_name: None }
 }
 fn looking(looks: Vec<Vec<RunningApp>>) -> Rc<FakeDesktop> {
     Rc::new(FakeDesktop { looks: RefCell::new(looks), ..FakeDesktop::default() })
@@ -107,6 +107,13 @@ fn an_app_that_starts_is_waited_for_with_backoff() {
     assert_eq!(desktop.looked.get(), 5);
     let millis: Vec<u128> = desktop.slept.borrow().iter().map(Duration::as_millis).collect();
     assert_eq!(millis, [100, 200, 400, 800], "the duration is ignored with until");
+}
+
+#[test]
+fn an_app_is_found_by_its_english_name_too() {
+    let textedit = RunningApp { pid: 7, name: Some("텍스트 편집기".into()), bundle_id: Some("com.apple.TextEdit".into()), english_name: Some("TextEdit".into()) };
+    let desktop = looking(vec![vec![textedit]]);
+    assert_eq!(texts(&call(&desktop, "Wait", json!({"until": "app_running", "app": "textedit"}))), ["App textedit is running."]);
 }
 
 #[test]

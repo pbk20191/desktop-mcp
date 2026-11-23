@@ -1,7 +1,7 @@
 //! Watching for `Wait`: an AXObserver on each app the wait reads, and NSWorkspace's launch, quit and activation
 //! notifications, raise the wait's signal so it checks again at once instead of at its next poll. Everything here
 //! runs on the main thread: the observers' run loop sources are on the main run loop, and NSWorkspace posts there.
-use desktop_mcp_core::wait::{matches, Changes, Signal, Watch};
+use desktop_mcp_core::wait::{Changes, Signal, Watch};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2_app_kit::{NSWorkspace, NSWorkspaceDidActivateApplicationNotification, NSWorkspaceDidLaunchApplicationNotification, NSWorkspaceDidTerminateApplicationNotification};
@@ -54,7 +54,7 @@ impl Watching {
         match &self.apps {
             Apps::None => vec![],
             Apps::Every => crate::open::running_apps().into_iter().map(|app| app.pid).collect(),
-            Apps::Named(app) => crate::open::running_apps().into_iter().filter(|running| matches(running.name.as_deref(), running.bundle_id.as_deref(), app)).map(|running| running.pid).collect(),
+            Apps::Named(app) => crate::open::running_apps().into_iter().filter(|running| running.is(app)).map(|running| running.pid).collect(),
             Apps::MenuBarOwner => crate::menu::menu_bar_owner().into_iter().collect(),
         }
     }

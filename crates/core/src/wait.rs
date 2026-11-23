@@ -70,6 +70,16 @@ pub struct RunningApp {
     pub pid: i32,
     pub name: Option<String>,
     pub bundle_id: Option<String>,
+    /// The app's English name where the system shows a translated one (macOS: its bundle's file name, TextEdit
+    /// for 텍스트 편집기), so a model naming it in English finds it too.
+    pub english_name: Option<String>,
+}
+
+impl RunningApp {
+    /// Whether `query` names this app: [`matches`] by its shown name or bundle id, or by its English name.
+    pub fn is(&self, query: &str) -> bool {
+        matches(self.name.as_deref(), self.bundle_id.as_deref(), query) || matches(self.english_name.as_deref(), None, query)
+    }
 }
 
 /// The shared app filter: a bundle id exactly, or a localized name ignoring case and surrounding spaces. A blank
@@ -126,7 +136,7 @@ pub async fn until_app(desktop: &dyn Desktop, app: Option<&str>, running: bool, 
     let mut first = true;
     let found = poll(desktop, deadline, Watch::Apps, async || {
         // As App matches it: a running app's name, else the installed app it names (a Start menu name on Windows).
-        let is_running = desktop.running_apps().await.iter().any(|running| matches(running.name.as_deref(), running.bundle_id.as_deref(), app)) || !desktop.installed_app_pids(app).await.is_empty();
+        let is_running = desktop.running_apps().await.iter().any(|running| running.is(app)) || !desktop.installed_app_pids(app).await.is_empty();
         let was_first = std::mem::replace(&mut first, false);
         if is_running != running {
             return None;
