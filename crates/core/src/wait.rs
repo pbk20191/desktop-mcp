@@ -1,6 +1,68 @@
-//! `Wait` until a condition holds: checks with backoff on the platform's exact timers.
+//! `Wait` until a condition holds: checks with backoff on the platform's exact timers, and at once (after a short
+//! settle) when the platform reports that what the wait reads may have changed.
 use crate::mcp::Desktop;
+use std::any::Any;
+use std::cell::{Cell, RefCell};
+use std::future::{poll_fn, Future};
+use std::pin::pin;
+use std::rc::Rc;
+use std::task::{Poll, Waker};
 use std::time::{Duration, Instant};
+
+/// What a wait reads, for the platform to watch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Watch<'a> {
+    /// Apps launching and quitting.
+    Apps,
+    /// Windows of `app` (every app when `None`) opening, closing, retitled or minimized.
+    Windows(Option<&'a str>),
+    /// Elements of `app` (the app owning the menu bar when `None`) appearing, going away or moving.
+    Elements(Option<&'a str>),
+}
+
+/// Raised by the platform when something a wait watches may have changed.
+#[derive(Default)]
+pub struct Signal {
+    raised: Cell<bool>,
+    waker: RefCell<Option<Waker>>,
+}
+
+impl Signal {
+    pub fn raise(&self) {
+        self.raised.set(true);
+        if let Some(waker) = self.waker.take() {
+            waker.wake();
+        }
+    }
+}
+
+/// A wait's watching: raises `signal` while `watching` (the platform's observers) lives. [`Changes::none`] when the
+/// platform does not watch; the wait then only polls.
+pub struct Changes {
+    signal: Rc<Signal>,
+    _watching: Option<Box<dyn Any>>,
+}
+
+impl Changes {
+    pub fn none() -> Changes {
+        Changes { signal: Rc::default(), _watching: None }
+    }
+
+    pub fn new(signal: Rc<Signal>, watching: Box<dyn Any>) -> Changes {
+        Changes { signal, _watching: Some(watching) }
+    }
+
+    /// Completes when the signal is raised (at once if it already was), lowering it.
+    fn changed(&self) -> impl Future<Output = ()> + '_ {
+        poll_fn(|cx| {
+            if self.signal.raised.replace(false) {
+                return Poll::Ready(());
+            }
+            *self.signal.waker.borrow_mut() = Some(cx.waker().clone());
+            Poll::Pending
+        })
+    }
+}
 
 /// A running application, as the app conditions see it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -21,10 +83,19 @@ pub fn matches(name: Option<&str>, bundle_id: Option<&str>, query: &str) -> bool
 }
 
 /// Calls `check` at once, then after 0.1 s, doubling to at most 1 s between checks, until it answers or `deadline`
-/// passes (the last sleep ends at the deadline, and one last check follows). `None` on timeout.
-async fn poll<T>(desktop: &dyn Desktop, deadline: Instant, mut check: impl AsyncFnMut() -> Option<T>) -> Option<T> {
+/// passes (the last sleep ends at the deadline, and one last check follows). `None` on timeout. When the platform
+/// reports a change in what `watch` names, the next check comes after a short settle instead (a burst of
+/// notifications costs one check); the backoff stays for apps that report nothing.
+async fn poll<T>(desktop: &dyn Desktop, deadline: Instant, watch: Watch<'_>, mut check: impl AsyncFnMut() -> Option<T>) -> Option<T> {
+    let changes = desktop.watch(watch);
+    let settle = match watch {
+        Watch::Elements(_) => crate::tuning::wait::ELEMENT_SETTLE,
+        Watch::Apps | Watch::Windows(_) => crate::tuning::wait::SETTLE,
+    };
     let mut delay = crate::tuning::wait::FIRST_DELAY;
     loop {
+        // What changed before this check is covered by it.
+        changes.signal.raised.set(false);
         if let Some(value) = check().await {
             return Some(value);
         }
@@ -32,8 +103,17 @@ async fn poll<T>(desktop: &dyn Desktop, deadline: Instant, mut check: impl Async
         if now >= deadline {
             return None;
         }
-        desktop.sleep(delay.min(deadline - now)).await;
-        delay = (delay * 2).min(crate::tuning::wait::MAX_DELAY);
+        let (mut sleep, mut changed) = (desktop.sleep(delay.min(deadline - now)), pin!(changes.changed()));
+        let woken = poll_fn(|cx| match changed.as_mut().poll(cx) {
+            Poll::Ready(()) => Poll::Ready(true),
+            Poll::Pending => sleep.as_mut().poll(cx).map(|()| false),
+        })
+        .await;
+        if woken {
+            desktop.sleep(settle.min(deadline.saturating_duration_since(Instant::now()))).await;
+        } else {
+            delay = (delay * 2).min(crate::tuning::wait::MAX_DELAY);
+        }
     }
 }
 
@@ -44,7 +124,7 @@ pub async fn until_app(desktop: &dyn Desktop, app: Option<&str>, running: bool, 
     let timeout = crate::shell::clamp_timeout(timeout, std::env::var(crate::shell::MAX_TIMEOUT_ENV).ok().as_deref()).max(0);
     let deadline = Instant::now() + Duration::from_secs(timeout as u64);
     let mut first = true;
-    let found = poll(desktop, deadline, async || {
+    let found = poll(desktop, deadline, Watch::Apps, async || {
         // As App matches it: a running app's name, else the installed app it names (a Start menu name on Windows).
         let is_running = desktop.running_apps().await.iter().any(|running| matches(running.name.as_deref(), running.bundle_id.as_deref(), app)) || !desktop.installed_app_pids(app).await.is_empty();
         let was_first = std::mem::replace(&mut first, false);
@@ -84,7 +164,7 @@ pub async fn until_window(desktop: &dyn Desktop, app: Option<&str>, title: Optio
     let (timeout, deadline) = deadline(timeout);
     let source = desktop.window_source();
     let wanted = title.map(str::to_lowercase);
-    let found = poll(desktop, deadline, async || {
+    let found = poll(desktop, deadline, Watch::Windows(app), async || {
         let reading = source.reading(app).await;
         let matching: Vec<_> = reading.windows.into_iter().filter(|w| wanted.as_ref().is_none_or(|t| w.title.to_lowercase().contains(t))).collect();
         if gone {
@@ -117,7 +197,7 @@ pub async fn until_element(desktop: &dyn Desktop, app: Option<&str>, title: Opti
     }
     crate::input::require_accessibility(desktop)?;
     let (timeout, deadline) = deadline(timeout);
-    let found = poll(desktop, deadline, async || {
+    let found = poll(desktop, deadline, Watch::Elements(app), async || {
         // Every check gets a real walk, even at or past the deadline (timeout 0).
         let walk_deadline = deadline.max(Instant::now() + crate::tuning::wait::MINIMUM_WALK);
         let element = desktop.find_element(app, title, role, walk_deadline).await?;

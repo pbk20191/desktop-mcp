@@ -219,6 +219,10 @@ impl Desktop for MacDesktop {
         Box::pin(crate::main_loop::offload(move || crate::element::find(&pids, title.as_deref(), role.as_deref(), deadline)))
     }
 
+    fn watch(&self, what: desktop_mcp_core::wait::Watch<'_>) -> desktop_mcp_core::wait::Changes {
+        crate::observer::watch(what)
+    }
+
     fn find_application(&self, name_or_bundle_id: &str) -> Pin<Box<dyn Future<Output = Option<Application>>>> {
         let name = name_or_bundle_id.to_string();
         Box::pin(crate::main_loop::offload(move || crate::open::application(&name)))

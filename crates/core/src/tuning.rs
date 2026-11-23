@@ -44,6 +44,12 @@ pub mod wait {
     /// The least time one element check may walk, whatever is left of the timeout: a large app's tree takes a
     /// few hundred milliseconds to read (Swift port).
     pub const MINIMUM_WALK: Duration = Duration::from_millis(500);
+    /// After the platform reports a change, before checking: notifications come in bursts (a window opening sends
+    /// a handful within a millisecond; Chromium apps send a pair on every focus change). Spike, 2026-11-23.
+    pub const SETTLE: Duration = Duration::from_millis(50);
+    /// The same before an element check, which walks a whole tree: Finder sent 158 layout and value notifications a
+    /// minute while browsing, so element checks are spaced further apart (spike, 2026-11-23).
+    pub const ELEMENT_SETTLE: Duration = Duration::from_millis(250);
 }
 
 /// After asking an app to come forward, before answering: activation is asynchronous (Swift port).

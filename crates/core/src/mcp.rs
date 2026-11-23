@@ -135,6 +135,11 @@ pub trait Desktop: 'static {
     }
     /// The processes of the installed app `name` names when no running app goes by it (Windows: its Start menu
     /// name, which may be localized). None on macOS, where a running app's name is the one it is launched by.
+    /// Watches what a `Wait` reads, raising the returned signal when it may have changed; the wait still polls, so
+    /// a platform may watch nothing.
+    fn watch(&self, _what: crate::wait::Watch<'_>) -> crate::wait::Changes {
+        crate::wait::Changes::none()
+    }
     fn installed_app_pids(&self, _name: &str) -> Pin<Box<dyn Future<Output = Vec<i32>>>> {
         Box::pin(async { Vec::new() })
     }

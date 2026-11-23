@@ -91,3 +91,14 @@ fn conditions_need_their_arguments_and_accessibility() {
         assert_eq!(call(&untrusted, arguments), std::slice::from_ref(&refused));
     }
 }
+
+#[test]
+fn a_reported_change_is_checked_after_a_settle_not_at_the_next_poll() {
+    let looks = vec![reading(vec![], true), reading(vec![window("Preview", "Report")], true)];
+    let desktop = Rc::new(FakeDesktop { window_source: Some(Rc::new(Looks(RefCell::new(looks)))), change_while_sleeping: true, ..FakeDesktop::default() });
+    // The first backoff sleep never ends: only the reported change can bring the second look.
+    let _held = desktop.hold_next_sleep();
+    assert_eq!(call(&desktop, json!({"until": "window", "app": "Preview"})), ["1:w7\tPreview\t\"Report\"\t[10,20,800,600]"]);
+    assert_eq!(*desktop.watched.borrow(), ["Windows(Some(\"Preview\"))"]);
+    assert_eq!(*desktop.slept.borrow(), [std::time::Duration::from_millis(100), std::time::Duration::from_millis(50)]);
+}

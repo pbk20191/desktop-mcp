@@ -74,6 +74,10 @@ pub struct FakeDesktop {
     /// When set, the next `sleep` waits for it (see `hold_next_sleep`).
     pub gate: RefCell<Option<tokio::sync::oneshot::Receiver<()>>>,
     pub slept: RefCell<Vec<Duration>>,
+    /// What waits asked to watch, and the signal of the latest; with `change_while_sleeping`, every sleep raises it.
+    pub watched: RefCell<Vec<String>>,
+    pub watch_signal: RefCell<Option<Rc<desktop_mcp_core::wait::Signal>>>,
+    pub change_while_sleeping: bool,
     pub shells: RefCell<Vec<(String, ShellMode, Duration)>>,
     pub shell_answer: RefCell<Option<Result<Run, String>>>,
     pub clipboard: RefCell<Clipboard>,
@@ -110,6 +114,12 @@ impl Desktop for FakeDesktop {
     }
     fn read_text(&self, _request: desktop_mcp_core::ocr::Request) -> Pin<Box<dyn Future<Output = Result<Vec<desktop_mcp_core::ocr::TextLine>, String>>>> {
         Box::pin(async { Ok(vec![]) })
+    }
+    fn watch(&self, what: desktop_mcp_core::wait::Watch<'_>) -> desktop_mcp_core::wait::Changes {
+        self.watched.borrow_mut().push(format!("{what:?}"));
+        let signal = Rc::new(desktop_mcp_core::wait::Signal::default());
+        *self.watch_signal.borrow_mut() = Some(signal.clone());
+        desktop_mcp_core::wait::Changes::new(signal, Box::new(()))
     }
     fn find_element(&self, _app: Option<&str>, _title: Option<&str>, _role: Option<&str>, deadline: std::time::Instant) -> Pin<Box<dyn Future<Output = Option<desktop_mcp_core::element::FoundElement>>>> {
         self.element_deadlines.borrow_mut().push(deadline);
@@ -249,6 +259,11 @@ impl Desktop for FakeDesktop {
     }
     fn sleep(&self, duration: Duration) -> Pin<Box<dyn Future<Output = ()>>> {
         self.slept.borrow_mut().push(duration);
+        if self.change_while_sleeping {
+            if let Some(signal) = self.watch_signal.borrow().as_ref() {
+                signal.raise();
+            }
+        }
         let gate = self.gate.borrow_mut().take();
         Box::pin(async move {
             if let Some(gate) = gate {
