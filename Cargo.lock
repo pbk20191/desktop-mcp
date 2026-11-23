@@ -369,7 +369,7 @@ checksum = "9e9de72ce2ad1f90dc62fa25f0f430ef85eb4b0d8fa0be4f30373bc40a21d28e"
 
 [[package]]
 name = "desktop-mcp-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "desktop-mcp-core",
@@ -384,7 +384,7 @@ dependencies = [
 
 [[package]]
 name = "desktop-mcp-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -407,7 +407,7 @@ dependencies = [
 
 [[package]]
 name = "desktop-mcp-macos"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "block2",
@@ -435,7 +435,7 @@ dependencies = [
 
 [[package]]
 name = "desktop-mcp-parity"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "form_urlencoded",
@@ -447,7 +447,7 @@ dependencies = [
 
 [[package]]
 name = "desktop-mcp-windows"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "desktop-mcp-core",
