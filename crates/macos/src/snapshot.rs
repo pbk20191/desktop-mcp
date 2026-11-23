@@ -97,6 +97,7 @@ struct RunningApp {
     pid: i32,
     bundle_id: Option<String>,
     localized: Option<String>,
+    english: Option<String>,
     regular: bool,
     accessory: bool,
     hidden: bool,
@@ -112,6 +113,7 @@ fn running() -> Vec<RunningApp> {
             pid: app.processIdentifier(),
             bundle_id: app.bundleIdentifier().map(|s| s.to_string()),
             localized: app.localizedName().map(|s| s.to_string()),
+            english: crate::open::english_name(&app),
             regular: app.activationPolicy() == NSApplicationActivationPolicy::Regular,
             accessory: app.activationPolicy() == NSApplicationActivationPolicy::Accessory,
             hidden: app.isHidden(),
@@ -240,6 +242,7 @@ fn view(app: &RunningApp, element: &Element, name: String, bounding_box: Boundin
         pid: app.pid,
         bundle_id: app.bundle_id.clone().unwrap_or_default(),
         dialog: dialog.map(|d| (d.title(), d.reachable())),
+        english_name: None,
     }
 }
 
@@ -247,7 +250,7 @@ fn view(app: &RunningApp, element: &Element, name: String, bounding_box: Boundin
 fn foreground(owner: Option<i32>, running: &[RunningApp], screen: &[OnScreenWindow]) -> Option<WindowView> {
     let pid = OnScreenWindow::frontmost_pid(screen).or(owner);
     let app = match pid {
-        Some(pid) => running.iter().find(|a| a.pid == pid).cloned().unwrap_or(RunningApp { pid, bundle_id: None, localized: None, regular: false, accessory: false, hidden: false, active: false }),
+        Some(pid) => running.iter().find(|a| a.pid == pid).cloned().unwrap_or(RunningApp { pid, bundle_id: None, localized: None, english: None, regular: false, accessory: false, hidden: false, active: false }),
         None => running.iter().find(|a| a.bundle_id.as_deref() == Some(FINDER))?.clone(),
     };
     let element = element(app.pid);
@@ -299,7 +302,7 @@ fn list(running: &[RunningApp], dialogs: &[Dialog]) -> Vec<WindowView> {
                 bounding_box = bbox(r);
             }
         }
-        Some(WindowView { name: app_name(&app, &element), status, bounding_box, pid: app.pid, bundle_id: app.bundle_id.clone().unwrap_or_default(), dialog })
+        Some(WindowView { name: app_name(&app, &element), status, bounding_box, pid: app.pid, bundle_id: app.bundle_id.clone().unwrap_or_default(), dialog, english_name: app.english.clone() })
     })
     .into_iter()
     .flatten()
@@ -850,7 +853,7 @@ fn bundles_with_menu_bar_extras(running: &[RunningApp]) -> Vec<String> {
 fn nodes(scan: &Scan, screen: &[OnScreenWindow], running: &[RunningApp]) -> TreeState {
     let mut state = TreeState::default();
     let Some(pid) = crate::apps::by_bundle_id(&scan.bundle_id) else { return state };
-    let app = running.iter().find(|a| a.pid == pid).cloned().unwrap_or(RunningApp { pid, bundle_id: Some(scan.bundle_id.clone()), localized: None, regular: false, accessory: false, hidden: false, active: false });
+    let app = running.iter().find(|a| a.pid == pid).cloned().unwrap_or(RunningApp { pid, bundle_id: Some(scan.bundle_id.clone()), localized: None, english: None, regular: false, accessory: false, hidden: false, active: false });
     // Keep an unresponsive app from stalling the snapshot.
     let element = element(pid);
     let name = app_name(&app, &element);

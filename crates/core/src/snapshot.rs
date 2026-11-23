@@ -151,11 +151,19 @@ pub struct WindowView {
     pub bundle_id: String,
     /// The dialog blocking it: its title, and whether the user can reach it now.
     pub dialog: Option<(String, bool)>,
+    /// The app's English name, shown after `name` when it differs (an app line on macOS: 시스템 설정 / System
+    /// Settings), since the app tools take either.
+    pub english_name: Option<String>,
 }
 
 impl WindowView {
     pub fn description(&self) -> String {
-        let mut line = format!("{} ({}) - {}", self.name, self.bundle_id, self.status.name());
+        let name = match &self.english_name {
+            // Compared by words ignoring case: a shown name may use another space (App Store's is U+00A0).
+            Some(english) if !english.to_lowercase().split_whitespace().eq(self.name.to_lowercase().split_whitespace()) => format!("{} / {english}", self.name),
+            _ => self.name.clone(),
+        };
+        let mut line = format!("{name} ({}) - {}", self.bundle_id, self.status.name());
         if let Some((title, reachable)) = &self.dialog {
             line += &format!(" - dialog: \"{title}\"");
             if !reachable {

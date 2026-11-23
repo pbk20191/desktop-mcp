@@ -10,8 +10,17 @@ fn node(name: &str, metadata: Vec<(String, Meta)>) -> TreeNode {
 }
 
 #[test]
+fn an_app_line_names_the_app_in_english_too_when_that_differs() {
+    let app = |name: &str, english: Option<&str>| WindowView { name: name.into(), status: AppStatus::Visible, bounding_box: BoundingBox::default(), pid: 1, bundle_id: "com.apple.x".into(), dialog: None, english_name: english.map(Into::into) };
+    assert_eq!(app("시스템 설정", Some("System Settings")).description(), "시스템 설정 / System Settings (com.apple.x) - Visible");
+    assert_eq!(app("Safari", Some("Safari")).description(), "Safari (com.apple.x) - Visible");
+    assert_eq!(app("App\u{a0}Store", Some("App Store")).description(), "App\u{a0}Store (com.apple.x) - Visible");
+    assert_eq!(app("Safari", None).description(), "Safari (com.apple.x) - Visible");
+}
+
+#[test]
 fn the_snapshot_text() {
-    let view = WindowView { name: "Docs".into(), status: AppStatus::Active, bounding_box: BoundingBox::default(), pid: 1, bundle_id: "com.apple.Safari".into(), dialog: Some(("Save?".into(), false)) };
+    let view = WindowView { name: "Docs".into(), status: AppStatus::Active, bounding_box: BoundingBox::default(), pid: 1, bundle_id: "com.apple.Safari".into(), dialog: Some(("Save?".into(), false)), english_name: None };
     let state = State {
         active: Some(view.clone()),
         windows: vec![view],

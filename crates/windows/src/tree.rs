@@ -245,7 +245,7 @@ fn view(window: &TopWindow) -> WindowView {
     } else {
         AppStatus::Visible
     };
-    WindowView { name: window.title.clone(), status, bounding_box: BoundingBox::from_edges(f.x, f.y, f.x + f.width, f.y + f.height), pid: window.pid as i32, bundle_id: window.exe.clone(), dialog: None }
+    WindowView { name: window.title.clone(), status, bounding_box: BoundingBox::from_edges(f.x, f.y, f.x + f.width, f.y + f.height), pid: window.pid as i32, bundle_id: window.exe.clone(), dialog: None, english_name: None }
 }
 
 /// The snapshot's windows and elements.
