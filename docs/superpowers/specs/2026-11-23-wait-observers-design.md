@@ -63,4 +63,5 @@ UI Automation events only (the owner ruled out `SetWinEventHook`), in `crates/wi
 - Type-checked from macOS (`cargo check --target x86_64-pc-windows-msvc`), then run on Windows 11 (2026-11-23):
   WindowOpened arrives on a UI Automation thread; `RemoveAllEventHandlers` on one automation object leaves another
   object's handlers in place; a window wait (release exe over stdio, window shown at varied points of the 1 s poll)
-  returned 37–235 ms after the window appeared. Element waits were not measured.
+  returned 37–235 ms after the window appeared; an element wait (a WinForms button added at the same points)
+  returned 262–271 ms after it: the 250 ms settle and one walk.
