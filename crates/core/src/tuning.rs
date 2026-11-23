@@ -48,8 +48,9 @@ pub mod wait {
     /// a handful within a millisecond; Chromium apps send a pair on every focus change). Spike, 2026-11-23.
     pub const SETTLE: Duration = Duration::from_millis(50);
     /// The same before an element check, which walks a whole tree: Finder sent 158 layout and value notifications a
-    /// minute while browsing, so element checks are spaced further apart (spike, 2026-11-23).
-    pub const ELEMENT_SETTLE: Duration = Duration::from_millis(250);
+    /// minute while browsing, so element checks are spaced further apart (spike, 2026-11-23). 100 ms: on Windows an
+    /// element wait returned 119–145 ms after the element appeared, against 262–271 ms at 250 ms (2026-11-23).
+    pub const ELEMENT_SETTLE: Duration = Duration::from_millis(100);
 }
 
 /// After asking an app to come forward, before answering: activation is asynchronous (Swift port).

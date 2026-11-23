@@ -21,7 +21,7 @@ soon as something changed, and the polling stays as the fallback for apps that r
 ## Decisions (owner: "go to full improvement")
 
 - Polling stays as it is (0.1 s doubling to 1 s). A reported change makes the next check come after a short
-  settle instead: 50 ms for app and window waits, 250 ms for element waits (a tree walk). Checks are not made more
+  settle instead: 50 ms for app and window waits, 100 ms for element waits (a tree walk; first 250 ms). Checks are not made more
   often than that, however noisy the app.
 - Window waits listen for AXWindowCreated, AXUIElementDestroyed, AXTitleChanged, AXMainWindowChanged,
   AXFocusedWindowChanged, AXWindowMiniaturized and AXWindowDeminiaturized, on the named app's processes, or on
@@ -64,4 +64,6 @@ UI Automation events only (the owner ruled out `SetWinEventHook`), in `crates/wi
   WindowOpened arrives on a UI Automation thread; `RemoveAllEventHandlers` on one automation object leaves another
   object's handlers in place; a window wait (release exe over stdio, window shown at varied points of the 1 s poll)
   returned 37–235 ms after the window appeared; an element wait (a WinForms button added at the same points)
-  returned 262–271 ms after it: the 250 ms settle and one walk.
+  returned 262–271 ms after it: the 250 ms settle and one walk. At 100 ms it returned 119–145 ms after (50 ms:
+  62–73 ms), so the element settle became 100 ms: half the wait, while a noisy Chrome (a 0.29 s walk) is walked
+  about 2.6 times a second instead of 1.9.
