@@ -405,20 +405,20 @@ async fn act(source: &dyn WindowSource, cache: &RefCell<WindowCache>, window: &W
     let minimized = format!("Window {id} is minimized; use restore first.");
     match mode {
         Mode::Focus => {
-            if !source.focus(&window).await {
+            if !source.focus(window).await {
                 return Err(failed(&name));
             }
             Ok(format!("Focused {id}."))
         }
         Mode::Minimize | Mode::Restore => {
             let on = mode == Mode::Minimize;
-            if window.minimized != on && !source.set_minimized(&window, on).await {
+            if window.minimized != on && !source.set_minimized(window, on).await {
                 return Err(failed(&name));
             }
             Ok(if on { format!("Minimized {id}.") } else { format!("Restored {id}.") })
         }
         Mode::Move | Mode::Resize => {
-            let done = if mode == Mode::Move { source.move_to(&window, loc.0 as f64, loc.1 as f64).await } else { source.resize(&window, size.0 as f64, size.1 as f64).await };
+            let done = if mode == Mode::Move { source.move_to(window, loc.0 as f64, loc.1 as f64).await } else { source.resize(window, size.0 as f64, size.1 as f64).await };
             if !done {
                 return Err(failed(&name));
             }
@@ -440,17 +440,17 @@ async fn act(source: &dyn WindowSource, cache: &RefCell<WindowCache>, window: &W
                 return Err(minimized);
             }
             let target = maximized_frame(&window.frame, &source.displays().await).ok_or_else(|| failed(&name))?;
-            match source.set_frame(&window, target).await {
+            match source.set_frame(window, target).await {
                 FrameResult::Done => {}
                 FrameResult::NotResizable => return Err(format!("Could not maximize window {id}: it cannot be resized.")),
                 FrameResult::Failed => return Err(failed(&name)),
             }
-            remember(&window, source, cache).await;
+            remember(window, source, cache).await;
             Ok(format!("Maximized {id}."))
         }
         Mode::Fullscreen | Mode::ExitFullscreen => {
             let on = mode == Mode::Fullscreen;
-            if window.fullscreen != on && !source.set_full_screen(&window, on).await {
+            if window.fullscreen != on && !source.set_full_screen(window, on).await {
                 return Err(failed(if on { "fullscreen" } else { "exit fullscreen" }));
             }
             Ok(if on { format!("Full screen {id}.") } else { format!("Left full screen {id}.") })
@@ -466,16 +466,16 @@ async fn act(source: &dyn WindowSource, cache: &RefCell<WindowCache>, window: &W
             let target = displays.iter().find(|d| d.index as i64 == display_index).ok_or_else(|| format!("No display {display_index}; see Window displays."))?;
             let could_not = format!("Could not move window {id} to display {display_index}");
             let current = display_of(&window.frame, &displays).ok_or_else(|| format!("{could_not}."))?;
-            match source.set_frame(&window, moved_frame(&window.frame, current, target)).await {
+            match source.set_frame(window, moved_frame(&window.frame, current, target)).await {
                 FrameResult::Done => {}
                 FrameResult::NotResizable => return Err(format!("{could_not}: it does not fit and cannot be resized.")),
                 FrameResult::Failed => return Err(format!("{could_not}.")),
             }
-            remember(&window, source, cache).await;
+            remember(window, source, cache).await;
             Ok(format!("Moved {id} to display {display_index}."))
         }
         Mode::Close => {
-            if !source.close(&window).await {
+            if !source.close(window).await {
                 return Err(failed(&name));
             }
             Ok(format!("Close requested for {id} (\"{}\").", flat(&window.title)))

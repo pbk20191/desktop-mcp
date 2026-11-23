@@ -156,7 +156,8 @@ pub fn run<F: Future + 'static>(build: impl FnOnce(Rc<dyn MainLoop>) -> F) -> F:
         let waker = Waker::from(waker_state.clone());
         let mut cx = Context::from_waker(&waker);
         // The driver is created first so that the timers can point at it; the future is built afterwards.
-        let future: RefCell<Option<std::pin::Pin<Box<dyn Future<Output = F::Output>>>>> = RefCell::new(None);
+        type Pending<T> = std::pin::Pin<Box<dyn Future<Output = T>>>;
+        let future: RefCell<Option<Pending<F::Output>>> = RefCell::new(None);
         let mut poll = || {
             let polled = catch_unwind(AssertUnwindSafe(|| {
                 future.borrow_mut().as_mut().expect("the future is built before the first poll").as_mut().poll(&mut cx)

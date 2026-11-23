@@ -32,6 +32,9 @@ impl MainLoop for FakeLoop {
     }
 }
 
+/// A notification asked for: message, title, subtitle, sound.
+pub type Notified = (String, String, Option<String>, Option<String>);
+
 /// A desktop that records what the tools ask of it and answers as each test sets it up.
 #[derive(Default)]
 pub struct FakeDesktop {
@@ -80,7 +83,7 @@ pub struct FakeDesktop {
     pub opened: RefCell<Vec<(Target, Option<PathBuf>)>>,
     pub revealed: RefCell<Vec<PathBuf>>,
     pub applications: Vec<(&'static str, Application)>,
-    pub notified: RefCell<Vec<(String, String, Option<String>, Option<String>)>>,
+    pub notified: RefCell<Vec<Notified>>,
     pub notify_failure: Option<&'static str>,
     pub shortcut_names: &'static str,
     pub list_failure: Option<Run>,
@@ -266,8 +269,6 @@ impl FakeDesktop {
         Rc::new(desktop)
     }
 }
-
-/// Sends one message to a fresh server and returns the answer as JSON.
 
 impl FakeDesktop {
     /// The next `sleep` waits for the returned sender (or for it to be dropped).

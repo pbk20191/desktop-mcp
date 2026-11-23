@@ -19,6 +19,7 @@ fn resolve(cli: &CommandLine) -> Result<ServePlan, String> {
 }
 
 #[test]
+#[allow(clippy::join_absolute_paths)] // A rooted path is the case under test.
 fn load_validates_and_resolves_relative_tls_paths() {
     let directory = tempfile::tempdir().unwrap();
     let path = file(&directory, "[server]\ntransport = \"streamable-http\"\nport = 9000\nssl_certfile = \"certs/cert.pem\"\nssl_keyfile = \"/abs/key.pem\"\n[tools]\nexclude = [\"Shell\"]\n");

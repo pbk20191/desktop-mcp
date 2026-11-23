@@ -25,6 +25,8 @@ use std::rc::Rc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
+type Pending<T> = Pin<Box<dyn Future<Output = T>>>;
+
 /// The tools' behaviour, implemented per platform. Lives on the main thread and is not `Send`.
 pub trait Desktop: 'static {
     /// Completes after `duration`, measured exactly (not by the guest runtime's coarse timers).
@@ -35,7 +37,7 @@ pub trait Desktop: 'static {
     /// The addresses `host` (a name or a numeric address) resolves to, or the resolver's reason for none.
     fn resolve(&self, host: &str) -> Pin<Box<dyn Future<Output = Result<Vec<IpAddr>, String>>>>;
     /// A connection to `host`:`port`; with `tls`, over TLS that trusts what the system trusts.
-    fn connect(&self, host: &str, port: u16, tls: bool) -> Pin<Box<dyn Future<Output = Result<Box<dyn Stream>, String>>>>;
+    fn connect(&self, host: &str, port: u16, tls: bool) -> Pending<Result<Box<dyn Stream>, String>>;
     /// An HTML page's `html` element, parsed the way a browser would after decoding `body` from `charset` (UTF-8
     /// when absent or unknown), off the event loop. `None` when nothing could be parsed.
     fn parse_html(&self, body: Vec<u8>, charset: Option<String>) -> Pin<Box<dyn Future<Output = Option<Element>>>>;

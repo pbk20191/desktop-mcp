@@ -16,14 +16,15 @@ use std::rc::Rc;
 use std::time::Duration;
 use support::{block_on, duplex};
 
+/// (host, port, tls, request target, Host header, User-Agent).
+type Fetched = (String, u16, bool, String, String, String);
 type Page = Rc<dyn Fn(&str, &Request<hyper::body::Incoming>) -> Response<Full<bytes::Bytes>>>;
 
 /// Hosts with addresses, one web server answering for all of them, and a parser that keeps the body as text.
 struct FakeWeb {
     addresses: HashMap<&'static str, Vec<IpAddr>>,
     page: Page,
-    /// (host, port, tls, request target, Host header, User-Agent) per request.
-    requests: Rc<RefCell<Vec<(String, u16, bool, String, String, String)>>>,
+    requests: Rc<RefCell<Vec<Fetched>>>,
     charsets: RefCell<Vec<Option<String>>>,
     parsed_bytes: Cell<usize>,
     /// Whether `sleep` ends at once (every fetch then times out) or never.

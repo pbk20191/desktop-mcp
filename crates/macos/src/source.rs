@@ -19,7 +19,7 @@ pub fn background(kind: *const dispatch2::dispatch_source_type_s, handle: usize,
     let event = RcBlock::new(event);
     unsafe { source.set_event_handler_with_block(RcBlock::as_ptr(&event)) };
     if let Some(cancel) = cancel {
-        let cancel = RcBlock::new(move || cancel());
+        let cancel = RcBlock::new(cancel);
         unsafe { source.set_cancel_handler_with_block(RcBlock::as_ptr(&cancel)) };
     }
     source

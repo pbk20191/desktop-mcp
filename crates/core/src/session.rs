@@ -70,6 +70,17 @@ fn key_of(message: &serde_json::Value) -> String {
     message["id"].to_string()
 }
 
+/// The key of the request `item` answers, read from the message itself (no copy of its result); `None` when it
+/// answers none. An error with no id gets `null`, as [`key_of`] gives for a missing one.
+pub(crate) fn answered(item: &ServerJsonRpcMessage) -> Option<String> {
+    let id = match item {
+        JsonRpcMessage::Response(response) => serde_json::to_string(&response.id),
+        JsonRpcMessage::Error(error) => serde_json::to_string(&error.id),
+        _ => return None,
+    };
+    Some(id.expect("request ids serialize"))
+}
+
 struct SessionTransport {
     incoming: mpsc::UnboundedReceiver<ClientJsonRpcMessage>,
     shared: Arc<Mutex<Shared>>,
@@ -80,8 +91,7 @@ impl rmcp::transport::Transport<RoleServer> for SessionTransport {
 
     fn send(&mut self, item: ServerJsonRpcMessage) -> impl Future<Output = Result<(), Self::Error>> + Send + 'static {
         let mut shared = self.shared.lock().expect("the session lock is never poisoned");
-        if matches!(item, JsonRpcMessage::Response(_) | JsonRpcMessage::Error(_)) {
-            let key = key_of(&serde_json::to_value(&item).expect("rmcp messages serialize"));
+        if let Some(key) = answered(&item) {
             // No one waiting: the request's client went away, or cancelled it.
             if let Some(waiting) = shared.pending.remove(&key) {
                 let _ = waiting.send(item);

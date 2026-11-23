@@ -20,7 +20,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Run the server (the default command).
-    Serve(ServeArgs),
+    Serve(Box<ServeArgs>),
     /// Bridge stdio to the running server, for clients that only spawn stdio servers.
     ///
     /// Without --url or --socket the installed Launch Agent is used (desktop-mcp install): its Unix socket
@@ -134,7 +134,7 @@ fn main() -> ExitCode {
     arch_switch::run_native_sibling();
     let cli = Cli::parse();
     let args = match cli.command {
-        Some(Command::Serve(args)) => args,
+        Some(Command::Serve(args)) => *args,
         // Disabled with the socket transport: it would hand any process of this user the stored auth key.
         Some(Command::Connect(_)) => {
             eprintln!("Error: `connect` is disabled. {}", desktop_mcp_core::plan::SOCKET_DISABLED);

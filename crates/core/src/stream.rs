@@ -8,6 +8,7 @@
 use crate::mcp::Server;
 use rmcp::model::{ClientJsonRpcMessage, JsonRpcMessage, ServerJsonRpcMessage};
 use rmcp::{RoleServer, ServiceExt};
+use serde::Deserialize;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::future::{poll_fn, Future};
@@ -30,9 +31,9 @@ impl rmcp::transport::Transport<RoleServer> for LineTransport {
     type Error = std::io::Error;
 
     fn send(&mut self, item: ServerJsonRpcMessage) -> impl Future<Output = Result<(), Self::Error>> + Send + 'static {
-        let value = serde_json::to_value(&item).expect("rmcp messages serialize");
-        let answers = matches!(item, JsonRpcMessage::Response(_) | JsonRpcMessage::Error(_)).then(|| value["id"].to_string());
-        let sent = self.outgoing.send(Outgoing { line: value.to_string(), answers }).map_err(|_| std::io::Error::from(std::io::ErrorKind::BrokenPipe));
+        let answers = crate::session::answered(&item);
+        let line = serde_json::to_string(&item).expect("rmcp messages serialize");
+        let sent = self.outgoing.send(Outgoing { line, answers }).map_err(|_| std::io::Error::from(std::io::ErrorKind::BrokenPipe));
         std::future::ready(sent)
     }
 
@@ -157,7 +158,7 @@ fn handle_line(line: &[u8], ledger: &Rc<RefCell<Ledger>>, outgoing: &mpsc::Unbou
     if value.is_array() {
         return reply(error_line(-32600, "Invalid Request: JSON-RPC batches are not supported"));
     }
-    let Ok(message) = serde_json::from_value::<ClientJsonRpcMessage>(value.clone()) else {
+    let Ok(message) = ClientJsonRpcMessage::deserialize(&value) else {
         return reply(error_line(-32600, "Invalid Request"));
     };
     let mut ledger = ledger.borrow_mut();

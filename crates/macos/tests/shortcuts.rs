@@ -18,8 +18,10 @@ struct Seen {
     output_path: Option<String>,
 }
 
+type Pending<T> = Pin<Box<dyn Future<Output = T>>>;
+
 /// A runner that records its call, writes `output` to the output path, and answers `run`.
-fn stand_in(seen: Rc<RefCell<Seen>>, output: &'static str, answer: Run) -> impl Fn(Vec<String>, Duration) -> Pin<Box<dyn Future<Output = Result<Run, String>>>> {
+fn stand_in(seen: Rc<RefCell<Seen>>, output: &'static str, answer: Run) -> impl Fn(Vec<String>, Duration) -> Pending<Result<Run, String>> {
     move |argv, _timeout| {
         let mut record = Seen { argv: argv.clone(), ..Seen::default() };
         if let Some(i) = argv.iter().position(|arg| arg == "--input-path") {

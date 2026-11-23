@@ -8,7 +8,6 @@ use desktop_mcp_core::io::{Listener, Peer};
 use dispatch2::{DispatchData, DispatchIO, DispatchIOCloseFlags, DispatchIOStreamType, DispatchObject, DispatchQueue, DispatchRetained, DispatchSource};
 use std::cell::{Cell, RefCell};
 use std::ffi::{c_char, c_int, c_void, CString};
-use std::future::Future;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -253,8 +252,8 @@ impl Drop for UnixListener {
 impl Listener for UnixListener {
     type Io = FdIo;
 
-    fn accept(&mut self) -> impl Future<Output = Option<FdIo>> {
-        async { self.connections.recv().await.map(FdIo::socket) }
+    async fn accept(&mut self) -> Option<FdIo> {
+        self.connections.recv().await.map(FdIo::socket)
     }
 }
 
@@ -267,7 +266,7 @@ fn activate(name: &str) -> Result<Option<Vec<c_int>>, String> {
     let name = CString::new(name).map_err(|_| "invalid launchd socket name".to_string())?;
     let (mut fds, mut count) = (std::ptr::null_mut::<c_int>(), 0usize);
     let code = unsafe { launch_activate_socket(name.as_ptr(), &mut fds, &mut count) };
-    let list = (!fds.is_null()).then(|| unsafe { std::slice::from_raw_parts(fds, count) }.to_vec()).unwrap_or_default();
+    let list = if !fds.is_null() { unsafe { std::slice::from_raw_parts(fds, count) }.to_vec() } else { Default::default() };
     unsafe { libc::free(fds.cast()) };
     match code {
         0 if !list.is_empty() => Ok(Some(list)),

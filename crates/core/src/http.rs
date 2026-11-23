@@ -15,6 +15,7 @@ use http::header::{ACCEPT, ALLOW, AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, HO
 use http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode};
 use http_body_util::{BodyExt, Full};
 use rmcp::model::{ClientJsonRpcMessage, JsonRpcMessage};
+use serde::Deserialize;
 use std::convert::Infallible;
 use std::net::IpAddr;
 use std::pin::Pin;
@@ -137,13 +138,13 @@ fn names(headers: &HeaderMap, name: http::header::HeaderName, media_type: &str) 
     media_types(headers, name).any(|named| named == media_type)
 }
 
-/// A JSON-RPC message from a request body, or the error response for it.
-fn parse(body: &[u8]) -> Result<(ClientJsonRpcMessage, serde_json::Value), Response<Body>> {
+/// A JSON-RPC message from a request body, or the error response for it (boxed: a response is large).
+fn parse(body: &[u8]) -> Result<(ClientJsonRpcMessage, serde_json::Value), Box<Response<Body>>> {
     let value: serde_json::Value = serde_json::from_slice(body).map_err(|_| error(StatusCode::BAD_REQUEST, PARSE_ERROR, "Parse error"))?;
     if value.is_array() {
-        return Err(error(StatusCode::BAD_REQUEST, INVALID_REQUEST, "Invalid Request: JSON-RPC batches are not supported"));
+        return Err(Box::new(error(StatusCode::BAD_REQUEST, INVALID_REQUEST, "Invalid Request: JSON-RPC batches are not supported")));
     }
-    let message = serde_json::from_value(value.clone()).map_err(|_| error(StatusCode::BAD_REQUEST, INVALID_REQUEST, "Invalid Request"))?;
+    let message = ClientJsonRpcMessage::deserialize(&value).map_err(|_| error(StatusCode::BAD_REQUEST, INVALID_REQUEST, "Invalid Request"))?;
     Ok((message, value))
 }
 
@@ -288,7 +289,7 @@ async fn stateless(app: &App, headers: &HeaderMap, body: &[u8]) -> Response<Body
     }
     let (message, _) = match parse(body) {
         Ok(parsed) => parsed,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let _in_flight = app.activity.request();
     match answer_stateless((app.make_server)(), message).await {
@@ -297,24 +298,24 @@ async fn stateless(app: &App, headers: &HeaderMap, body: &[u8]) -> Response<Body
     }
 }
 
-/// What a session `POST` must carry, as the Swift SDK checks it.
-fn check_session_post(headers: &HeaderMap) -> Result<(), Response<Body>> {
+/// The refusal of a session `POST` that lacks what it must carry, as the Swift SDK checks it.
+fn refuse_session_post(headers: &HeaderMap) -> Option<Response<Body>> {
     if !(names(headers, ACCEPT, "application/json") && names(headers, ACCEPT, "text/event-stream")) {
-        return Err(error(StatusCode::NOT_ACCEPTABLE, INVALID_REQUEST, "Not Acceptable: Client must accept both application/json and text/event-stream"));
+        return Some(error(StatusCode::NOT_ACCEPTABLE, INVALID_REQUEST, "Not Acceptable: Client must accept both application/json and text/event-stream"));
     }
     if !names(headers, CONTENT_TYPE, "application/json") {
-        return Err(error(StatusCode::UNSUPPORTED_MEDIA_TYPE, INVALID_REQUEST, "Unsupported Media Type: Content-Type must be application/json"));
+        return Some(error(StatusCode::UNSUPPORTED_MEDIA_TYPE, INVALID_REQUEST, "Unsupported Media Type: Content-Type must be application/json"));
     }
-    Ok(())
+    None
 }
 
 async fn open_session(app: &App, headers: &HeaderMap, body: &[u8]) -> Response<Body> {
-    if let Err(response) = check_session_post(headers) {
+    if let Some(response) = refuse_session_post(headers) {
         return response;
     }
     let (message, value) = match parse(body) {
         Ok(parsed) => parsed,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let Some(session) = app.sessions.create((app.make_server)(), &app.activity) else {
         return error(StatusCode::SERVICE_UNAVAILABLE, INTERNAL_ERROR, "Too many sessions");
@@ -329,7 +330,7 @@ where
 {
     match *method {
         Method::POST => {
-            if let Err(response) = check_session_post(headers) {
+            if let Some(response) = refuse_session_post(headers) {
                 return with_session(response, &session.id);
             }
             let Ok(body) = body.collect().await.map(|collected| collected.to_bytes()) else {
@@ -337,7 +338,7 @@ where
             };
             let (message, value) = match parse(&body) {
                 Ok(parsed) => parsed,
-                Err(response) => return with_session(response, &session.id),
+                Err(response) => return with_session(*response, &session.id),
             };
             if is_initialize(&value) {
                 return with_session(error(StatusCode::BAD_REQUEST, INVALID_REQUEST, "Invalid Request: Server already initialized"), &session.id);

@@ -88,6 +88,6 @@ fn conditions_need_their_arguments_and_accessibility() {
     let untrusted = Rc::new(FakeDesktop { untrusted: true, ..FakeDesktop::default() });
     let refused = format!("Error executing tool Wait: {}", desktop_mcp_core::permissions::ACCESSIBILITY_MESSAGE);
     for arguments in [json!({"until": "window", "app": "Preview"}), json!({"until": "window_gone", "app": "Preview"}), json!({"until": "element", "title": "Save"})] {
-        assert_eq!(call(&untrusted, arguments), [refused.clone()]);
+        assert_eq!(call(&untrusted, arguments), std::slice::from_ref(&refused));
     }
 }
