@@ -180,7 +180,6 @@ pub fn app_windows<'a>(app: &str, windows: &'a [TopWindow]) -> Vec<&'a TopWindow
     crate::apps::windows_of(app, windows)
 }
 
-/// The applications' top-level windows in z-order (front first). Blocking: run it on the pool.
 /// The windows an element search walks: those of `app`'s process (else of the focused window's), not minimized.
 /// Blocks on other apps: call it on the pool.
 pub fn element_windows(app: Option<&str>) -> Vec<TopWindow> {
@@ -196,6 +195,7 @@ pub fn element_windows(app: Option<&str>) -> Vec<TopWindow> {
     windows.into_iter().filter(|window| Some(window.pid) == owner && !window.minimized).collect()
 }
 
+/// The applications' top-level windows in z-order (front first). Blocking: run it on the pool.
 pub fn top_windows() -> Vec<TopWindow> {
     windows_where(is_app_window)
 }

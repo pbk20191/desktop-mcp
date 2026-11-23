@@ -60,4 +60,7 @@ UI Automation events only (the owner ruled out `SetWinEventHook`), in `crates/wi
   so `RemoveAllEventHandlers` removes exactly its handlers; UI Automation calls them on its own threads, so the
   core `Signal` is thread-safe (`AtomicBool` and a locked waker). The first moments of a wait, before the handlers
   are in, are covered by the polling.
-- Type-checked from macOS (`cargo check --target x86_64-pc-windows-msvc`); not yet run on Windows.
+- Type-checked from macOS (`cargo check --target x86_64-pc-windows-msvc`), then run on Windows 11 (2026-11-23):
+  WindowOpened arrives on a UI Automation thread; `RemoveAllEventHandlers` on one automation object leaves another
+  object's handlers in place; a window wait (release exe over stdio, window shown at varied points of the 1 s poll)
+  returned 37–235 ms after the window appeared. Element waits were not measured.
